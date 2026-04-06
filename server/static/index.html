@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>AirTag Tracker</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9/dist/leaflet.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #eee; }
+    #map { height: 70vh; width: 100%; }
+    .panel { padding: 12px; max-height: 30vh; overflow-y: auto; }
+    .tag-card {
+      background: #16213e; border-radius: 8px; padding: 12px; margin-bottom: 8px;
+      cursor: pointer; display: flex; justify-content: space-between; align-items: center;
+      border: 2px solid transparent; transition: border-color 0.2s;
+    }
+    .tag-card.active { border-color: #4cc9f0; }
+    .tag-card:hover { border-color: #4361ee; }
+    .tag-name { font-weight: 600; font-size: 1.1em; }
+    .tag-time { font-size: 0.85em; color: #888; }
+    .tag-coords { font-size: 0.8em; color: #666; }
+    .toolbar {
+      display: flex; gap: 8px; padding: 8px 12px; background: #0f3460;
+      align-items: center; justify-content: space-between;
+    }
+    .toolbar h1 { font-size: 1.1em; font-weight: 600; }
+    .btn {
+      background: #4361ee; color: white; border: none; border-radius: 6px;
+      padding: 8px 16px; font-size: 0.9em; cursor: pointer;
+    }
+    .btn:active { background: #3a56d4; }
+    .btn.sync { background: #4cc9f0; color: #1a1a2e; }
+    .status { font-size: 0.75em; color: #888; padding: 4px 12px; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <h1>AirTag Tracker</h1>
+    <div>
+      <button class="btn sync" onclick="syncKeys()">Sync AirTags</button>
+      <button class="btn" onclick="pollNow()">Refresh</button>
+    </div>
+  </div>
+  <div id="map"></div>
+  <div class="status" id="status">Loading...</div>
+  <div class="panel" id="tags"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9/dist/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([51.1, 10.4], 6);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OSM', maxZoom: 19
+    }).addTo(map);
+
+    let markers = {};
+    let historyLines = {};
+    let activeTag = null;
+
+    const tagIcon = L.divIcon({
+      html: '<div style="background:#4cc9f0;width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 6px rgba(0,0,0,.4)"></div>',
+      iconSize: [14, 14], className: ''
+    });
+
+    function timeAgo(ts) {
+      const diff = (Date.now() - new Date(ts).getTime()) / 1000;
+      if (diff < 60) return 'just now';
+      if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+      if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+      return Math.floor(diff / 86400) + 'd ago';
+    }
+
+    async function loadTags() {
+      const res = await fetch('/api/airtags');
+      const tags = await res.json();
+      const panel = document.getElementById('tags');
+      panel.innerHTML = '';
+
+      // Clear old markers
+      Object.values(markers).forEach(m => map.removeLayer(m));
+      markers = {};
+
+      tags.forEach(tag => {
+        // Marker
+        const m = L.marker([tag.latitude, tag.longitude], { icon: tagIcon })
+          .addTo(map)
+          .bindPopup(`<b>${tag.airtag_name || tag.airtag_id}</b><br>${timeAgo(tag.timestamp)}`);
+        markers[tag.airtag_id] = m;
+
+        // Card
+        const card = document.createElement('div');
+        card.className = 'tag-card' + (activeTag === tag.airtag_id ? ' active' : '');
+        card.innerHTML = `
+          <div>
+            <div class="tag-name">${tag.airtag_name || tag.airtag_id}</div>
+            <div class="tag-time">${timeAgo(tag.timestamp)}</div>
+            <div class="tag-coords">${tag.latitude.toFixed(5)}, ${tag.longitude.toFixed(5)}</div>
+          </div>
+        `;
+        card.onclick = () => showHistory(tag.airtag_id);
+        panel.appendChild(card);
+      });
+
+      document.getElementById('status').textContent =
+        `${tags.length} AirTag${tags.length !== 1 ? 's' : ''} tracked`;
+
+      if (tags.length && !activeTag) {
+        map.fitBounds(tags.map(t => [t.latitude, t.longitude]), { padding: [30, 30] });
+      }
+    }
+
+    async function showHistory(tagId) {
+      activeTag = tagId;
+      // Remove old history line
+      Object.values(historyLines).forEach(l => map.removeLayer(l));
+      historyLines = {};
+
+      const res = await fetch(`/api/airtags/${tagId}/history?limit=500`);
+      const points = await res.json();
+
+      if (points.length) {
+        const latlngs = points.map(p => [p.latitude, p.longitude]).reverse();
+        historyLines[tagId] = L.polyline(latlngs, {
+          color: '#4cc9f0', weight: 3, opacity: 0.7
+        }).addTo(map);
+        map.fitBounds(historyLines[tagId].getBounds(), { padding: [30, 30] });
+      }
+
+      // Update active card
+      document.querySelectorAll('.tag-card').forEach((c, i) => {
+        c.className = 'tag-card' + (i === [...document.querySelectorAll('.tag-card')].findIndex(
+          el => el.querySelector('.tag-name').textContent === tagId
+        ) ? ' active' : '');
+      });
+
+      loadTags();
+    }
+
+    async function pollNow() {
+      document.getElementById('status').textContent = 'Refreshing...';
+      await fetch('/api/poll', { method: 'POST' });
+      setTimeout(loadTags, 3000);
+    }
+
+    async function syncKeys() {
+      document.getElementById('status').textContent = 'Starting key extraction...';
+      const res = await fetch('/api/extract-keys', { method: 'POST' });
+      const data = await res.json();
+      document.getElementById('status').textContent = data.status === 'not_implemented'
+        ? 'VM extraction not configured yet'
+        : 'Syncing AirTags...';
+      setTimeout(loadTags, 5000);
+    }
+
+    loadTags();
+    setInterval(loadTags, 60000);
+  </script>
+</body>
+</html>

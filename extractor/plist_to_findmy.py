@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+"""Convert decrypted AirTag plists to FindMy.py JSON format."""
+
+import json
+import plistlib
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def plist_to_findmy_json(plist_path, naming_dir=None):
+    """Convert a decrypted OwnedBeacons plist to FindMy.py accessory JSON."""
+    with open(plist_path, "rb") as f:
+        data = plistlib.load(f)
+
+    # Extract the private key (P-224 elliptic curve, 28 bytes)
+    private_key = data.get("privateKey", {}).get("key", {}).get("data", b"")
+    shared_secret = data.get("sharedSecret", {}).get("key", {}).get("data", b"")
+    secondary_shared = data.get("secondarySharedSecret", {}).get("key", {}).get("data", b"")
+    pairing_date = data.get("pairingDate", datetime.now(timezone.utc))
+    identifier = data.get("identifier", plist_path.stem)
+    model = data.get("model", "AirTag")
+
+    if not private_key:
+        raise ValueError(f"No privateKey found in {plist_path}")
+
+    # Look up name from BeaconNamingRecord
+    name = identifier
+    if naming_dir:
+        for naming_file in Path(naming_dir).glob("*.plist"):
+            try:
+                with open(naming_file, "rb") as f:
+                    naming = plistlib.load(f)
+                if naming.get("associatedBeacon") == identifier:
+                    name = naming.get("name", identifier)
+                    break
+            except Exception:
+                continue
+
+    return {
+        "type": "accessory",
+        "master_key": private_key.hex(),
+        "skn": shared_secret.hex(),
+        "sks": secondary_shared.hex(),
+        "paired_at": pairing_date.isoformat() if isinstance(pairing_date, datetime) else str(pairing_date),
+        "name": name,
+        "model": model,
+        "identifier": identifier,
+    }
+
+
+def main():
+    if len(sys.argv) < 3:
+        print(f"Usage: {sys.argv[0]} <plist_dir> <output_dir>")
+        sys.exit(1)
+
+    plist_dir = Path(sys.argv[1])
+    output_dir = Path(sys.argv[2])
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    naming_dir = plist_dir.parent / "BeaconNamingRecord"
+    if not naming_dir.exists():
+        naming_dir = None
+
+    count = 0
+    for plist_file in plist_dir.glob("*.plist"):
+        try:
+            data = plist_to_findmy_json(plist_file, naming_dir)
+            # Use a sanitized name for the file
+            safe_name = data["name"].replace(" ", "_").replace("/", "_")
+            out_path = output_dir / f"{safe_name}.json"
+            with open(out_path, "w") as f:
+                json.dump(data, f, indent=2)
+            print(f"  Converted: {data['name']} -> {out_path.name}")
+            count += 1
+        except Exception as e:
+            print(f"  Failed: {plist_file.stem}: {e}")
+
+    print(f"\nConverted {count} AirTag(s) to {output_dir}")
+
+
+if __name__ == "__main__":
+    main()
