@@ -274,7 +274,7 @@
           <p style="color:#aaa;font-size:0.85em;margin-bottom:8px">
             <b>macOS VM</b> — Install macOS, create a user called "user", sign into Apple ID, enable Find My, then enable Remote Login (SSH) in System Settings > Sharing.
           </p>
-          <iframe class="vnc-frame" src="//${location.hostname}:${wsPort}/vnc.html?autoconnect=true&resize=scale"></iframe>
+          <iframe class="vnc-frame" src="//${location.hostname.replace('airtag', 'airtag-vnc')}/vnc.html?autoconnect=true&resize=scale"></iframe>
           <div style="display:flex;gap:8px;margin-top:8px">
             <input type="password" id="vm-password" placeholder="Enter the macOS user password you just created" style="flex:1;padding:10px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee;font-size:0.95em">
             <button class="btn sync" onclick="completeVmSetup()" style="white-space:nowrap">Done</button>
