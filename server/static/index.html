@@ -31,10 +31,45 @@
     }
     .btn:active { background: #3a56d4; }
     .btn.sync { background: #4cc9f0; color: #1a1a2e; }
+    .btn.danger { background: #e74c3c; }
     .status { font-size: 0.75em; color: #888; padding: 4px 12px; }
+
+    /* Setup overlay */
+    .overlay {
+      position: fixed; inset: 0; background: #1a1a2e; z-index: 9999;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .overlay.hidden { display: none; }
+    .setup-box {
+      background: #16213e; border-radius: 12px; padding: 32px;
+      max-width: 400px; width: 90%;
+    }
+    .setup-box h2 { margin-bottom: 16px; font-size: 1.3em; }
+    .setup-box p { color: #aaa; margin-bottom: 16px; font-size: 0.9em; line-height: 1.5; }
+    .setup-box input {
+      width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #333;
+      background: #0f3460; color: #eee; font-size: 1em; margin-bottom: 12px;
+    }
+    .setup-box input::placeholder { color: #666; }
+    .setup-box .btn { width: 100%; padding: 12px; font-size: 1em; }
+    .setup-box .error { color: #e74c3c; font-size: 0.85em; margin-bottom: 12px; }
+    .setup-box .info { color: #4cc9f0; font-size: 0.85em; margin-bottom: 12px; }
+    .method-list { margin-bottom: 12px; }
+    .method-item {
+      background: #0f3460; border-radius: 6px; padding: 10px; margin-bottom: 6px;
+      cursor: pointer; border: 2px solid transparent;
+    }
+    .method-item.selected { border-color: #4cc9f0; }
+    .method-item:hover { border-color: #4361ee; }
+    .step-indicator { color: #666; font-size: 0.8em; margin-bottom: 8px; }
   </style>
 </head>
 <body>
+  <!-- Setup overlay -->
+  <div class="overlay hidden" id="setup-overlay">
+    <div class="setup-box" id="setup-content"></div>
+  </div>
+
   <div class="toolbar">
     <h1>AirTag Tracker</h1>
     <div>
@@ -70,24 +105,155 @@
       return Math.floor(diff / 86400) + 'd ago';
     }
 
+    // --- Setup / Login flow ---
+    let pendingMethods = [];
+    let selectedMethod = 0;
+
+    async function checkSetup() {
+      const res = await fetch('/api/account/status');
+      const data = await res.json();
+      if (!data.configured) {
+        showLoginForm();
+      } else {
+        document.getElementById('setup-overlay').classList.add('hidden');
+      }
+    }
+
+    function showLoginForm(error) {
+      const overlay = document.getElementById('setup-overlay');
+      overlay.classList.remove('hidden');
+      document.getElementById('setup-content').innerHTML = `
+        <div class="step-indicator">Step 1 of 2</div>
+        <h2>Sign in with Apple ID</h2>
+        <p>Your Apple ID is needed to query the Find My network for AirTag locations. Credentials are stored locally on this server only.</p>
+        ${error ? `<div class="error">${error}</div>` : ''}
+        <input type="email" id="login-email" placeholder="Apple ID (email)" autocomplete="email">
+        <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+        <button class="btn" onclick="doLogin()">Sign In</button>
+      `;
+    }
+
+    async function doLogin() {
+      const email = document.getElementById('login-email').value;
+      const password = document.getElementById('login-password').value;
+      if (!email || !password) return;
+
+      document.getElementById('setup-content').innerHTML = `
+        <h2>Signing in...</h2>
+        <p>Authenticating with Apple. This may take a moment.</p>
+      `;
+
+      try {
+        const res = await fetch('/api/account/login', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({email, password})
+        });
+        const data = await res.json();
+
+        if (data.status === '2fa_required') {
+          pendingMethods = data.methods;
+          show2faForm();
+        } else if (data.status === 'logged_in') {
+          onLoginComplete();
+        } else {
+          showLoginForm(data.error || 'Login failed');
+        }
+      } catch (e) {
+        showLoginForm('Network error: ' + e.message);
+      }
+    }
+
+    function show2faForm(error) {
+      const overlay = document.getElementById('setup-overlay');
+      overlay.classList.remove('hidden');
+      let methodsHtml = '';
+      if (pendingMethods.length > 1) {
+        methodsHtml = '<div class="method-list">';
+        pendingMethods.forEach((m, i) => {
+          const label = m.type === 'sms' ? `SMS to ${m.phone}` : 'Trusted Device';
+          methodsHtml += `<div class="method-item ${i === selectedMethod ? 'selected' : ''}" onclick="selectMethod(${i})">${label}</div>`;
+        });
+        methodsHtml += '</div>';
+      }
+
+      const method = pendingMethods[selectedMethod];
+      const hint = method.type === 'sms'
+        ? 'Enter the code sent to ' + method.phone
+        : 'Enter the code shown on your trusted device';
+
+      document.getElementById('setup-content').innerHTML = `
+        <div class="step-indicator">Step 2 of 2</div>
+        <h2>Two-Factor Authentication</h2>
+        <p>${hint}</p>
+        ${methodsHtml}
+        ${error ? `<div class="error">${error}</div>` : ''}
+        ${method.type === 'sms' ? '<div class="info">A code has been requested automatically.</div>' : ''}
+        <input type="text" id="2fa-code" placeholder="6-digit code" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+        <button class="btn" onclick="submit2fa()">Verify</button>
+      `;
+      document.getElementById('2fa-code').focus();
+    }
+
+    function selectMethod(i) {
+      selectedMethod = i;
+      show2faForm();
+    }
+
+    async function submit2fa() {
+      const code = document.getElementById('2fa-code').value;
+      if (!code) return;
+
+      document.getElementById('setup-content').innerHTML = `
+        <h2>Verifying...</h2>
+        <p>Checking your 2FA code.</p>
+      `;
+
+      try {
+        const res = await fetch('/api/account/2fa', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({code, method: selectedMethod})
+        });
+        const data = await res.json();
+
+        if (data.status === 'logged_in') {
+          onLoginComplete();
+        } else {
+          show2faForm(data.error || '2FA failed');
+        }
+      } catch (e) {
+        show2faForm('Network error: ' + e.message);
+      }
+    }
+
+    function onLoginComplete() {
+      document.getElementById('setup-content').innerHTML = `
+        <h2>Signed in!</h2>
+        <p>Apple ID connected. Location polling will start automatically.</p>
+      `;
+      setTimeout(() => {
+        document.getElementById('setup-overlay').classList.add('hidden');
+        loadTags();
+      }, 1500);
+    }
+
+    // --- Map / Tags ---
     async function loadTags() {
       const res = await fetch('/api/airtags');
       const tags = await res.json();
       const panel = document.getElementById('tags');
       panel.innerHTML = '';
 
-      // Clear old markers
       Object.values(markers).forEach(m => map.removeLayer(m));
       markers = {};
 
       tags.forEach(tag => {
-        // Marker
         const m = L.marker([tag.latitude, tag.longitude], { icon: tagIcon })
           .addTo(map)
           .bindPopup(`<b>${tag.airtag_name || tag.airtag_id}</b><br>${timeAgo(tag.timestamp)}`);
         markers[tag.airtag_id] = m;
 
-        // Card
         const card = document.createElement('div');
         card.className = 'tag-card' + (activeTag === tag.airtag_id ? ' active' : '');
         card.innerHTML = `
@@ -111,7 +277,6 @@
 
     async function showHistory(tagId) {
       activeTag = tagId;
-      // Remove old history line
       Object.values(historyLines).forEach(l => map.removeLayer(l));
       historyLines = {};
 
@@ -125,14 +290,6 @@
         }).addTo(map);
         map.fitBounds(historyLines[tagId].getBounds(), { padding: [30, 30] });
       }
-
-      // Update active card
-      document.querySelectorAll('.tag-card').forEach((c, i) => {
-        c.className = 'tag-card' + (i === [...document.querySelectorAll('.tag-card')].findIndex(
-          el => el.querySelector('.tag-name').textContent === tagId
-        ) ? ' active' : '');
-      });
-
       loadTags();
     }
 
@@ -146,12 +303,11 @@
       document.getElementById('status').textContent = 'Starting key extraction...';
       const res = await fetch('/api/extract-keys', { method: 'POST' });
       const data = await res.json();
-      document.getElementById('status').textContent = data.status === 'not_implemented'
-        ? 'VM extraction not configured yet'
-        : 'Syncing AirTags...';
+      document.getElementById('status').textContent = data.message || data.status;
       setTimeout(loadTags, 5000);
     }
 
+    checkSetup();
     loadTags();
     setInterval(loadTags, 60000);
   </script>

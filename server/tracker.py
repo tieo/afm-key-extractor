@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from flask import Flask, jsonify, request, send_from_directory
 from findmy import FindMyAccessory, AppleAccount, LocalAnisetteProvider
+from findmy.reports import LoginState, SyncSmsSecondFactor
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("tracker")
@@ -26,6 +27,10 @@ PORT = int(os.environ.get("AIRTAG_PORT", "8042"))
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = Flask(__name__, static_folder=str(STATIC_DIR))
+
+# In-memory state for login flow
+_pending_account = None
+_pending_2fa_methods = None
 
 
 def init_db():
@@ -185,8 +190,17 @@ def trigger_poll():
 @app.route("/api/extract-keys", methods=["POST"])
 def trigger_extract():
     """Trigger macOS VM to extract AirTag keys."""
-    # This will be implemented when we add VM orchestration
-    return jsonify({"status": "not_implemented"}), 501
+    import subprocess as sp
+    try:
+        result = sp.run(
+            ["systemctl", "start", "airtag-extract-keys"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return jsonify({"status": "error", "message": result.stderr.strip()}), 500
+        return jsonify({"status": "started", "message": "Key extraction VM started. This takes a few minutes."})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route("/api/account/status")
@@ -196,6 +210,96 @@ def account_status():
         "configured": ACCOUNT_PATH.exists(),
         "airtags": len(list(KEYS_DIR.glob("*.json"))) if KEYS_DIR.exists() else 0,
     })
+
+
+@app.route("/api/account/login", methods=["POST"])
+def account_login():
+    """Start Apple ID login. Returns 2FA methods if needed."""
+    global _pending_account, _pending_2fa_methods
+    data = request.get_json()
+    email = data.get("email")
+    password = data.get("password")
+    if not email or not password:
+        return jsonify({"error": "email and password required"}), 400
+
+    try:
+        ani = LocalAnisetteProvider(libs_path=str(ANISETTE_PATH))
+        acc = AppleAccount(ani)
+        state = acc.login(email, password)
+
+        if state == LoginState.REQUIRE_2FA:
+            _pending_account = acc
+            methods = acc.get_2fa_methods()
+            _pending_2fa_methods = methods
+            # Auto-request the first method
+            if methods:
+                methods[0].request()
+            method_list = []
+            for m in methods:
+                if isinstance(m, SyncSmsSecondFactor):
+                    method_list.append({"type": "sms", "phone": m.phone_number, "id": m.phone_number_id})
+                else:
+                    method_list.append({"type": "trusted_device"})
+            return jsonify({"status": "2fa_required", "methods": method_list})
+
+        if state == LoginState.LOGGED_IN:
+            acc.to_json(str(ACCOUNT_PATH))
+            _pending_account = None
+            _pending_2fa_methods = None
+            return jsonify({"status": "logged_in"})
+
+        return jsonify({"error": f"Unexpected login state: {state}"}), 500
+    except Exception as e:
+        _pending_account = None
+        _pending_2fa_methods = None
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/account/2fa", methods=["POST"])
+def account_2fa():
+    """Submit 2FA code to complete login."""
+    global _pending_account, _pending_2fa_methods
+    if not _pending_account or not _pending_2fa_methods:
+        return jsonify({"error": "No pending login. Call /api/account/login first."}), 400
+
+    data = request.get_json()
+    code = data.get("code")
+    method_index = data.get("method", 0)
+
+    if not code:
+        return jsonify({"error": "code required"}), 400
+
+    try:
+        method = _pending_2fa_methods[method_index]
+        state = method.submit(code)
+
+        if state == LoginState.LOGGED_IN:
+            _pending_account.to_json(str(ACCOUNT_PATH))
+            _pending_account = None
+            _pending_2fa_methods = None
+            return jsonify({"status": "logged_in"})
+
+        return jsonify({"error": f"2FA failed, state: {state}"}), 401
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/account/2fa/request", methods=["POST"])
+def account_2fa_request():
+    """Request a 2FA code to be sent (for SMS methods)."""
+    global _pending_2fa_methods
+    if not _pending_2fa_methods:
+        return jsonify({"error": "No pending login."}), 400
+
+    data = request.get_json() or {}
+    method_index = data.get("method", 0)
+
+    try:
+        method = _pending_2fa_methods[method_index]
+        method.request()
+        return jsonify({"status": "sent"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 def main():
