@@ -5,6 +5,7 @@ let
   cfg = config.services.airtag-tracker;
   package = self.packages.${pkgs.system}.server;
   extractorPkg = self.packages.${pkgs.system}.key-extractor;
+  provisionPkg = self.packages.${pkgs.system}.provision-vm;
 in {
   options.services.airtag-tracker = {
     enable = lib.mkEnableOption "AirTag location tracker";
@@ -80,6 +81,17 @@ in {
           Environment = [
             "AIRTAG_VM_DIR=${cfg.vm.vmDir}"
             "AIRTAG_DATA_DIR=${cfg.dataDir}"
+          ];
+        };
+      };
+
+      systemd.services.airtag-provision-vm = {
+        description = "One-time macOS VM provisioning";
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${provisionPkg}/bin/airtag-provision-vm";
+          Environment = [
+            "AIRTAG_VM_DIR=${cfg.vm.vmDir}"
           ];
         };
       };
