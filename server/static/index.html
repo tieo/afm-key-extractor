@@ -34,12 +34,47 @@
     .btn.danger { background: #e74c3c; }
     .btn.small { padding: 4px 10px; font-size: 0.8em; }
     .btn.ghost { background: transparent; border: 1px solid #4361ee; }
+    .status { font-size: 0.75em; color: #888; padding: 4px 12px; }
+
+    /* Full-screen overlay */
+    .overlay {
+      position: fixed; inset: 0; background: #1a1a2e; z-index: 9999;
+      display: flex; align-items: center; justify-content: center; flex-direction: column;
+    }
+    .overlay.hidden { display: none; }
+    .setup-box {
+      background: #16213e; border-radius: 12px; padding: 24px;
+      max-width: 420px; width: 92%;
+    }
+    .setup-box h2 { margin-bottom: 12px; font-size: 1.2em; }
+    .setup-box p { color: #aaa; margin-bottom: 14px; font-size: 0.88em; line-height: 1.5; }
+    .setup-box input {
+      width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #333;
+      background: #0f3460; color: #eee; font-size: 1em; margin-bottom: 10px;
+    }
+    .setup-box input::placeholder { color: #666; }
+    .setup-box .btn { width: 100%; padding: 12px; font-size: 1em; margin-top: 4px; }
+    .setup-box .error { color: #e74c3c; font-size: 0.85em; margin-bottom: 10px; }
+    .setup-box .info { color: #4cc9f0; font-size: 0.85em; margin-bottom: 10px; }
+    .step { color: #666; font-size: 0.8em; margin-bottom: 8px; }
+    .method-item {
+      background: #0f3460; border-radius: 6px; padding: 10px; margin-bottom: 6px;
+      cursor: pointer; border: 2px solid transparent;
+    }
+    .method-item.selected { border-color: #4cc9f0; }
+
+    /* VNC viewer */
+    .vnc-frame {
+      width: 100%; height: 70vh; border: none; border-radius: 8px;
+      background: #000; margin-bottom: 12px;
+    }
+
+    /* Settings panel */
     .settings-panel {
       position: fixed; inset: 0; background: #1a1a2e; z-index: 9998;
       overflow-y: auto; padding: 16px;
     }
     .settings-panel.hidden { display: none; }
-    .settings-panel h2 { margin-bottom: 16px; }
     .settings-section {
       background: #16213e; border-radius: 8px; padding: 16px; margin-bottom: 16px;
     }
@@ -56,40 +91,18 @@
       text-align: center; color: #888; cursor: pointer; margin-top: 12px;
     }
     .drop-zone.dragover { border-color: #4cc9f0; color: #4cc9f0; }
-    .account-status { display: flex; align-items: center; gap: 8px; }
     .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
     .dot.green { background: #2ecc71; }
     .dot.red { background: #e74c3c; }
-    .status { font-size: 0.75em; color: #888; padding: 4px 12px; }
-
-    /* Setup overlay */
-    .overlay {
-      position: fixed; inset: 0; background: #1a1a2e; z-index: 9999;
-      display: flex; align-items: center; justify-content: center;
+    .dot.yellow { background: #f1c40f; }
+    .steps-progress {
+      display: flex; gap: 4px; margin-bottom: 16px;
     }
-    .overlay.hidden { display: none; }
-    .setup-box {
-      background: #16213e; border-radius: 12px; padding: 32px;
-      max-width: 400px; width: 90%;
+    .steps-progress .step-dot {
+      flex: 1; height: 4px; border-radius: 2px; background: #333;
     }
-    .setup-box h2 { margin-bottom: 16px; font-size: 1.3em; }
-    .setup-box p { color: #aaa; margin-bottom: 16px; font-size: 0.9em; line-height: 1.5; }
-    .setup-box input {
-      width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #333;
-      background: #0f3460; color: #eee; font-size: 1em; margin-bottom: 12px;
-    }
-    .setup-box input::placeholder { color: #666; }
-    .setup-box .btn { width: 100%; padding: 12px; font-size: 1em; }
-    .setup-box .error { color: #e74c3c; font-size: 0.85em; margin-bottom: 12px; }
-    .setup-box .info { color: #4cc9f0; font-size: 0.85em; margin-bottom: 12px; }
-    .method-list { margin-bottom: 12px; }
-    .method-item {
-      background: #0f3460; border-radius: 6px; padding: 10px; margin-bottom: 6px;
-      cursor: pointer; border: 2px solid transparent;
-    }
-    .method-item.selected { border-color: #4cc9f0; }
-    .method-item:hover { border-color: #4361ee; }
-    .step-indicator { color: #666; font-size: 0.8em; margin-bottom: 8px; }
+    .steps-progress .step-dot.done { background: #4cc9f0; }
+    .steps-progress .step-dot.active { background: #4361ee; }
   </style>
 </head>
 <body>
@@ -107,7 +120,7 @@
 
     <div class="settings-section">
       <h3>Apple Account</h3>
-      <div class="account-status" id="account-info">Checking...</div>
+      <div id="account-info">Checking...</div>
       <button class="btn small" style="margin-top:8px" onclick="showLoginForm()">Re-login</button>
     </div>
 
@@ -120,17 +133,20 @@
       <input type="file" id="key-file-input" accept=".json" multiple style="display:none">
     </div>
 
-    <div class="settings-section">
-      <h3>VM Key Extraction</h3>
-      <p style="color:#aaa;font-size:0.85em;margin-bottom:8px">Boot the macOS VM and extract keys for any newly paired AirTags.</p>
-      <button class="btn sync" onclick="syncKeys();toggleSettings()">Extract Keys Now</button>
+    <div class="settings-section" id="vm-section" style="display:none">
+      <h3>macOS VM</h3>
+      <div id="vm-info">Checking...</div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn small sync" onclick="syncKeys();toggleSettings()">Extract Keys Now</button>
+        <button class="btn small" onclick="startVmSetup()">Open VM Setup</button>
+      </div>
     </div>
   </div>
 
   <div class="toolbar">
     <h1>AirTag Tracker</h1>
     <div>
-      <button class="btn sync" onclick="syncKeys()">Sync AirTags</button>
+      <button class="btn sync" onclick="syncKeys()">Sync</button>
       <button class="btn" onclick="pollNow()">Refresh</button>
       <button class="btn ghost" onclick="toggleSettings()">Settings</button>
     </div>
@@ -163,27 +179,154 @@
       return Math.floor(diff / 86400) + 'd ago';
     }
 
-    // --- Setup / Login flow ---
+    // ========= INITIAL SETUP CHECK =========
+    let vmState = {};
     let pendingMethods = [];
     let selectedMethod = 0;
 
     async function checkSetup() {
-      const res = await fetch('/api/account/status');
-      const data = await res.json();
-      if (!data.configured) {
+      // Check account status
+      const accRes = await fetch('/api/account/status');
+      const accData = await accRes.json();
+
+      // Check VM status
+      const vmRes = await fetch('/api/vm/status');
+      vmState = await vmRes.json();
+
+      // Determine what needs setup
+      if (vmState.enabled && !vmState.provisioned) {
+        showProvisioningWait();
+      } else if (vmState.enabled && !vmState.setup_complete) {
+        showVmSetupWizard();
+      } else if (!accData.configured) {
         showLoginForm();
       } else {
         document.getElementById('setup-overlay').classList.add('hidden');
       }
     }
 
-    function showLoginForm(error) {
+    function showProvisioningWait() {
       const overlay = document.getElementById('setup-overlay');
       overlay.classList.remove('hidden');
       document.getElementById('setup-content').innerHTML = `
-        <div class="step-indicator">Step 1 of 2</div>
+        <div class="steps-progress">
+          <div class="step-dot active"></div><div class="step-dot"></div><div class="step-dot"></div>
+        </div>
+        <h2>Downloading macOS...</h2>
+        <p>The server is downloading macOS and setting up the VM. This happens once and takes 10-20 minutes depending on your internet speed.</p>
+        <p style="color:#4cc9f0">This page will refresh automatically.</p>
+      `;
+      setTimeout(checkSetup, 15000);
+    }
+
+    function showVmSetupWizard() {
+      const overlay = document.getElementById('setup-overlay');
+      overlay.classList.remove('hidden');
+      document.getElementById('setup-content').innerHTML = `
+        <div class="steps-progress">
+          <div class="step-dot done"></div><div class="step-dot active"></div><div class="step-dot"></div>
+        </div>
+        <h2>Set up macOS VM</h2>
+        <p>A one-time setup is needed: install macOS, sign into your Apple ID, and enable Find My. This all happens in your browser.</p>
+        <p>After this, new AirTags are detected automatically.</p>
+        <button class="btn" onclick="startVmSetup()">Start Setup</button>
+      `;
+    }
+
+    async function startVmSetup() {
+      const overlay = document.getElementById('setup-overlay');
+      overlay.classList.remove('hidden');
+      document.getElementById('setup-content').innerHTML = `
+        <h2>Starting VM...</h2>
+        <p>Booting macOS virtual machine. This takes about a minute.</p>
+      `;
+
+      try {
+        const res = await fetch('/api/vm/start-setup', {method: 'POST'});
+        const data = await res.json();
+        if (data.error) {
+          document.getElementById('setup-content').innerHTML = `
+            <h2>Error</h2>
+            <div class="error">${data.error}</div>
+            <button class="btn" onclick="checkSetup()">Retry</button>
+          `;
+          return;
+        }
+        showVncViewer(data.vnc_ws_port);
+      } catch (e) {
+        document.getElementById('setup-content').innerHTML = `
+          <h2>Error</h2>
+          <div class="error">${e.message}</div>
+          <button class="btn" onclick="checkSetup()">Retry</button>
+        `;
+      }
+    }
+
+    function showVncViewer(wsPort) {
+      const overlay = document.getElementById('setup-overlay');
+      overlay.classList.remove('hidden');
+      // Use setup-content's parent (overlay) for full-screen VNC
+      overlay.innerHTML = `
+        <div style="width:98%;max-width:900px;padding:8px">
+          <div class="steps-progress">
+            <div class="step-dot done"></div><div class="step-dot active"></div><div class="step-dot"></div>
+          </div>
+          <p style="color:#aaa;font-size:0.85em;margin-bottom:8px">
+            <b>macOS VM</b> — Install macOS, create a user called "user", sign into Apple ID, enable Find My, then enable Remote Login (SSH) in System Settings > Sharing.
+          </p>
+          <iframe class="vnc-frame" src="//${location.hostname}:${wsPort}/vnc.html?autoconnect=true&resize=scale"></iframe>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <input type="password" id="vm-password" placeholder="Enter the macOS user password you just created" style="flex:1;padding:10px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee;font-size:0.95em">
+            <button class="btn sync" onclick="completeVmSetup()" style="white-space:nowrap">Done</button>
+          </div>
+          <button class="btn ghost small" style="margin-top:8px" onclick="stopVm()">Cancel & Stop VM</button>
+        </div>
+      `;
+    }
+
+    async function completeVmSetup() {
+      const password = document.getElementById('vm-password').value;
+      if (!password) { alert('Enter the macOS user password'); return; }
+
+      const res = await fetch('/api/vm/complete-setup', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({password})
+      });
+      const data = await res.json();
+      if (data.error) { alert(data.error); return; }
+
+      const overlay = document.getElementById('setup-overlay');
+      overlay.innerHTML = '<div class="setup-box" id="setup-content"></div>';
+      document.getElementById('setup-content').innerHTML = `
+        <div class="steps-progress">
+          <div class="step-dot done"></div><div class="step-dot done"></div><div class="step-dot active"></div>
+        </div>
+        <h2>VM setup complete!</h2>
+        <p>The server is now extracting your AirTag keys. This takes a few minutes.</p>
+        <p>Next: sign into your Apple ID so the server can query locations.</p>
+        <button class="btn" onclick="showLoginForm()">Sign in with Apple ID</button>
+      `;
+    }
+
+    async function stopVm() {
+      await fetch('/api/vm/stop', {method: 'POST'});
+      const overlay = document.getElementById('setup-overlay');
+      overlay.innerHTML = '<div class="setup-box" id="setup-content"></div>';
+      checkSetup();
+    }
+
+    // ========= APPLE ID LOGIN =========
+    function showLoginForm(error) {
+      const overlay = document.getElementById('setup-overlay');
+      overlay.classList.remove('hidden');
+      overlay.innerHTML = '<div class="setup-box" id="setup-content"></div>';
+      document.getElementById('setup-content').innerHTML = `
+        <div class="steps-progress">
+          <div class="step-dot done"></div><div class="step-dot done"></div><div class="step-dot active"></div>
+        </div>
         <h2>Sign in with Apple ID</h2>
-        <p>Your Apple ID is needed to query the Find My network for AirTag locations. Credentials are stored locally on this server only.</p>
+        <p>Needed to query the Find My network for AirTag locations. Stored locally on this server only.</p>
         ${error ? `<div class="error">${error}</div>` : ''}
         <input type="email" id="login-email" placeholder="Apple ID (email)" autocomplete="email">
         <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
@@ -196,10 +339,7 @@
       const password = document.getElementById('login-password').value;
       if (!email || !password) return;
 
-      document.getElementById('setup-content').innerHTML = `
-        <h2>Signing in...</h2>
-        <p>Authenticating with Apple. This may take a moment.</p>
-      `;
+      document.getElementById('setup-content').innerHTML = `<h2>Signing in...</h2><p>Authenticating with Apple.</p>`;
 
       try {
         const res = await fetch('/api/account/login', {
@@ -223,49 +363,35 @@
     }
 
     function show2faForm(error) {
-      const overlay = document.getElementById('setup-overlay');
-      overlay.classList.remove('hidden');
-      let methodsHtml = '';
-      if (pendingMethods.length > 1) {
-        methodsHtml = '<div class="method-list">';
-        pendingMethods.forEach((m, i) => {
-          const label = m.type === 'sms' ? `SMS to ${m.phone}` : 'Trusted Device';
-          methodsHtml += `<div class="method-item ${i === selectedMethod ? 'selected' : ''}" onclick="selectMethod(${i})">${label}</div>`;
-        });
-        methodsHtml += '</div>';
-      }
-
       const method = pendingMethods[selectedMethod];
       const hint = method.type === 'sms'
         ? 'Enter the code sent to ' + method.phone
         : 'Enter the code shown on your trusted device';
 
+      let methodsHtml = '';
+      if (pendingMethods.length > 1) {
+        methodsHtml = pendingMethods.map((m, i) => {
+          const label = m.type === 'sms' ? `SMS: ${m.phone}` : 'Trusted Device';
+          return `<div class="method-item ${i === selectedMethod ? 'selected' : ''}" onclick="selectedMethod=${i};show2faForm()">${label}</div>`;
+        }).join('');
+      }
+
       document.getElementById('setup-content').innerHTML = `
-        <div class="step-indicator">Step 2 of 2</div>
         <h2>Two-Factor Authentication</h2>
         <p>${hint}</p>
         ${methodsHtml}
         ${error ? `<div class="error">${error}</div>` : ''}
-        ${method.type === 'sms' ? '<div class="info">A code has been requested automatically.</div>' : ''}
         <input type="text" id="2fa-code" placeholder="6-digit code" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
         <button class="btn" onclick="submit2fa()">Verify</button>
       `;
       document.getElementById('2fa-code').focus();
     }
 
-    function selectMethod(i) {
-      selectedMethod = i;
-      show2faForm();
-    }
-
     async function submit2fa() {
       const code = document.getElementById('2fa-code').value;
       if (!code) return;
 
-      document.getElementById('setup-content').innerHTML = `
-        <h2>Verifying...</h2>
-        <p>Checking your 2FA code.</p>
-      `;
+      document.getElementById('setup-content').innerHTML = `<h2>Verifying...</h2>`;
 
       try {
         const res = await fetch('/api/account/2fa', {
@@ -287,16 +413,16 @@
 
     function onLoginComplete() {
       document.getElementById('setup-content').innerHTML = `
-        <h2>Signed in!</h2>
-        <p>Apple ID connected. Location polling will start automatically.</p>
+        <h2>All set!</h2>
+        <p>AirTag tracking is now active. Locations will be polled automatically.</p>
       `;
       setTimeout(() => {
         document.getElementById('setup-overlay').classList.add('hidden');
         loadTags();
-      }, 1500);
+      }, 2000);
     }
 
-    // --- Map / Tags ---
+    // ========= MAP / TAGS =========
     async function loadTags() {
       const res = await fetch('/api/airtags');
       const tags = await res.json();
@@ -358,20 +484,21 @@
     }
 
     async function syncKeys() {
-      document.getElementById('status').textContent = 'Starting key extraction...';
+      document.getElementById('status').textContent = 'Extracting keys...';
       const res = await fetch('/api/extract-keys', { method: 'POST' });
       const data = await res.json();
       document.getElementById('status').textContent = data.message || data.status;
       setTimeout(loadTags, 5000);
     }
 
-    // --- Settings panel ---
+    // ========= SETTINGS =========
     function toggleSettings() {
       const panel = document.getElementById('settings-panel');
       panel.classList.toggle('hidden');
       if (!panel.classList.contains('hidden')) {
         loadAccountInfo();
         loadKeysList();
+        loadVmInfo();
       }
     }
 
@@ -379,10 +506,24 @@
       const res = await fetch('/api/account/status');
       const data = await res.json();
       const el = document.getElementById('account-info');
-      if (data.configured) {
-        el.innerHTML = `<span class="dot green"></span> Connected (${data.airtags} key${data.airtags !== 1 ? 's' : ''} loaded)`;
+      el.innerHTML = data.configured
+        ? `<span class="dot green"></span> Connected (${data.airtags} key${data.airtags !== 1 ? 's' : ''})`
+        : `<span class="dot red"></span> Not configured`;
+    }
+
+    async function loadVmInfo() {
+      const res = await fetch('/api/vm/status');
+      const data = await res.json();
+      const section = document.getElementById('vm-section');
+      if (!data.enabled) { section.style.display = 'none'; return; }
+      section.style.display = 'block';
+      const el = document.getElementById('vm-info');
+      if (!data.provisioned) {
+        el.innerHTML = '<span class="dot yellow"></span> Downloading macOS...';
+      } else if (!data.setup_complete) {
+        el.innerHTML = '<span class="dot yellow"></span> Needs initial setup';
       } else {
-        el.innerHTML = `<span class="dot red"></span> Not configured`;
+        el.innerHTML = `<span class="dot green"></span> Ready${data.vm_running ? ' (VM running)' : ''}`;
       }
     }
 
@@ -391,14 +532,14 @@
       const keys = await res.json();
       const el = document.getElementById('keys-list');
       if (!keys.length) {
-        el.innerHTML = '<div style="color:#666;padding:8px 0">No keys loaded. Upload key files or use VM extraction.</div>';
+        el.innerHTML = '<div style="color:#666;padding:8px 0">No keys loaded.</div>';
         return;
       }
       el.innerHTML = keys.map(k => `
         <div class="key-item">
           <div>
             <div class="key-name">${k.name}</div>
-            <div class="key-meta">${k.model || ''} &middot; ${k.file}</div>
+            <div class="key-meta">${k.model || ''}</div>
           </div>
           <button class="btn small danger" onclick="deleteKey('${k.file.replace('.json','')}')">Remove</button>
         </div>
@@ -406,7 +547,7 @@
     }
 
     async function deleteKey(name) {
-      if (!confirm(`Remove key "${name}"?`)) return;
+      if (!confirm(`Remove "${name}"?`)) return;
       await fetch(`/api/keys/${name}`, {method: 'DELETE'});
       loadKeysList();
     }
@@ -414,7 +555,6 @@
     // File upload
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('key-file-input');
-
     dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
     dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
     dropZone.addEventListener('drop', e => {
@@ -430,12 +570,13 @@
         form.append('file', file);
         const res = await fetch('/api/keys/upload', {method: 'POST', body: form});
         const data = await res.json();
-        if (data.error) alert(`Failed to upload ${file.name}: ${data.error}`);
+        if (data.error) alert(`Failed: ${data.error}`);
       }
       loadKeysList();
       loadTags();
     }
 
+    // ========= INIT =========
     checkSetup();
     loadTags();
     setInterval(loadTags, 60000);

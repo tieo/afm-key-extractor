@@ -37,10 +37,22 @@ in {
         description = "Path to OSX-KVM directory with macOS disk image.";
       };
 
+      vncPort = lib.mkOption {
+        type = lib.types.port;
+        default = 5901;
+        description = "VNC port for macOS VM display.";
+      };
+
+      websocketPort = lib.mkOption {
+        type = lib.types.port;
+        default = 6901;
+        description = "WebSocket port for noVNC proxy.";
+      };
+
       extractInterval = lib.mkOption {
         type = lib.types.str;
         default = "*-*-* 00/6:00:00";
-        description = "systemd calendar spec for periodic key extraction (default: every 6 hours).";
+        description = "systemd calendar spec for periodic key extraction (default: every 6h).";
       };
     };
   };
@@ -57,6 +69,9 @@ in {
           AIRTAG_DATA_DIR = cfg.dataDir;
           AIRTAG_PORT = toString cfg.port;
           AIRTAG_POLL_INTERVAL = toString cfg.pollInterval;
+          AIRTAG_VM_ENABLED = lib.boolToString cfg.vm.enable;
+          AIRTAG_VM_DIR = cfg.vm.vmDir;
+          AIRTAG_VNC_WS_PORT = toString cfg.vm.websocketPort;
         };
 
         serviceConfig = {
@@ -78,7 +93,6 @@ in {
       environment.systemPackages = [ pkgs.qemu ];
 
       # One-time VM provisioning — downloads macOS + OSX-KVM, creates disk.
-      # Idempotent: skips if already provisioned.
       systemd.services.airtag-provision-vm = {
         description = "Provision macOS VM for AirTag key extraction";
         after = [ "network-online.target" ];
@@ -89,18 +103,28 @@ in {
           Type = "oneshot";
           RemainAfterExit = true;
           ExecStart = "${provisionPkg}/bin/airtag-provision-vm";
-          Environment = [
-            "AIRTAG_VM_DIR=${cfg.vm.vmDir}"
-          ];
+          Environment = [ "AIRTAG_VM_DIR=${cfg.vm.vmDir}" ];
+        };
+      };
+
+      # noVNC websocket proxy — bridges browser to VM's VNC display.
+      # Started/stopped on demand by the tracker server.
+      systemd.services.airtag-novnc = {
+        description = "noVNC WebSocket proxy for macOS VM";
+        serviceConfig = {
+          Type = "simple";
+          ExecStart = "${pkgs.python3Packages.websockify}/bin/websockify --web ${pkgs.novnc}/share/webapps/novnc ${toString cfg.vm.websocketPort} localhost:${toString cfg.vm.vncPort}";
+          Restart = "on-failure";
         };
       };
 
       # Periodic key extraction — boots VM, extracts new keys, shuts down.
-      # Only runs if VM is provisioned and macOS is installed.
       systemd.services.airtag-extract-keys = {
         description = "Extract AirTag keys from macOS VM";
-        after = [ "airtag-provision-vm.service" ];
-        unitConfig.ConditionPathExists = "${cfg.vm.vmDir}/mac_hdd_ng.img";
+        unitConfig.ConditionPathExists = [
+          "${cfg.vm.vmDir}/mac_hdd_ng.img"
+          "${cfg.dataDir}/vm-password"
+        ];
         serviceConfig = {
           Type = "oneshot";
           ExecStart = "${extractorPkg}/bin/airtag-extract-keys";

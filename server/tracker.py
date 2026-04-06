@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+import subprocess as sp
 import time
 import threading
 import os
@@ -25,6 +26,9 @@ ANISETTE_PATH = DATA_DIR / "ani_libs.bin"
 POLL_INTERVAL = int(os.environ.get("AIRTAG_POLL_INTERVAL", "900"))  # 15 min default
 PORT = int(os.environ.get("AIRTAG_PORT", "8042"))
 STATIC_DIR = Path(__file__).parent / "static"
+VM_ENABLED = os.environ.get("AIRTAG_VM_ENABLED", "false") == "true"
+VM_DIR = Path(os.environ.get("AIRTAG_VM_DIR", "/var/lib/airtag-tracker/osx-kvm"))
+VNC_WS_PORT = int(os.environ.get("AIRTAG_VNC_WS_PORT", "6901"))
 
 app = Flask(__name__, static_folder=str(STATIC_DIR))
 
@@ -190,7 +194,6 @@ def trigger_poll():
 @app.route("/api/extract-keys", methods=["POST"])
 def trigger_extract():
     """Trigger macOS VM to extract AirTag keys."""
-    import subprocess as sp
     try:
         result = sp.run(
             ["systemctl", "start", "airtag-extract-keys"],
@@ -198,9 +201,155 @@ def trigger_extract():
         )
         if result.returncode != 0:
             return jsonify({"status": "error", "message": result.stderr.strip()}), 500
-        return jsonify({"status": "started", "message": "Key extraction VM started. This takes a few minutes."})
+        return jsonify({"status": "started", "message": "Key extraction started. This takes a few minutes."})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# --- VM setup management (noVNC) ---
+
+def _systemctl(action, service):
+    return sp.run(["systemctl", action, service], capture_output=True, text=True, timeout=10)
+
+
+@app.route("/api/vm/status")
+def vm_status():
+    """Check VM setup state."""
+    if not VM_ENABLED:
+        return jsonify({"enabled": False})
+
+    vm_provisioned = (VM_DIR / "mac_hdd_ng.img").exists()
+    vm_password = (DATA_DIR / "vm-password").exists()
+    # Check if setup VM is running (QEMU with VNC)
+    pid_file = Path("/tmp/airtag-vm-setup.pid")
+    vm_running = False
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)  # Check if process exists
+            vm_running = True
+        except (ValueError, ProcessLookupError):
+            pid_file.unlink(missing_ok=True)
+
+    return jsonify({
+        "enabled": True,
+        "provisioned": vm_provisioned,
+        "setup_complete": vm_password,
+        "vm_running": vm_running,
+        "vnc_ws_port": VNC_WS_PORT,
+    })
+
+
+@app.route("/api/vm/start-setup", methods=["POST"])
+def vm_start_setup():
+    """Start macOS VM with VNC for initial setup (install macOS, sign into Apple ID)."""
+    if not VM_ENABLED:
+        return jsonify({"error": "VM not enabled"}), 400
+
+    if not (VM_DIR / "mac_hdd_ng.img").exists():
+        return jsonify({"error": "VM not provisioned yet. Waiting for auto-provision."}), 400
+
+    pid_file = Path("/tmp/airtag-vm-setup.pid")
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)
+            return jsonify({"status": "already_running", "vnc_ws_port": VNC_WS_PORT})
+        except (ValueError, ProcessLookupError):
+            pid_file.unlink(missing_ok=True)
+
+    # Determine if this is first install (needs installer media) or subsequent boot
+    has_base_system = (VM_DIR / "BaseSystem.img").exists()
+
+    qemu_args = [
+        "qemu-system-x86_64",
+        "-enable-kvm", "-m", "6144",
+        "-cpu", "Penryn,kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check",
+        "-machine", "q35",
+        "-device", "qemu-xhci,id=xhci",
+        "-device", "usb-kbd,bus=xhci.0", "-device", "usb-tablet,bus=xhci.0",
+        "-smp", "4,cores=2",
+        "-global", "ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off",
+        "-device", "isa-applesmc,osk=ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc",
+        "-drive", f"if=pflash,format=raw,readonly=on,file={VM_DIR}/OVMF_CODE.fd",
+        "-drive", f"if=pflash,format=raw,file={VM_DIR}/OVMF_VARS-1920x1080.fd",
+        "-smbios", "type=2",
+        "-device", "ich9-ahci,id=sata",
+        "-drive", f"id=OpenCoreBoot,if=none,snapshot=on,format=qcow2,file={VM_DIR}/OpenCore/OpenCore.qcow2",
+        "-device", "ide-hd,bus=sata.2,drive=OpenCoreBoot",
+        "-drive", f"id=MacHDD,if=none,file={VM_DIR}/mac_hdd_ng.img,format=qcow2",
+        "-device", "ide-hd,bus=sata.4,drive=MacHDD",
+        "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
+        "-device", "vmxnet3,netdev=net0,id=net0,mac=52:54:00:c9:18:27",
+        "-device", "vmware-svga",
+        "-vnc", ":1",
+        "-daemonize",
+        "-pidfile", "/tmp/airtag-vm-setup.pid",
+    ]
+
+    # Add installer media if this is first install
+    if has_base_system:
+        qemu_args.extend([
+            "-drive", f"id=InstallMedia,if=none,file={VM_DIR}/BaseSystem.img,format=raw",
+            "-device", "ide-hd,bus=sata.3,drive=InstallMedia",
+        ])
+
+    try:
+        result = sp.run(qemu_args, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return jsonify({"error": f"Failed to start VM: {result.stderr}"}), 500
+
+        # Start noVNC websocket proxy
+        _systemctl("start", "airtag-novnc")
+
+        return jsonify({"status": "started", "vnc_ws_port": VNC_WS_PORT})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/vm/stop", methods=["POST"])
+def vm_stop():
+    """Stop the setup VM."""
+    pid_file = Path("/tmp/airtag-vm-setup.pid")
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 15)  # SIGTERM
+        except (ValueError, ProcessLookupError):
+            pass
+        pid_file.unlink(missing_ok=True)
+
+    _systemctl("stop", "airtag-novnc")
+    return jsonify({"status": "stopped"})
+
+
+@app.route("/api/vm/complete-setup", methods=["POST"])
+def vm_complete_setup():
+    """Mark VM setup as complete. Saves VM password and stops the VM."""
+    data = request.get_json()
+    password = data.get("password")
+    if not password:
+        return jsonify({"error": "VM user password required"}), 400
+
+    # Save password
+    pw_path = DATA_DIR / "vm-password"
+    pw_path.write_text(password)
+
+    # Stop the setup VM
+    vm_stop()
+
+    # Remove installer media (no longer needed)
+    base_img = VM_DIR / "BaseSystem.img"
+    if base_img.exists():
+        base_img.unlink()
+    base_dmg = VM_DIR / "BaseSystem.dmg"
+    if base_dmg.exists():
+        base_dmg.unlink()
+
+    # Trigger first key extraction
+    threading.Thread(target=lambda: _systemctl("start", "airtag-extract-keys"), daemon=True).start()
+
+    return jsonify({"status": "complete"})
 
 
 @app.route("/api/account/status")
