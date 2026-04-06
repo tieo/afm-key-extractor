@@ -302,6 +302,70 @@ def account_2fa_request():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/keys/upload", methods=["POST"])
+def upload_keys():
+    """Upload AirTag key files (JSON format from FindMy.py or plist_to_findmy.py)."""
+    if "file" in request.files:
+        f = request.files["file"]
+        if not f.filename.endswith(".json"):
+            return jsonify({"error": "Only .json files accepted"}), 400
+        try:
+            data = json.loads(f.read())
+            # Validate it's a valid key file
+            FindMyAccessory.from_json(data)
+            name = data.get("name", f.filename.rsplit(".", 1)[0])
+            safe_name = name.replace(" ", "_").replace("/", "_")
+            out_path = KEYS_DIR / f"{safe_name}.json"
+            with open(out_path, "w") as out:
+                json.dump(data, out, indent=2)
+            return jsonify({"status": "ok", "name": safe_name})
+        except Exception as e:
+            return jsonify({"error": f"Invalid key file: {e}"}), 400
+    elif request.is_json:
+        data = request.get_json()
+        try:
+            FindMyAccessory.from_json(data)
+            name = data.get("name", data.get("identifier", "unknown"))
+            safe_name = name.replace(" ", "_").replace("/", "_")
+            out_path = KEYS_DIR / f"{safe_name}.json"
+            with open(out_path, "w") as out:
+                json.dump(data, out, indent=2)
+            return jsonify({"status": "ok", "name": safe_name})
+        except Exception as e:
+            return jsonify({"error": f"Invalid key data: {e}"}), 400
+    return jsonify({"error": "Send a JSON file or JSON body"}), 400
+
+
+@app.route("/api/keys", methods=["GET"])
+def list_keys():
+    """List all loaded AirTag key files."""
+    keys = []
+    if KEYS_DIR.exists():
+        for f in KEYS_DIR.glob("*.json"):
+            try:
+                with open(f) as fh:
+                    data = json.load(fh)
+                keys.append({
+                    "file": f.name,
+                    "name": data.get("name", f.stem),
+                    "model": data.get("model", "unknown"),
+                    "identifier": data.get("identifier", ""),
+                })
+            except Exception:
+                keys.append({"file": f.name, "name": f.stem, "error": True})
+    return jsonify(keys)
+
+
+@app.route("/api/keys/<name>", methods=["DELETE"])
+def delete_key(name):
+    """Delete an AirTag key file."""
+    path = KEYS_DIR / f"{name}.json"
+    if not path.exists():
+        return jsonify({"error": "Key not found"}), 404
+    path.unlink()
+    return jsonify({"status": "deleted"})
+
+
 def main():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     KEYS_DIR.mkdir(parents=True, exist_ok=True)

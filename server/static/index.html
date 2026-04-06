@@ -32,6 +32,34 @@
     .btn:active { background: #3a56d4; }
     .btn.sync { background: #4cc9f0; color: #1a1a2e; }
     .btn.danger { background: #e74c3c; }
+    .btn.small { padding: 4px 10px; font-size: 0.8em; }
+    .btn.ghost { background: transparent; border: 1px solid #4361ee; }
+    .settings-panel {
+      position: fixed; inset: 0; background: #1a1a2e; z-index: 9998;
+      overflow-y: auto; padding: 16px;
+    }
+    .settings-panel.hidden { display: none; }
+    .settings-panel h2 { margin-bottom: 16px; }
+    .settings-section {
+      background: #16213e; border-radius: 8px; padding: 16px; margin-bottom: 16px;
+    }
+    .settings-section h3 { margin-bottom: 12px; font-size: 1em; }
+    .key-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 8px 0; border-bottom: 1px solid #0f3460;
+    }
+    .key-item:last-child { border-bottom: none; }
+    .key-name { font-weight: 500; }
+    .key-meta { font-size: 0.8em; color: #888; }
+    .drop-zone {
+      border: 2px dashed #4361ee; border-radius: 8px; padding: 24px;
+      text-align: center; color: #888; cursor: pointer; margin-top: 12px;
+    }
+    .drop-zone.dragover { border-color: #4cc9f0; color: #4cc9f0; }
+    .account-status { display: flex; align-items: center; gap: 8px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .dot.green { background: #2ecc71; }
+    .dot.red { background: #e74c3c; }
     .status { font-size: 0.75em; color: #888; padding: 4px 12px; }
 
     /* Setup overlay */
@@ -70,11 +98,41 @@
     <div class="setup-box" id="setup-content"></div>
   </div>
 
+  <!-- Settings panel -->
+  <div class="settings-panel hidden" id="settings-panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <h2>Settings</h2>
+      <button class="btn small" onclick="toggleSettings()">Close</button>
+    </div>
+
+    <div class="settings-section">
+      <h3>Apple Account</h3>
+      <div class="account-status" id="account-info">Checking...</div>
+      <button class="btn small" style="margin-top:8px" onclick="showLoginForm()">Re-login</button>
+    </div>
+
+    <div class="settings-section">
+      <h3>AirTag Keys</h3>
+      <div id="keys-list">Loading...</div>
+      <div class="drop-zone" id="drop-zone" onclick="document.getElementById('key-file-input').click()">
+        Drop .json key files here or click to upload
+      </div>
+      <input type="file" id="key-file-input" accept=".json" multiple style="display:none">
+    </div>
+
+    <div class="settings-section">
+      <h3>VM Key Extraction</h3>
+      <p style="color:#aaa;font-size:0.85em;margin-bottom:8px">Boot the macOS VM and extract keys for any newly paired AirTags.</p>
+      <button class="btn sync" onclick="syncKeys();toggleSettings()">Extract Keys Now</button>
+    </div>
+  </div>
+
   <div class="toolbar">
     <h1>AirTag Tracker</h1>
     <div>
       <button class="btn sync" onclick="syncKeys()">Sync AirTags</button>
       <button class="btn" onclick="pollNow()">Refresh</button>
+      <button class="btn ghost" onclick="toggleSettings()">Settings</button>
     </div>
   </div>
   <div id="map"></div>
@@ -305,6 +363,77 @@
       const data = await res.json();
       document.getElementById('status').textContent = data.message || data.status;
       setTimeout(loadTags, 5000);
+    }
+
+    // --- Settings panel ---
+    function toggleSettings() {
+      const panel = document.getElementById('settings-panel');
+      panel.classList.toggle('hidden');
+      if (!panel.classList.contains('hidden')) {
+        loadAccountInfo();
+        loadKeysList();
+      }
+    }
+
+    async function loadAccountInfo() {
+      const res = await fetch('/api/account/status');
+      const data = await res.json();
+      const el = document.getElementById('account-info');
+      if (data.configured) {
+        el.innerHTML = `<span class="dot green"></span> Connected (${data.airtags} key${data.airtags !== 1 ? 's' : ''} loaded)`;
+      } else {
+        el.innerHTML = `<span class="dot red"></span> Not configured`;
+      }
+    }
+
+    async function loadKeysList() {
+      const res = await fetch('/api/keys');
+      const keys = await res.json();
+      const el = document.getElementById('keys-list');
+      if (!keys.length) {
+        el.innerHTML = '<div style="color:#666;padding:8px 0">No keys loaded. Upload key files or use VM extraction.</div>';
+        return;
+      }
+      el.innerHTML = keys.map(k => `
+        <div class="key-item">
+          <div>
+            <div class="key-name">${k.name}</div>
+            <div class="key-meta">${k.model || ''} &middot; ${k.file}</div>
+          </div>
+          <button class="btn small danger" onclick="deleteKey('${k.file.replace('.json','')}')">Remove</button>
+        </div>
+      `).join('');
+    }
+
+    async function deleteKey(name) {
+      if (!confirm(`Remove key "${name}"?`)) return;
+      await fetch(`/api/keys/${name}`, {method: 'DELETE'});
+      loadKeysList();
+    }
+
+    // File upload
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('key-file-input');
+
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      handleFiles(e.dataTransfer.files);
+    });
+    fileInput.addEventListener('change', () => handleFiles(fileInput.files));
+
+    async function handleFiles(files) {
+      for (const file of files) {
+        const form = new FormData();
+        form.append('file', file);
+        const res = await fetch('/api/keys/upload', {method: 'POST', body: form});
+        const data = await res.json();
+        if (data.error) alert(`Failed to upload ${file.name}: ${data.error}`);
+      }
+      loadKeysList();
+      loadTags();
     }
 
     checkSetup();
