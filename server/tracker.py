@@ -1130,7 +1130,7 @@ def vm_reinstall():
         pw_path.unlink()
 
     emit("info", "vm", "Disk wiped, starting reprovisioning")
-    _systemctl("start", "airtag-provision-vm")
+    _systemctl("restart", "airtag-provision-vm")
     threading.Thread(target=_tail_journal, args=("airtag-provision-vm", "vm"), daemon=True).start()
 
     return jsonify({"status": "reprovisioning"})
