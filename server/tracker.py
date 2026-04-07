@@ -758,10 +758,12 @@ def _auto_install_worker():
 
             if screen == "boot_picker" and not recovery_entered:
                 boot_picker_attempts += 1
-                if boot_picker_attempts <= 3:
+                if boot_picker_attempts <= 10:
                     emit("info", "vm", f"Boot picker detected, selecting macOS Base System (attempt {boot_picker_attempts})...")
                     # Press End to jump to last entry (macOS Base System), then Enter
-                    _send_key("end", 0.5)
+                    # Press right multiple times to reach last entry (macOS Base System)
+                    for _ in range(5):
+                        _send_key("right", 0.3)
                     _send_key("ret", 1)
 
             elif screen == "apple_logo":
