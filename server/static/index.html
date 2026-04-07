@@ -328,26 +328,77 @@
       }
     }
 
+    let vmSetupStep = 0;
+    const vmSteps = [
+      {
+        title: '1. Boot into installer',
+        text: 'At the boot picker, select <b>macOS Base System</b>. Wait for the Recovery screen to load (globe icon may spin for a minute).',
+      },
+      {
+        title: '2. Format the virtual disk',
+        text: 'Select <b>Disk Utility</b> and click Continue. In the sidebar, select the ~80 GB <b>QEMU HARDDISK</b> (not "BaseSystem"). Click <b>Erase</b> at the top. Set Name to <b>Macintosh HD</b> and Format to <b>APFS</b>. Click Erase, then close Disk Utility.',
+      },
+      {
+        title: '3. Install macOS',
+        text: 'Select <b>Reinstall macOS Ventura</b> and click Continue. Pick the disk you just formatted. Installation downloads ~12 GB from Apple and takes 30-60 min. The VM reboots 2-3 times &mdash; each time, pick <b>macOS Installer</b> or <b>Macintosh HD</b> from the boot picker.',
+      },
+      {
+        title: '4. macOS first-time setup',
+        text: 'Go through the setup wizard: pick region, language, keyboard. <b>Skip Apple ID</b> for now (click "Set Up Later"). Create a local user account &mdash; remember the password, you\'ll need it below. Skip everything optional (Siri, analytics, Screen Time).',
+      },
+      {
+        title: '5. Enable SSH',
+        text: 'On the macOS desktop, open <b>System Settings &rarr; General &rarr; Sharing</b>. Turn on <b>Remote Login</b> (SSH). This allows the server to connect to the VM for key extraction.',
+      },
+      {
+        title: '6. Sign into Apple ID & enable Find My',
+        text: 'Open <b>System Settings &rarr; Apple ID</b> and sign in with the same Apple ID your AirTags are paired to. Then go to <b>Apple ID &rarr; iCloud &rarr; Find My Mac</b> and turn it on. This makes the AirTag keys available in the macOS Keychain.',
+      },
+      {
+        title: '7. Done!',
+        text: 'Enter the macOS user password below and click <b>Complete Setup</b>. The VM will shut down and the server will extract your AirTag keys automatically.',
+      },
+    ];
+
+    function renderVmStep() {
+      const step = vmSteps[vmSetupStep];
+      const stepsHtml = vmSteps.map((s, i) => {
+        const cls = i < vmSetupStep ? 'done' : i === vmSetupStep ? 'active' : '';
+        return `<div class="step-dot ${cls}" style="cursor:pointer" onclick="vmSetupStep=${i};renderVmStep()"></div>`;
+      }).join('');
+
+      document.getElementById('vm-instructions').innerHTML = `
+        <div class="steps-progress">${stepsHtml}</div>
+        <div style="margin-bottom:8px">
+          <b style="color:#4cc9f0">${step.title}</b>
+        </div>
+        <p style="color:#aaa;font-size:0.85em;line-height:1.6;margin-bottom:8px">${step.text}</p>
+        <div style="display:flex;gap:6px">
+          ${vmSetupStep > 0 ? `<button class="btn ghost small" onclick="vmSetupStep--;renderVmStep()">&larr; Back</button>` : ''}
+          ${vmSetupStep < vmSteps.length - 1 ? `<button class="btn small" onclick="vmSetupStep++;renderVmStep()">Next &rarr;</button>` : ''}
+        </div>
+      `;
+
+      // Show password input only on the last step
+      document.getElementById('vm-password-row').style.display = vmSetupStep === vmSteps.length - 1 ? 'flex' : 'none';
+    }
+
     function showVncViewer(wsPort) {
       const overlay = document.getElementById('setup-overlay');
       overlay.classList.remove('hidden');
-      // Use setup-content's parent (overlay) for full-screen VNC
       overlay.innerHTML = `
         <div style="width:98%;max-width:900px;padding:8px">
-          <div class="steps-progress">
-            <div class="step-dot done"></div><div class="step-dot active"></div><div class="step-dot"></div>
-          </div>
-          <p style="color:#aaa;font-size:0.85em;margin-bottom:8px">
-            <b>macOS VM</b> — Install macOS, create a user called "user", sign into Apple ID, enable Find My, then enable Remote Login (SSH) in System Settings > Sharing.
-          </p>
+          <div id="vm-instructions"></div>
           <iframe class="vnc-frame" src="//${location.hostname.replace('airtag', 'airtag-vnc')}/vnc.html?autoconnect=true&resize=scale"></iframe>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <input type="password" id="vm-password" placeholder="Enter the macOS user password you just created" style="flex:1;padding:10px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee;font-size:0.95em">
-            <button class="btn sync" onclick="completeVmSetup()" style="white-space:nowrap">Done</button>
+          <div id="vm-password-row" style="display:none;gap:8px;margin-top:8px">
+            <input type="password" id="vm-password" placeholder="macOS user password" style="flex:1;padding:10px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee;font-size:0.95em">
+            <button class="btn sync" onclick="completeVmSetup()" style="white-space:nowrap">Complete Setup</button>
           </div>
           <button class="btn ghost small" style="margin-top:8px" onclick="stopVm()">Cancel & Stop VM</button>
         </div>
       `;
+      vmSetupStep = 0;
+      renderVmStep();
     }
 
     async function completeVmSetup() {
