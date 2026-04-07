@@ -299,6 +299,9 @@
         <h2>Set up macOS VM</h2>
         <p>A one-time setup is needed: install macOS, sign into your Apple ID, and enable Find My. This all happens in your browser via VNC.</p>
         <button class="btn" onclick="startVmSetup()">Start Setup</button>
+        <div style="margin-top:24px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.1)">
+          <button class="btn small danger" onclick="reinstallVm()">Reinstall macOS</button>
+        </div>
       `;
     }
 
@@ -335,7 +338,7 @@
     const vmSteps = [
       {
         title: '1. Boot into installer',
-        text: 'At the boot picker, select <b>macOS Base System</b>. Wait for the Recovery screen to load (globe icon may spin for a minute).',
+        text: 'At the boot picker, select <b>macOS Base System</b>. Wait for the Recovery screen to load (Apple logo may show for a minute).',
       },
       {
         title: '2. Format the virtual disk',
