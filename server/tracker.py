@@ -756,10 +756,12 @@ def _detect_screen(ppm_data):
     log.info(f"Screen detect: menubar={menubar_brightness:.0f} center={center_brightness} icons={icon_area_brightness:.0f}")
 
     if menubar_brightness > 100:
-        # Menu bar visible — could be recovery, terminal, installer, or setup wizard
+        # Menu bar visible — could be recovery, terminal, or setup wizard
+        # Setup wizard has a bright white background (center > 400), recovery is dark (center < 200)
+        if center_brightness > 400:
+            return "setup_wizard"
+
         # Check for Terminal's red traffic light button (close button).
-        # The Terminal window position varies, so scan a region for any red pixel.
-        # Traffic light buttons appear at y≈25-80, x≈30-80 relative to screen.
         has_red_button = False
         for y in range(25, 90, 2):
             for x in range(20, 100, 2):
@@ -855,9 +857,14 @@ def _auto_install_worker():
         # === STEP 1: Wait for boot picker ===
         _set_phase("boot_picker", "VM booted, waiting for boot picker...")
         state, _ = _wait_for_screen(
-            {"boot_picker", "recovery"}, timeout=180, poll_interval=5,
+            {"boot_picker", "recovery", "setup_wizard"}, timeout=180, poll_interval=5,
             msg="Waiting for boot picker"
         )
+
+        # macOS already installed — setup wizard is showing
+        if state == "setup_wizard":
+            _set_phase("done", "macOS is installed! Setup wizard is ready in VNC.")
+            return
 
         if state == "boot_picker":
             emit("info", "vm", "Boot picker detected, selecting macOS Base System...")
@@ -867,9 +874,12 @@ def _auto_install_worker():
 
             # Verify we left boot picker
             state, _ = _wait_for_screen(
-                {"recovery", "apple_logo"}, timeout=120, poll_interval=5,
+                {"recovery", "apple_logo", "setup_wizard"}, timeout=120, poll_interval=5,
                 msg="Waiting for boot to proceed"
             )
+            if state == "setup_wizard":
+                _set_phase("done", "macOS is installed! Setup wizard is ready in VNC.")
+                return
         elif state != "recovery":
             _set_phase("error", f"Expected boot picker or recovery, got: {state}")
             return
@@ -901,12 +911,16 @@ def _auto_install_worker():
                         if screen == "boot_picker":
                             emit("info", "vm", "VM rebooted to boot picker, selecting first entry...")
                             _send_key("ret", 1)
+                        elif screen == "setup_wizard":
+                            _set_phase("done", "macOS is installed! Setup wizard is ready in VNC.")
+                            return
                         elif screen == "apple_logo":
                             if poll % 6 == 0:
                                 emit("info", "vm", f"macOS installing... ({elapsed_min} min)")
                         elif screen == "recovery":
-                            _set_phase("done", "macOS appears to be installed. Setup wizard should be visible in VNC.")
-                            return
+                            if elapsed_min > 45:
+                                _set_phase("done", "macOS may be installed. Check VNC for current state.")
+                                return
                         elif screen == "unknown" and poll % 12 == 0:
                             emit("info", "vm", f"VM rebooting... ({elapsed_min} min)")
                         if time.time() - install_start > 4200:  # 70 min
@@ -1037,15 +1051,18 @@ def _auto_install_worker():
                 if poll % 6 == 0:
                     emit("info", "vm", f"macOS installing... ({elapsed_min} min)")
 
+            elif screen == "setup_wizard":
+                _set_phase("done", "macOS is installed! Setup wizard is ready in VNC.")
+                return
+
             elif screen == "unknown":
                 # Black screen during reboot — normal
                 if poll % 12 == 0:
                     emit("info", "vm", f"VM rebooting... ({elapsed_min} min)")
 
             elif screen == "recovery" and elapsed_min >= 45:
-                # Recovery/menu-bar screen after a long install = likely setup wizard
-                # (setup wizard has a menu bar but no Terminal traffic lights)
-                _set_phase("done", "macOS appears to be installed. Setup wizard should be visible in VNC.")
+                # Recovery screen after a very long install = something may be wrong
+                _set_phase("done", "macOS may be installed. Check VNC for current state.")
                 return
 
             # Timeout after 60 min
