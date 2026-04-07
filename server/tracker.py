@@ -485,6 +485,7 @@ def vm_start_setup():
         "-device", "vmware-svga",
         "-vnc", "127.0.0.1:1",
         "-monitor", "unix:/tmp/airtag-vm-monitor.sock,server,nowait",
+        "-qmp", "unix:/tmp/airtag-vm-qmp.sock,server,nowait",
         "-daemonize",
         "-pidfile", "/tmp/airtag-vm-setup.pid",
     ]
@@ -530,6 +531,7 @@ def vm_stop():
         pid_file.unlink(missing_ok=True)
 
     _monitor_disconnect()
+    _qmp_disconnect()
     _systemctl("stop", "airtag-novnc")
     return jsonify({"status": "stopped"})
 
@@ -616,16 +618,75 @@ def _type_text(text):
         else:
             log.warning(f"Unmapped character: {ch!r}")
 
+QMP_SOCK = "/tmp/airtag-vm-qmp.sock"
+_qmp_lock = threading.Lock()
+_qmp_sock = None
+_qmp_initialized = False
+
+def _qmp_connect():
+    """Connect to QEMU QMP socket and negotiate capabilities."""
+    global _qmp_sock, _qmp_initialized
+    if _qmp_sock is not None and _qmp_initialized:
+        return _qmp_sock
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(5)
+        s.connect(QMP_SOCK)
+        greeting = s.recv(4096)  # QMP greeting
+        # Send capabilities negotiation
+        s.sendall(b'{"execute": "qmp_capabilities"}\n')
+        s.recv(4096)  # response
+        _qmp_sock = s
+        _qmp_initialized = True
+        return s
+    except Exception as e:
+        log.error(f"QMP connect failed: {e}")
+        _qmp_sock = None
+        _qmp_initialized = False
+        return None
+
+def _qmp_disconnect():
+    global _qmp_sock, _qmp_initialized
+    if _qmp_sock:
+        try:
+            _qmp_sock.close()
+        except Exception:
+            pass
+    _qmp_sock = None
+    _qmp_initialized = False
+
+def _qmp_cmd(cmd_dict):
+    """Send a QMP command and return the response."""
+    with _qmp_lock:
+        s = _qmp_connect()
+        if not s:
+            return None
+        try:
+            s.sendall((json.dumps(cmd_dict) + "\n").encode())
+            resp = s.recv(4096).decode(errors="replace")
+            return json.loads(resp)
+        except Exception as e:
+            log.error(f"QMP command failed: {e}")
+            _qmp_disconnect()
+            return None
+
 def _mouse_click(px, py, delay=0.5):
-    """Click at pixel coordinates (1920x1080 screen) using QEMU absolute mouse (usb-tablet).
-    QEMU mouse_move uses 0-32767 range for absolute positioning."""
+    """Click at pixel coordinates (1920x1080 screen) via QMP absolute mouse input."""
     qx = int((px / 1920) * 32767)
     qy = int((py / 1080) * 32767)
-    _monitor_cmd(f"mouse_move {qx} {qy}")
+    # Move to position and click
+    _qmp_cmd({"execute": "input-send-event", "arguments": {"events": [
+        {"type": "abs", "data": {"axis": "x", "value": qx}},
+        {"type": "abs", "data": {"axis": "y", "value": qy}},
+    ]}})
     time.sleep(0.1)
-    _monitor_cmd("mouse_button 1")  # left button down
+    _qmp_cmd({"execute": "input-send-event", "arguments": {"events": [
+        {"type": "btn", "data": {"down": True, "button": "left"}},
+    ]}})
     time.sleep(0.05)
-    _monitor_cmd("mouse_button 0")  # left button up
+    _qmp_cmd({"execute": "input-send-event", "arguments": {"events": [
+        {"type": "btn", "data": {"down": False, "button": "left"}},
+    ]}})
     time.sleep(delay)
 
 
