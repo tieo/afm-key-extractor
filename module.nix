@@ -54,6 +54,13 @@ in {
 
   config = lib.mkIf cfg.enable (lib.mkMerge [
     {
+      users.users.airtag-tracker = {
+        isSystemUser = true;
+        group = "airtag-tracker";
+        home = cfg.dataDir;
+      };
+      users.groups.airtag-tracker = {};
+
       systemd.services.airtag-tracker = {
         description = "AirTag location tracker";
         after = [ "network-online.target" ];
@@ -71,7 +78,8 @@ in {
 
         serviceConfig = {
           ExecStart = "${package}/bin/airtag-tracker";
-          DynamicUser = true;
+          User = "airtag-tracker";
+          Group = "airtag-tracker";
           StateDirectory = "airtag-tracker";
           Restart = "on-failure";
           RestartSec = 10;
@@ -97,6 +105,8 @@ in {
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
+          User = "airtag-tracker";
+          Group = "airtag-tracker";
           ExecStart = "${provisionPkg}/bin/airtag-provision-vm";
           Environment = [ "AIRTAG_VM_DIR=${cfg.vm.vmDir}" ];
         };
@@ -122,6 +132,8 @@ in {
         ];
         serviceConfig = {
           Type = "oneshot";
+          User = "airtag-tracker";
+          Group = "airtag-tracker";
           ExecStart = "${extractorPkg}/bin/airtag-extract-keys";
           Environment = [
             "AIRTAG_VM_DIR=${cfg.vm.vmDir}"

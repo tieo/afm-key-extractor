@@ -39,6 +39,8 @@ let
     pythonImportsCheck = [ "findmy" ];
   };
 
+  pythonEnv = python3.withPackages (ps: [ ps.flask findmy ]);
+
 in python3Packages.buildPythonApplication {
   pname = "airtag-tracker";
   version = "0.1.0";
@@ -57,7 +59,7 @@ in python3Packages.buildPythonApplication {
     cp -r static/* $out/lib/airtag-tracker/static/
     cat > $out/bin/airtag-tracker <<WRAPPER
     #!/bin/sh
-    exec ${python3}/bin/python3 $out/lib/airtag-tracker/tracker.py "\$@"
+    exec ${pythonEnv}/bin/python3 $out/lib/airtag-tracker/tracker.py "\$@"
     WRAPPER
     chmod +x $out/bin/airtag-tracker
   '';

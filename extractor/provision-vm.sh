@@ -22,14 +22,12 @@ cd "$VM_DIR"
 # Clone OSX-KVM if not present
 if [ ! -f "$VM_DIR/OpenCore/OpenCore.qcow2" ]; then
   log "Cloning OSX-KVM..."
-  if [ -d "$VM_DIR/.git" ]; then
-    git pull
-  else
-    git clone --depth 1 https://github.com/kholia/OSX-KVM.git "$VM_DIR/tmp-osx-kvm"
-    # Move contents up (OSX-KVM clones into a subdir)
-    mv "$VM_DIR/tmp-osx-kvm"/* "$VM_DIR/tmp-osx-kvm"/.* "$VM_DIR/" 2>/dev/null || true
-    rmdir "$VM_DIR/tmp-osx-kvm" 2>/dev/null || true
-  fi
+  TMP_CLONE=$(mktemp -d)
+  git clone --depth 1 https://github.com/kholia/OSX-KVM.git "$TMP_CLONE"
+  # Move contents into VM_DIR
+  cp -a "$TMP_CLONE"/. "$VM_DIR/"
+  rm -rf "$TMP_CLONE"
+  log "OSX-KVM cloned successfully"
 fi
 
 # Download macOS installer
