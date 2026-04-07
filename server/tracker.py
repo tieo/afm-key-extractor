@@ -364,13 +364,14 @@ def trigger_extract():
     emit("info", "vm", "Key extraction triggered")
     try:
         result = sp.run(
-            ["systemctl", "start", "airtag-extract-keys"],
+            ["systemctl", "start", "--no-block", "airtag-extract-keys"],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode != 0:
             emit("error", "vm", f"Failed to start extraction: {result.stderr.strip()}")
             return jsonify({"status": "error", "message": result.stderr.strip()}), 500
         emit("info", "vm", "Key extraction service started, VM booting")
+        threading.Thread(target=_tail_journal, args=("airtag-extract-keys", "vm"), daemon=True).start()
         return jsonify({"status": "started", "message": "Key extraction started. This takes a few minutes."})
     except Exception as e:
         emit("error", "vm", f"Extract trigger error: {e}")
@@ -381,6 +382,34 @@ def trigger_extract():
 
 def _systemctl(action, service):
     return sp.run(["systemctl", action, service], capture_output=True, text=True, timeout=10)
+
+
+def _tail_journal(unit, category):
+    """Background thread: tail journald for a systemd unit and emit events."""
+    try:
+        proc = sp.Popen(
+            ["journalctl", "-u", unit, "-f", "-n", "0", "--no-hostname", "-o", "cat"],
+            stdout=sp.PIPE, stderr=sp.PIPE, text=True,
+        )
+        emit("info", category, f"Streaming logs for {unit}")
+        for line in proc.stdout:
+            line = line.strip()
+            if line:
+                emit("info", category, line)
+            # Stop if the service is no longer active
+            check = sp.run(["systemctl", "is-active", unit], capture_output=True, text=True)
+            if check.stdout.strip() not in ("active", "activating"):
+                break
+        proc.terminate()
+        rc = sp.run(["systemctl", "show", unit, "-p", "ExecMainStatus", "--value"],
+                     capture_output=True, text=True)
+        exit_code = rc.stdout.strip()
+        if exit_code == "0":
+            emit("info", category, f"{unit} completed successfully")
+        else:
+            emit("error", category, f"{unit} exited with code {exit_code}")
+    except Exception as e:
+        emit("error", category, f"Journal tail error: {e}")
 
 
 @app.route("/api/vm/status")
@@ -523,7 +552,9 @@ def vm_complete_setup():
         emit("info", "vm", "Removed installer media (BaseSystem.dmg)")
 
     emit("info", "vm", "Triggering first key extraction")
-    threading.Thread(target=lambda: _systemctl("start", "airtag-extract-keys"), daemon=True).start()
+    sp.run(["systemctl", "start", "--no-block", "airtag-extract-keys"],
+           capture_output=True, text=True, timeout=5)
+    threading.Thread(target=_tail_journal, args=("airtag-extract-keys", "vm"), daemon=True).start()
 
     return jsonify({"status": "complete"})
 
@@ -712,6 +743,14 @@ def main():
     emit("info", "system", f"Loaded {n_keys} AirTag key(s)")
     adaptive = settings.get("adaptive", True)
     emit("info", "system", f"Polling: idle={settings['idle_interval']}s, active={settings['active_interval']}s, adaptive={'on' if adaptive else 'off'}")
+
+    # Stream VM provisioning logs if it's running
+    if VM_ENABLED:
+        check = sp.run(["systemctl", "is-active", "airtag-provision-vm"],
+                        capture_output=True, text=True)
+        if check.stdout.strip() in ("active", "activating"):
+            emit("info", "vm", "VM provisioning is running, streaming logs")
+            threading.Thread(target=_tail_journal, args=("airtag-provision-vm", "vm"), daemon=True).start()
 
     poller = threading.Thread(target=poll_loop, daemon=True)
     poller.start()
