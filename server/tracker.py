@@ -773,11 +773,13 @@ def _detect_screen(ppm_data):
             return "terminal"
         return "recovery"
 
+    # Boot picker has bright icons (>100) AND may have bright center from OpenCore UI.
+    # Apple logo has bright center but low icon area (<100).
+    if icon_area_brightness > 100:
+        return "boot_picker"
+
     if center_brightness > 500:  # White apple logo (with or without progress bar)
         return "apple_logo"
-
-    if icon_area_brightness > 50:
-        return "boot_picker"
 
     return "unknown"
 
