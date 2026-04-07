@@ -49,11 +49,6 @@ in {
         description = "WebSocket port for noVNC proxy.";
       };
 
-      extractInterval = lib.mkOption {
-        type = lib.types.str;
-        default = "*-*-* 00/6:00:00";
-        description = "systemd calendar spec for periodic key extraction (default: every 6h).";
-      };
     };
   };
 
@@ -136,15 +131,6 @@ in {
         };
       };
 
-      systemd.timers.airtag-extract-keys = {
-        description = "Periodic AirTag key extraction";
-        wantedBy = [ "timers.target" ];
-        timerConfig = {
-          OnCalendar = cfg.vm.extractInterval;
-          RandomizedDelaySec = "30min";
-          Persistent = true;
-        };
-      };
     })
   ]);
 }
