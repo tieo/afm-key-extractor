@@ -76,6 +76,8 @@ in {
           AIRTAG_VNC_WS_PORT = toString cfg.vm.websocketPort;
         };
 
+        path = [ pkgs.qemu ];
+
         serviceConfig = {
           ExecStart = "${package}/bin/airtag-tracker";
           User = "airtag-tracker";

@@ -40,7 +40,7 @@ start_vm() {
     -smp 4,cores=2 \
     -global ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off \
     -device isa-applesmc,osk="ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc" \
-    -drive if=pflash,format=raw,readonly=on,file="$VM_DIR/OVMF_CODE.fd" \
+    -drive if=pflash,format=raw,readonly=on,file="$VM_DIR/OVMF_CODE_4M.fd" \
     -drive if=pflash,format=raw,file="$VM_DIR/OVMF_VARS-1920x1080.fd" \
     -smbios type=2 \
     -device ich9-ahci,id=sata \
