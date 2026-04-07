@@ -37,6 +37,26 @@ app = Flask(__name__, static_folder=str(STATIC_DIR))
 _pending_account = None
 _pending_2fa_methods = None
 
+# --- Event log ---
+_event_log = []
+_event_log_lock = threading.Lock()
+MAX_EVENTS = 500
+
+
+def emit(level, category, message):
+    """Add an event to the in-app log and also log to stdout."""
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "level": level,
+        "cat": category,
+        "msg": message,
+    }
+    with _event_log_lock:
+        _event_log.append(entry)
+        if len(_event_log) > MAX_EVENTS:
+            _event_log[:] = _event_log[-MAX_EVENTS:]
+    getattr(log, level, log.info)(f"[{category}] {message}")
+
 
 SETTINGS_PATH = DATA_DIR / "settings.json"
 
@@ -115,9 +135,9 @@ def load_airtags():
         try:
             tag = FindMyAccessory.from_json(str(f))
             tags.append((f.stem, tag))
-            log.info(f"Loaded AirTag: {f.stem}")
+            emit("info", "keys", f"Loaded AirTag: {f.stem}")
         except Exception as e:
-            log.error(f"Failed to load {f}: {e}")
+            emit("error", "keys", f"Failed to load {f.name}: {e}")
     return tags
 
 
@@ -127,10 +147,10 @@ def get_account():
     if ACCOUNT_PATH.exists():
         try:
             acc = AppleAccount.from_json(str(ACCOUNT_PATH), anisette=ani)
-            log.info("Restored Apple account session")
+            emit("info", "account", "Restored Apple account session")
             return acc
         except Exception as e:
-            log.warning(f"Failed to restore session: {e}")
+            emit("warning", "account", f"Failed to restore session: {e}")
     return None
 
 
@@ -151,52 +171,62 @@ def save_locations(airtag_id, airtag_name, reports):
 
 def poll_locations():
     """Fetch latest locations for all AirTags. Returns True if any moved."""
+    emit("info", "poll", "Starting location poll")
     acc = get_account()
     if not acc:
-        log.warning("No Apple account configured, skipping poll")
+        emit("warning", "poll", "No Apple account configured, skipping poll")
         return False
 
     tags = load_airtags()
     if not tags:
-        log.info("No AirTags configured, skipping poll")
+        emit("info", "poll", "No AirTags configured, skipping poll")
         return False
 
     settings = load_settings()
     any_moved = False
+    total_reports = 0
 
     try:
         accessories = [tag for _, tag in tags]
+        emit("info", "poll", f"Querying Apple Find My for {len(accessories)} tag(s)")
         history = acc.fetch_location_history(accessories)
 
         for (tag_id, tag), reports in zip(tags, [history.get(t, []) for t in accessories]):
+            name = getattr(tag, "name", tag_id)
             if reports:
-                save_locations(tag_id, getattr(tag, "name", tag_id), reports)
-                log.info(f"Saved {len(reports)} reports for {tag_id}")
+                save_locations(tag_id, name, reports)
+                total_reports += len(reports)
 
-                # Check movement
                 latest = max(reports, key=lambda r: r.timestamp)
                 last_pos = _poll_state["last_positions"].get(tag_id)
                 if last_pos:
                     dist = haversine(last_pos[0], last_pos[1], latest.latitude, latest.longitude)
                     if dist > settings["movement_threshold"]:
                         any_moved = True
-                        log.info(f"{tag_id} moved {dist:.0f}m")
+                        emit("info", "movement", f"{name} moved {dist:.0f}m (threshold: {settings['movement_threshold']}m)")
+                    else:
+                        emit("info", "poll", f"{name}: {len(reports)} report(s), stationary ({dist:.0f}m)")
+                else:
+                    emit("info", "poll", f"{name}: {len(reports)} report(s), first position recorded")
                 _poll_state["last_positions"][tag_id] = (latest.latitude, latest.longitude)
             else:
-                log.info(f"No new reports for {tag_id}")
+                emit("info", "poll", f"{name}: no new reports")
 
         acc.to_json(str(ACCOUNT_PATH))
         for (tag_id, tag) in tags:
             tag.to_json(str(KEYS_DIR / f"{tag_id}.json"))
 
+        emit("info", "poll", f"Poll complete: {total_reports} report(s) from {len(tags)} tag(s)")
+
     except Exception as e:
-        log.error(f"Poll failed: {e}", exc_info=True)
+        emit("error", "poll", f"Poll failed: {e}")
 
     return any_moved
 
 
 def poll_loop():
     """Background thread with adaptive polling interval."""
+    emit("info", "system", "Poll loop started")
     while True:
         settings = load_settings()
         try:
@@ -204,13 +234,20 @@ def poll_loop():
             _poll_state["last_poll"] = datetime.now(timezone.utc).isoformat()
 
             with _settings_lock:
+                prev_moving = _poll_state["moving"]
                 if settings.get("adaptive", True) and moved:
                     _poll_state["moving"] = True
                     _poll_state["idle_count"] = 0
                     _poll_state["current_interval"] = settings["active_interval"]
+                    if not prev_moving:
+                        emit("info", "adaptive", f"Switching to active polling (every {settings['active_interval']}s)")
                 elif settings.get("adaptive", True):
                     _poll_state["idle_count"] += 1
-                    if _poll_state["idle_count"] >= settings["cooldown_polls"]:
+                    if _poll_state["idle_count"] >= settings["cooldown_polls"] and prev_moving:
+                        _poll_state["moving"] = False
+                        _poll_state["current_interval"] = settings["idle_interval"]
+                        emit("info", "adaptive", f"No movement for {settings['cooldown_polls']} polls, returning to idle (every {settings['idle_interval']}s)")
+                    elif _poll_state["idle_count"] >= settings["cooldown_polls"]:
                         _poll_state["moving"] = False
                         _poll_state["current_interval"] = settings["idle_interval"]
                 else:
@@ -218,10 +255,9 @@ def poll_loop():
                     _poll_state["current_interval"] = settings["idle_interval"]
 
         except Exception as e:
-            log.error(f"Poll loop error: {e}", exc_info=True)
+            emit("error", "poll", f"Poll loop error: {e}")
 
         interval = _poll_state["current_interval"]
-        log.info(f"Next poll in {interval}s ({'active' if _poll_state['moving'] else 'idle'})")
         time.sleep(interval)
 
 
@@ -230,6 +266,21 @@ def poll_loop():
 @app.route("/")
 def index():
     return send_from_directory(str(STATIC_DIR), "index.html")
+
+
+@app.route("/api/log")
+def get_log():
+    """Get recent event log entries."""
+    since = request.args.get("since")
+    cat = request.args.get("cat")
+    limit = int(request.args.get("limit", "100"))
+    with _event_log_lock:
+        entries = list(_event_log)
+    if since:
+        entries = [e for e in entries if e["ts"] > since]
+    if cat:
+        entries = [e for e in entries if e["cat"] == cat]
+    return jsonify(entries[-limit:])
 
 
 @app.route("/api/settings", methods=["GET"])
@@ -302,6 +353,7 @@ def airtag_history(airtag_id):
 @app.route("/api/poll", methods=["POST"])
 def trigger_poll():
     """Manually trigger a location poll."""
+    emit("info", "poll", "Manual poll triggered")
     threading.Thread(target=poll_locations, daemon=True).start()
     return jsonify({"status": "polling"})
 
@@ -309,15 +361,19 @@ def trigger_poll():
 @app.route("/api/extract-keys", methods=["POST"])
 def trigger_extract():
     """Trigger macOS VM to extract AirTag keys."""
+    emit("info", "vm", "Key extraction triggered")
     try:
         result = sp.run(
             ["systemctl", "start", "airtag-extract-keys"],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode != 0:
+            emit("error", "vm", f"Failed to start extraction: {result.stderr.strip()}")
             return jsonify({"status": "error", "message": result.stderr.strip()}), 500
+        emit("info", "vm", "Key extraction service started, VM booting")
         return jsonify({"status": "started", "message": "Key extraction started. This takes a few minutes."})
     except Exception as e:
+        emit("error", "vm", f"Extract trigger error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -375,6 +431,7 @@ def vm_start_setup():
 
     # Determine if this is first install (needs installer media) or subsequent boot
     has_base_system = (VM_DIR / "BaseSystem.img").exists()
+    emit("info", "vm", f"Starting VM for setup (installer media: {has_base_system})")
 
     qemu_args = [
         "qemu-system-x86_64",
@@ -412,26 +469,29 @@ def vm_start_setup():
     try:
         result = sp.run(qemu_args, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
+            emit("error", "vm", f"QEMU failed to start: {result.stderr}")
             return jsonify({"error": f"Failed to start VM: {result.stderr}"}), 500
 
-        # Start noVNC websocket proxy
         _systemctl("start", "airtag-novnc")
-
+        emit("info", "vm", f"VM started, noVNC proxy active on port {VNC_WS_PORT}")
         return jsonify({"status": "started", "vnc_ws_port": VNC_WS_PORT})
     except Exception as e:
+        emit("error", "vm", f"VM start error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/vm/stop", methods=["POST"])
 def vm_stop():
     """Stop the setup VM."""
+    emit("info", "vm", "Stopping VM")
     pid_file = Path("/tmp/airtag-vm-setup.pid")
     if pid_file.exists():
         try:
             pid = int(pid_file.read_text().strip())
             os.kill(pid, 15)  # SIGTERM
+            emit("info", "vm", f"Sent SIGTERM to QEMU (PID {pid})")
         except (ValueError, ProcessLookupError):
-            pass
+            emit("info", "vm", "VM process already gone")
         pid_file.unlink(missing_ok=True)
 
     _systemctl("stop", "airtag-novnc")
@@ -446,23 +506,23 @@ def vm_complete_setup():
     if not password:
         return jsonify({"error": "VM user password required"}), 400
 
-    # Save password with restricted permissions
+    emit("info", "vm", "VM setup marked complete, saving password")
     pw_path = DATA_DIR / "vm-password"
     pw_path.write_text(password)
     pw_path.chmod(0o600)
 
-    # Stop the setup VM
     vm_stop()
 
-    # Remove installer media (no longer needed)
     base_img = VM_DIR / "BaseSystem.img"
     if base_img.exists():
         base_img.unlink()
+        emit("info", "vm", "Removed installer media (BaseSystem.img)")
     base_dmg = VM_DIR / "BaseSystem.dmg"
     if base_dmg.exists():
         base_dmg.unlink()
+        emit("info", "vm", "Removed installer media (BaseSystem.dmg)")
 
-    # Trigger first key extraction
+    emit("info", "vm", "Triggering first key extraction")
     threading.Thread(target=lambda: _systemctl("start", "airtag-extract-keys"), daemon=True).start()
 
     return jsonify({"status": "complete"})
@@ -488,6 +548,7 @@ def account_login():
         return jsonify({"error": "email and password required"}), 400
 
     try:
+        emit("info", "account", f"Logging in as {email}")
         ani = LocalAnisetteProvider(libs_path=str(ANISETTE_PATH))
         acc = AppleAccount(ani)
         state = acc.login(email, password)
@@ -496,7 +557,6 @@ def account_login():
             _pending_account = acc
             methods = acc.get_2fa_methods()
             _pending_2fa_methods = methods
-            # Auto-request the first method
             if methods:
                 methods[0].request()
             method_list = []
@@ -505,18 +565,22 @@ def account_login():
                     method_list.append({"type": "sms", "phone": m.phone_number, "id": m.phone_number_id})
                 else:
                     method_list.append({"type": "trusted_device"})
+            emit("info", "account", f"2FA required ({len(methods)} method(s) available)")
             return jsonify({"status": "2fa_required", "methods": method_list})
 
         if state == LoginState.LOGGED_IN:
             acc.to_json(str(ACCOUNT_PATH))
             _pending_account = None
             _pending_2fa_methods = None
+            emit("info", "account", "Logged in successfully (no 2FA needed)")
             return jsonify({"status": "logged_in"})
 
+        emit("error", "account", f"Unexpected login state: {state}")
         return jsonify({"error": f"Unexpected login state: {state}"}), 500
     except Exception as e:
         _pending_account = None
         _pending_2fa_methods = None
+        emit("error", "account", f"Login failed: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -542,10 +606,13 @@ def account_2fa():
             _pending_account.to_json(str(ACCOUNT_PATH))
             _pending_account = None
             _pending_2fa_methods = None
+            emit("info", "account", "2FA verified, logged in successfully")
             return jsonify({"status": "logged_in"})
 
+        emit("warning", "account", f"2FA rejected (state: {state})")
         return jsonify({"error": f"2FA failed, state: {state}"}), 401
     except Exception as e:
+        emit("error", "account", f"2FA error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -636,11 +703,19 @@ def main():
     KEYS_DIR.mkdir(parents=True, exist_ok=True)
     init_db()
 
-    # Start background poller
+    settings = load_settings()
+    emit("info", "system", f"Server starting on port {PORT}")
+    emit("info", "system", f"Data dir: {DATA_DIR}")
+    emit("info", "system", f"VM enabled: {VM_ENABLED}")
+    emit("info", "system", f"Account configured: {ACCOUNT_PATH.exists()}")
+    n_keys = len(list(KEYS_DIR.glob("*.json"))) if KEYS_DIR.exists() else 0
+    emit("info", "system", f"Loaded {n_keys} AirTag key(s)")
+    adaptive = settings.get("adaptive", True)
+    emit("info", "system", f"Polling: idle={settings['idle_interval']}s, active={settings['active_interval']}s, adaptive={'on' if adaptive else 'off'}")
+
     poller = threading.Thread(target=poll_loop, daemon=True)
     poller.start()
 
-    log.info(f"Starting tracker on port {PORT}")
     app.run(host="127.0.0.1", port=PORT)
 
 

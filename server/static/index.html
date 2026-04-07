@@ -95,6 +95,25 @@
     .dot.green { background: #2ecc71; }
     .dot.red { background: #e74c3c; }
     .dot.yellow { background: #f1c40f; }
+
+    /* Log panel */
+    .log-panel {
+      position: fixed; inset: 0; background: #1a1a2e; z-index: 9997;
+      overflow-y: auto; padding: 16px; font-family: monospace; font-size: 0.8em;
+    }
+    .log-panel.hidden { display: none; }
+    .log-entry { padding: 3px 0; border-bottom: 1px solid #111; display: flex; gap: 8px; }
+    .log-ts { color: #555; white-space: nowrap; }
+    .log-cat { color: #4361ee; min-width: 60px; }
+    .log-msg { color: #ccc; word-break: break-word; }
+    .log-entry.error .log-msg { color: #e74c3c; }
+    .log-entry.warning .log-msg { color: #f1c40f; }
+    .log-filters { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+    .log-filters .chip {
+      padding: 3px 10px; border-radius: 12px; font-size: 0.85em; cursor: pointer;
+      background: #16213e; border: 1px solid #333;
+    }
+    .log-filters .chip.active { border-color: #4cc9f0; color: #4cc9f0; }
     .steps-progress {
       display: flex; gap: 4px; margin-bottom: 16px;
     }
@@ -109,6 +128,25 @@
   <!-- Setup overlay -->
   <div class="overlay hidden" id="setup-overlay">
     <div class="setup-box" id="setup-content"></div>
+  </div>
+
+  <!-- Log panel -->
+  <div class="log-panel hidden" id="log-panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h2 style="font-size:1.1em">Activity Log</h2>
+      <button class="btn small" onclick="toggleLog()">Close</button>
+    </div>
+    <div class="log-filters">
+      <span class="chip active" data-cat="" onclick="filterLog(this,'')">All</span>
+      <span class="chip" data-cat="poll" onclick="filterLog(this,'poll')">Poll</span>
+      <span class="chip" data-cat="movement" onclick="filterLog(this,'movement')">Movement</span>
+      <span class="chip" data-cat="adaptive" onclick="filterLog(this,'adaptive')">Adaptive</span>
+      <span class="chip" data-cat="vm" onclick="filterLog(this,'vm')">VM</span>
+      <span class="chip" data-cat="account" onclick="filterLog(this,'account')">Account</span>
+      <span class="chip" data-cat="keys" onclick="filterLog(this,'keys')">Keys</span>
+      <span class="chip" data-cat="system" onclick="filterLog(this,'system')">System</span>
+    </div>
+    <div id="log-entries"></div>
   </div>
 
   <!-- Settings panel -->
@@ -175,6 +213,7 @@
     <div>
       <button class="btn sync" onclick="syncKeys()">Sync</button>
       <button class="btn" onclick="pollNow()">Refresh</button>
+      <button class="btn ghost" onclick="toggleLog()" title="Activity Log">Log</button>
       <button class="btn ghost" onclick="toggleSettings()">Settings</button>
     </div>
   </div>
@@ -451,8 +490,13 @@
 
     // ========= MAP / TAGS =========
     async function loadTags() {
-      const res = await fetch('/api/airtags');
-      const tags = await res.json();
+      const [tagsRes, settingsRes] = await Promise.all([
+        fetch('/api/airtags'),
+        fetch('/api/settings'),
+      ]);
+      const tags = await tagsRes.json();
+      const settings = await settingsRes.json();
+      const pollState = settings.state || {};
       const panel = document.getElementById('tags');
       panel.innerHTML = '';
 
@@ -478,8 +522,11 @@
         panel.appendChild(card);
       });
 
-      document.getElementById('status').textContent =
-        `${tags.length} AirTag${tags.length !== 1 ? 's' : ''} tracked`;
+      const mode = pollState.moving ? 'active' : 'idle';
+      const interval = Math.round((pollState.current_interval || settings.idle_interval) / 60);
+      const modeColor = pollState.moving ? '#2ecc71' : '#888';
+      document.getElementById('status').innerHTML =
+        `${tags.length} tag${tags.length !== 1 ? 's' : ''} &middot; <span style="color:${modeColor}">${mode}</span> &middot; every ${interval}min`;
 
       if (tags.length && !activeTag) {
         map.fitBounds(tags.map(t => [t.latitude, t.longitude]), { padding: [30, 30] });
@@ -636,6 +683,42 @@
       loadKeysList();
       loadTags();
     }
+
+    // ========= LOG =========
+    let logFilter = '';
+
+    function toggleLog() {
+      const panel = document.getElementById('log-panel');
+      panel.classList.toggle('hidden');
+      if (!panel.classList.contains('hidden')) refreshLog();
+    }
+
+    function filterLog(el, cat) {
+      logFilter = cat;
+      document.querySelectorAll('.log-filters .chip').forEach(c => c.classList.remove('active'));
+      el.classList.add('active');
+      refreshLog();
+    }
+
+    async function refreshLog() {
+      const url = logFilter ? `/api/log?cat=${logFilter}&limit=200` : '/api/log?limit=200';
+      const res = await fetch(url);
+      const entries = await res.json();
+      const el = document.getElementById('log-entries');
+      el.innerHTML = entries.reverse().map(e => {
+        const ts = new Date(e.ts).toLocaleTimeString();
+        return `<div class="log-entry ${e.level}">
+          <span class="log-ts">${ts}</span>
+          <span class="log-cat">${e.cat}</span>
+          <span class="log-msg">${e.msg}</span>
+        </div>`;
+      }).join('');
+    }
+
+    // Auto-refresh log if open
+    setInterval(() => {
+      if (!document.getElementById('log-panel').classList.contains('hidden')) refreshLog();
+    }, 5000);
 
     // ========= INIT =========
     checkSetup();
