@@ -33,7 +33,7 @@ start_vm() {
   log "Starting macOS VM..."
   qemu-system-x86_64 \
     -enable-kvm -m 8192 \
-    -cpu host,kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on \
+    -cpu Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check \
     -machine q35 \
     -device qemu-xhci,id=xhci \
     -device usb-kbd,bus=xhci.0 -device usb-tablet,bus=xhci.0 \

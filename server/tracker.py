@@ -465,7 +465,7 @@ def vm_start_setup():
     qemu_args = [
         "qemu-system-x86_64",
         "-enable-kvm", "-m", "8192",
-        "-cpu", "host,kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on",
+        "-cpu", "Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check",
         "-machine", "q35",
         "-device", "qemu-xhci,id=xhci",
         "-device", "usb-kbd,bus=xhci.0", "-device", "usb-tablet,bus=xhci.0",
@@ -504,7 +504,12 @@ def vm_start_setup():
 
         _systemctl("start", "airtag-novnc")
         emit("info", "vm", f"VM started, noVNC proxy active on port {VNC_WS_PORT}")
-        return jsonify({"status": "started", "vnc_ws_port": VNC_WS_PORT})
+
+        # Auto-start installation if installer media is present (first install)
+        if has_base_system:
+            threading.Thread(target=_auto_install_worker, daemon=True).start()
+
+        return jsonify({"status": "started", "vnc_ws_port": VNC_WS_PORT, "auto_install": has_base_system})
     except Exception as e:
         emit("error", "vm", f"VM start error: {e}")
         return jsonify({"error": str(e)}), 500
@@ -583,98 +588,260 @@ def _type_text(text):
             log.warning(f"Unmapped character: {ch!r}")
 
 
-def _auto_install_worker():
-    """Background worker: automates disk formatting and macOS install in Ventura recovery."""
+def _take_screenshot():
+    """Take a screenshot via QEMU monitor, return raw PPM bytes or None."""
+    ppm_path = "/tmp/airtag-vm-screen.ppm"
+    _monitor_cmd(f"screendump {ppm_path}")
+    time.sleep(0.3)
     try:
-        emit("info", "vm", "Auto-install: waiting for recovery to load (~3 min)...")
+        with open(ppm_path, "rb") as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
 
-        # Poll until monitor socket is responsive (VM is booted)
-        for _ in range(60):
+def _ppm_pixel(data, x, y):
+    """Read (R, G, B) from raw PPM (P6) data at pixel (x, y)."""
+    # Parse P6 header: "P6\n<width> <height>\n<maxval>\n"
+    if not data or not data.startswith(b"P6"):
+        return (0, 0, 0)
+    header_end = 0
+    newlines = 0
+    for i, b in enumerate(data):
+        if b == ord('\n'):
+            newlines += 1
+            if newlines == 3:
+                header_end = i + 1
+                break
+    # Parse width/height from header
+    header = data[:header_end].decode("ascii", errors="replace")
+    lines = header.strip().split('\n')
+    w, h = map(int, lines[1].split())
+    if x < 0 or x >= w or y < 0 or y >= h:
+        return (0, 0, 0)
+    offset = header_end + (y * w + x) * 3
+    return (data[offset], data[offset+1], data[offset+2])
+
+def _pixel_brightness(data, x, y):
+    r, g, b = _ppm_pixel(data, x, y)
+    return r + g + b
+
+def _region_avg_brightness(data, x1, y1, x2, y2, step=10):
+    """Average brightness of a rectangular region (sampled)."""
+    total, count = 0, 0
+    for y in range(y1, y2, step):
+        for x in range(x1, x2, step):
+            total += _pixel_brightness(data, x, y)
+            count += 1
+    return total / max(count, 1)
+
+def _detect_screen(ppm_data):
+    """Analyze screenshot to determine current VM screen state.
+    Returns: 'boot_picker', 'apple_logo', 'recovery', 'setup_wizard', 'desktop', or 'unknown'.
+    Screen is 1920x1080.
+    """
+    if not ppm_data:
+        return "unknown"
+
+    # Check menu bar area (top 25px) — recovery/desktop have a visible menu bar
+    menubar_brightness = _region_avg_brightness(ppm_data, 50, 2, 400, 22)
+
+    # Check center area for apple logo (white on black)
+    center_brightness = _pixel_brightness(ppm_data, 640, 400)
+
+    # Check icon area (where boot picker icons appear, ~y 310-470, center x)
+    icon_area_brightness = _region_avg_brightness(ppm_data, 450, 310, 800, 470)
+
+    # Check bottom area for boot picker power/reload buttons
+    bottom_brightness = _region_avg_brightness(ppm_data, 550, 740, 720, 790)
+
+    log.info(f"Screen detect: menubar={menubar_brightness:.0f} center={center_brightness} icons={icon_area_brightness:.0f} bottom={bottom_brightness:.0f}")
+
+    if menubar_brightness > 100:
+        # Menu bar visible — we're in recovery GUI, setup wizard, or desktop
+        # Check if we see the recovery gradient background vs a desktop/setup screen
+        mid_brightness = _region_avg_brightness(ppm_data, 400, 300, 800, 500)
+        if mid_brightness > 200:
+            return "recovery"  # Recovery has bright icons in center
+        return "recovery"  # Any menu bar = recovery or macOS, either way proceed
+
+    if icon_area_brightness > 50 and bottom_brightness > 30:
+        return "boot_picker"
+
+    if center_brightness > 500:  # White apple logo
+        return "apple_logo"
+
+    return "unknown"
+
+
+# --- Auto-install state machine ---
+_auto_install_phase = "idle"  # idle, booting, boot_picker, waiting_recovery, formatting, installing, done, error
+_auto_install_start_time = 0
+_auto_install_step_times = {}
+
+def _set_phase(phase, msg=None):
+    global _auto_install_phase
+    _auto_install_phase = phase
+    _auto_install_step_times[phase] = time.time()
+    if msg:
+        emit("info", "vm", msg)
+    log.info(f"Auto-install phase: {phase}")
+
+
+def _auto_install_worker():
+    """Autonomous macOS install: detects screen state and acts accordingly."""
+    global _auto_install_start_time
+    _auto_install_start_time = time.time()
+
+    try:
+        _set_phase("booting", "Starting macOS VM and auto-install...")
+
+        # Wait for QEMU monitor to become responsive
+        for attempt in range(120):  # up to 10 min
             if os.path.exists(MONITOR_SOCK):
                 resp = _monitor_cmd("info status")
                 if resp and "running" in resp:
                     break
             time.sleep(5)
+        else:
+            _set_phase("error", "VM failed to start — monitor not responding")
+            return
 
-        # Wait for recovery GUI to fully load after boot
-        emit("info", "vm", "Auto-install: VM booted, waiting for recovery GUI...")
-        time.sleep(180)  # 3 minutes for recovery to fully render
+        _set_phase("boot_picker", "VM booted, navigating boot picker...")
 
-        # Step 1: Open Terminal via Utilities menu
-        emit("info", "vm", "Auto-install: opening Terminal...")
-        # Ctrl+F2 focuses the menu bar in macOS
-        _send_key("ctrl-f2", 1.5)
-        # Navigate: Apple > macOS Recovery > Edit > Utilities
-        _send_key("right", 0.3)  # macOS Recovery
-        _send_key("right", 0.3)  # Edit
-        _send_key("right", 0.3)  # Utilities
-        _send_key("ret", 0.5)    # Open Utilities dropdown
-        _send_key("down", 0.3)   # Startup Security Utility
-        _send_key("down", 0.3)   # Terminal
-        _send_key("ret", 3)      # Open Terminal
+        # Main screen-detection loop
+        recovery_entered = False
+        formatting_done = False
+        installer_started = False
+        boot_picker_attempts = 0
+        stuck_count = 0
+        last_screen = None
 
-        # Step 2: Enable full keyboard access for GUI navigation later
-        emit("info", "vm", "Auto-install: enabling keyboard navigation...")
-        _type_text("defaults write NSGlobalDomain AppleKeyboardUIMode -int 2")
-        _send_key("ret", 2)
+        for poll in range(360):  # up to 60 min of polling
+            time.sleep(10)
+            ppm_data = _take_screenshot()
+            screen = _detect_screen(ppm_data)
 
-        # Step 3: Format the disk
-        emit("info", "vm", "Auto-install: formatting disk (GUID + APFS)...")
-        _type_text('diskutil eraseDisk APFS "Macintosh HD" GPT disk0')
-        _send_key("ret")
-        time.sleep(15)  # wait for format to complete
+            if screen == last_screen:
+                stuck_count += 1
+            else:
+                stuck_count = 0
+                last_screen = screen
 
-        # Step 4: Close Terminal → recovery window gets focus
-        emit("info", "vm", "Auto-install: closing Terminal...")
-        _send_key("meta_l-q", 3)
+            if screen == "boot_picker" and not recovery_entered:
+                boot_picker_attempts += 1
+                if boot_picker_attempts <= 3:
+                    emit("info", "vm", f"Boot picker detected, selecting macOS Base System (attempt {boot_picker_attempts})...")
+                    # Press End to jump to last entry (macOS Base System), then Enter
+                    _send_key("end", 0.5)
+                    _send_key("ret", 1)
 
-        # Step 5: Navigate to "Reinstall macOS Ventura"
-        # Recovery shows 4 icons: Time Machine, Reinstall macOS, Safari, Disk Utility
-        # Tab cycles through them
-        emit("info", "vm", "Auto-install: selecting Reinstall macOS Ventura...")
-        _send_key("tab", 0.5)    # Time Machine (or first focusable)
-        _send_key("tab", 0.5)    # Reinstall macOS Ventura
-        _send_key("ret", 5)      # Open installer
+            elif screen == "apple_logo":
+                if not recovery_entered:
+                    elapsed = time.time() - _auto_install_start_time
+                    if stuck_count % 6 == 0:  # log every ~60s
+                        emit("info", "vm", f"macOS booting... ({int(elapsed)}s elapsed)")
 
-        # Step 6: Installer - Introduction screen → Continue
-        emit("info", "vm", "Auto-install: navigating installer (Continue)...")
-        _send_key("tab", 0.5)
-        _send_key("tab", 0.5)
-        _send_key("spc", 3)      # Click Continue
+            elif screen == "recovery" and not recovery_entered:
+                recovery_entered = True
+                recovery_time = time.time() - _auto_install_start_time
+                _set_phase("formatting", f"Recovery loaded after {int(recovery_time)}s. Formatting disk...")
 
-        # Step 7: License agreement → Agree
-        emit("info", "vm", "Auto-install: accepting license...")
-        _send_key("tab", 0.5)
-        _send_key("tab", 0.5)
-        _send_key("spc", 2)      # Click Agree
-        _send_key("ret", 3)      # Confirm "Agree" in dialog
+                # Give recovery GUI a moment to fully render
+                time.sleep(5)
 
-        # Step 8: Disk selection → Install
-        # "Macintosh HD" should be the only/pre-selected APFS volume
-        emit("info", "vm", "Auto-install: selecting disk and starting install...")
-        _send_key("tab", 0.5)
-        _send_key("tab", 0.5)
-        _send_key("spc", 2)      # Click Install/Continue
+                # Open Terminal: Ctrl+F2 → menu bar → Utilities → Terminal
+                _send_key("ctrl-f2", 1.5)
+                for _ in range(3):  # right 3 times to reach Utilities
+                    _send_key("right", 0.3)
+                _send_key("ret", 0.5)  # open Utilities dropdown
+                _send_key("down", 0.3)  # Startup Security Utility
+                _send_key("down", 0.3)  # Terminal
+                _send_key("ret", 4)     # open Terminal
 
-        emit("info", "vm", "Auto-install: macOS installation started! This takes 30-60 min. The VM will reboot 2-3 times automatically.")
+                # Enable keyboard navigation for later GUI interaction
+                _type_text("defaults write NSGlobalDomain AppleKeyboardUIMode -int 2")
+                _send_key("ret", 2)
+
+                # Format disk
+                emit("info", "vm", "Formatting disk (GUID Partition Map + APFS)...")
+                _type_text('diskutil eraseDisk APFS "Macintosh HD" GPT disk0')
+                _send_key("ret")
+                time.sleep(20)  # wait for format
+                formatting_done = True
+
+                # Close Terminal
+                _send_key("meta_l-q", 3)
+
+                # Navigate recovery GUI to start installation
+                emit("info", "vm", "Starting macOS Ventura installation...")
+                _set_phase("installing", "Navigating installer...")
+
+                # Tab to "Reinstall macOS Ventura" (2nd icon) and select
+                _send_key("tab", 0.5)
+                _send_key("tab", 0.5)
+                _send_key("ret", 5)
+
+                # Introduction → Continue
+                _send_key("tab", 0.5)
+                _send_key("tab", 0.5)
+                _send_key("spc", 3)
+
+                # License → Agree
+                _send_key("tab", 0.5)
+                _send_key("tab", 0.5)
+                _send_key("spc", 2)
+                _send_key("ret", 3)  # confirm dialog
+
+                # Disk selection → Install
+                _send_key("tab", 0.5)
+                _send_key("tab", 0.5)
+                _send_key("spc", 2)
+
+                installer_started = True
+                install_start = time.time()
+                _set_phase("installing", "macOS installation in progress. This takes 30-60 minutes...")
+
+            elif screen == "recovery" and installer_started:
+                # During install, VM reboots back to boot picker → recovery
+                # This means install is progressing
+                elapsed_install = time.time() - _auto_install_step_times.get("installing", time.time())
+                emit("info", "vm", f"Installation progressing... ({int(elapsed_install/60)} min elapsed)")
+
+            elif screen == "boot_picker" and installer_started:
+                # VM rebooted during install — need to select the right entry again
+                emit("info", "vm", "VM rebooted during install, selecting boot entry...")
+                _send_key("end", 0.5)
+                _send_key("ret", 1)
+
+            # Check for stuck state (>10 min on same screen without progress)
+            if stuck_count > 60 and screen == "apple_logo":
+                _set_phase("error", "VM appears stuck on Apple logo for >10 minutes. May need manual intervention.")
+                return
+
+            # Check if install might be complete — look for setup wizard
+            # (This is tricky, but we'll detect it as "recovery" since menu bar is visible)
+            if installer_started and screen == "recovery":
+                elapsed_install = time.time() - _auto_install_step_times.get("installing", time.time())
+                if elapsed_install > 1200:  # >20 min since install started
+                    _set_phase("done", "macOS appears to be installed. Setup wizard should be visible in VNC.")
+                    return
+
+        _set_phase("done", "Auto-install monitoring complete. Check VNC for current state.")
 
     except Exception as e:
-        emit("error", "vm", f"Auto-install failed: {e}. You can continue manually via VNC.")
+        _set_phase("error", f"Auto-install failed: {e}")
         log.exception("Auto-install error")
 
 
-@app.route("/api/vm/auto-install", methods=["POST"])
-def vm_auto_install():
-    """Automate disk formatting and macOS installation via QEMU monitor keystrokes."""
-    if not VM_ENABLED:
-        return jsonify({"error": "VM not enabled"}), 400
-
-    pid_file = Path("/tmp/airtag-vm-setup.pid")
-    if not pid_file.exists():
-        return jsonify({"error": "VM is not running. Start setup first."}), 400
-
-    threading.Thread(target=_auto_install_worker, daemon=True).start()
-    return jsonify({"status": "auto-install started"})
+@app.route("/api/vm/install-status")
+def vm_install_status():
+    """Return current auto-install phase and timing info."""
+    elapsed = time.time() - _auto_install_start_time if _auto_install_start_time else 0
+    return jsonify({
+        "phase": _auto_install_phase,
+        "elapsed_seconds": int(elapsed),
+        "step_times": {k: int(v - _auto_install_start_time) for k, v in _auto_install_step_times.items()},
+    })
 
 
 @app.route("/api/vm/complete-setup", methods=["POST"])

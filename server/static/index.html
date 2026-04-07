@@ -297,7 +297,7 @@
           <div class="step-dot done"></div><div class="step-dot active"></div><div class="step-dot"></div>
         </div>
         <h2>Set up macOS VM</h2>
-        <p>A one-time setup is needed: install macOS, sign into your Apple ID, and enable Find My. This all happens in your browser via VNC.</p>
+        <p>A one-time setup is needed: install macOS, sign into your Apple ID, and enable Find My. macOS installation is fully automatic — you'll only need to interact for Apple ID sign-in.</p>
         <button class="btn" onclick="startVmSetup()">Start Setup</button>
         <div style="margin-top:24px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.1)">
           <button class="btn small danger" onclick="reinstallVm()">Reinstall macOS</button>
@@ -324,7 +324,11 @@
           `;
           return;
         }
-        showVncViewer(data.vnc_ws_port);
+        if (data.auto_install) {
+          showAutoInstallProgress();
+        } else {
+          showManualSetup(data.vnc_ws_port);
+        }
       } catch (e) {
         document.getElementById('setup-content').innerHTML = `
           <h2>Error</h2>
@@ -334,72 +338,121 @@
       }
     }
 
-    let vmSetupStep = 0;
-    const vmSteps = [
-      {
-        title: '1. Wait for Recovery to load',
-        text: 'The VM is booting into macOS Recovery. Wait until you see the Recovery screen with 4 icons (this takes 2-4 minutes). Then click <b>Auto-install</b> below.',
-        autoInstall: true,
-      },
-      {
-        title: '2. Installing macOS (automatic)',
-        text: 'The disk is being formatted and macOS is being installed automatically. This downloads ~12 GB and takes 30-60 min. The VM reboots 2-3 times &mdash; just wait. When you see the macOS setup wizard (region selection), go to the next step.',
-      },
-      {
-        title: '3. macOS setup',
-        text: 'Go through the setup wizard: pick region, language, keyboard. <b>Skip Apple ID</b> for now (click "Set Up Later"). Create a local user account &mdash; remember the password. Skip everything optional.',
-      },
-      {
-        title: '4. Enable SSH + sign into Apple ID',
-        text: 'Open <b>System Settings &rarr; General &rarr; Sharing</b> and turn on <b>Remote Login</b> (SSH). Then open <b>System Settings &rarr; Apple ID</b>, sign in with the Apple ID your AirTags are paired to, and enable <b>Find My Mac</b> under iCloud.',
-      },
-      {
-        title: '5. Done!',
-        text: 'Enter the macOS user password below and click <b>Complete Setup</b>. The VM will shut down and the server will extract your AirTag keys automatically.',
-      },
-    ];
+    const phaseLabels = {
+      booting: 'Booting VM...',
+      boot_picker: 'Navigating boot menu...',
+      waiting_recovery: 'Loading macOS Recovery...',
+      formatting: 'Formatting disk...',
+      installing: 'Installing macOS...',
+      done: 'Installation complete!',
+      error: 'Installation failed',
+    };
 
-    function renderVmStep() {
-      const step = vmSteps[vmSetupStep];
-      const stepsHtml = vmSteps.map((s, i) => {
-        const cls = i < vmSetupStep ? 'done' : i === vmSetupStep ? 'active' : '';
-        return `<div class="step-dot ${cls}" style="cursor:pointer" onclick="vmSetupStep=${i};renderVmStep()"></div>`;
-      }).join('');
+    const phaseProgress = {
+      booting: 5,
+      boot_picker: 10,
+      waiting_recovery: 15,
+      formatting: 25,
+      installing: 50,
+      done: 100,
+      error: 0,
+    };
 
-      const autoBtn = step.autoInstall ? `<button class="btn small sync" id="auto-install-btn" onclick="triggerAutoInstall()" style="margin-left:12px;white-space:nowrap">Auto-install</button>` : '';
+    let installPollTimer = null;
 
-      document.getElementById('vm-instructions').innerHTML = `
-        <div class="steps-progress">${stepsHtml}</div>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-          <div style="width:60px">${vmSetupStep > 0 ? `<button class="btn ghost small" onclick="vmSetupStep--;renderVmStep()">&larr; Back</button>` : ''}</div>
-          <b style="color:#4cc9f0;font-size:0.95em">${step.title}</b>
-          <div style="display:flex;align-items:center">${autoBtn}${vmSetupStep < vmSteps.length - 1 ? `<button class="btn small" onclick="vmSetupStep++;renderVmStep()" style="margin-left:8px">Next &rarr;</button>` : ''}</div>
-        </div>
-        <p style="color:#aaa;font-size:0.85em;line-height:1.6;margin-bottom:4px">${step.text}</p>
-      `;
-
-      // Show password input only on the last step
-      document.getElementById('vm-password-row').style.display = vmSetupStep === vmSteps.length - 1 ? 'flex' : 'none';
-    }
-
-    function showVncViewer(wsPort) {
+    function showAutoInstallProgress() {
       const overlay = document.getElementById('setup-overlay');
       overlay.classList.remove('hidden');
       overlay.innerHTML = `
         <div style="width:100%;height:100%;padding:12px 16px;display:flex;flex-direction:column">
-          <div id="vm-instructions" style="margin-bottom:8px"></div>
+          <div id="install-status" style="margin-bottom:12px">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+              <b style="color:#4cc9f0;font-size:1.1em" id="install-phase-label">Starting...</b>
+              <span style="color:#888;font-size:0.85em" id="install-elapsed"></span>
+            </div>
+            <div style="background:#1a1a2e;border-radius:6px;height:8px;overflow:hidden;margin-bottom:6px">
+              <div id="install-progress-bar" style="height:100%;background:linear-gradient(90deg,#4361ee,#4cc9f0);width:0%;transition:width 1s ease"></div>
+            </div>
+            <p style="color:#888;font-size:0.8em;margin:0" id="install-detail">Waiting for VM to boot...</p>
+          </div>
           <div class="vnc-wrap"><iframe class="vnc-frame" allow="fullscreen" allowfullscreen src="//${location.hostname.replace('airtag', 'airtag-vnc')}/vnc.html?autoconnect=true&resize=scale"></iframe></div>
           <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-shrink:0">
-            <button class="btn ghost small" onclick="stopVm()">Cancel & Stop VM</button>
-            <div id="vm-password-row" style="display:none;flex:1;gap:8px;align-items:center">
+            <button class="btn ghost small" onclick="stopVm()">Cancel</button>
+            <div id="manual-setup-controls" style="display:none;flex:1;gap:8px;align-items:center">
               <input type="password" id="vm-password" placeholder="macOS user password" style="flex:1;padding:10px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee;font-size:0.95em">
               <button class="btn sync" onclick="completeVmSetup()" style="white-space:nowrap">Complete Setup</button>
             </div>
           </div>
         </div>
       `;
-      vmSetupStep = 0;
-      renderVmStep();
+      pollInstallStatus();
+    }
+
+    async function pollInstallStatus() {
+      try {
+        const res = await fetch('/api/vm/install-status');
+        const data = await res.json();
+        const phase = data.phase;
+        const elapsed = data.elapsed_seconds;
+        const mins = Math.floor(elapsed / 60);
+        const secs = elapsed % 60;
+
+        document.getElementById('install-phase-label').textContent = phaseLabels[phase] || phase;
+        document.getElementById('install-elapsed').textContent = `${mins}m ${secs}s`;
+
+        let progress = phaseProgress[phase] || 0;
+        // During installing phase, estimate progress based on elapsed time (30-60 min expected)
+        if (phase === 'installing') {
+          const installElapsed = elapsed - (data.step_times?.installing || 0);
+          progress = Math.min(95, 25 + (installElapsed / 2400) * 70); // 40 min = 100%
+        }
+        document.getElementById('install-progress-bar').style.width = progress + '%';
+
+        if (phase === 'installing') {
+          const installElapsed = elapsed - (data.step_times?.installing || 0);
+          const estRemaining = Math.max(0, 2400 - installElapsed);
+          const remMins = Math.floor(estRemaining / 60);
+          document.getElementById('install-detail').textContent =
+            `macOS is downloading and installing. Estimated ${remMins} min remaining. The VM reboots automatically during this process.`;
+        } else if (phase === 'done') {
+          document.getElementById('install-detail').innerHTML =
+            'macOS is installed! Complete the setup wizard in VNC below: create a user account, sign into Apple ID, enable Find My Mac and SSH. Then enter your password and click <b>Complete Setup</b>.';
+          document.getElementById('manual-setup-controls').style.display = 'flex';
+          return; // stop polling
+        } else if (phase === 'error') {
+          const lastEvent = await fetch('/api/events').then(r => r.json()).then(events => events.filter(e => e.source === 'vm').pop());
+          document.getElementById('install-detail').textContent = lastEvent?.message || 'An error occurred. Check VNC for details.';
+          document.getElementById('install-progress-bar').style.background = '#e63946';
+          return; // stop polling
+        } else if (phase === 'formatting') {
+          document.getElementById('install-detail').textContent = 'Recovery loaded. Formatting disk and starting installer...';
+        }
+      } catch(e) {
+        // ignore polling errors
+      }
+      installPollTimer = setTimeout(pollInstallStatus, 5000);
+    }
+
+    function showManualSetup(wsPort) {
+      // For re-installs or when no auto-install: show VNC with manual instructions
+      const overlay = document.getElementById('setup-overlay');
+      overlay.classList.remove('hidden');
+      overlay.innerHTML = `
+        <div style="width:100%;height:100%;padding:12px 16px;display:flex;flex-direction:column">
+          <div style="margin-bottom:8px">
+            <b style="color:#4cc9f0">Manual Setup</b>
+            <p style="color:#aaa;font-size:0.85em">Complete the macOS setup wizard, sign into Apple ID, enable Find My Mac and SSH. Then enter your password below.</p>
+          </div>
+          <div class="vnc-wrap"><iframe class="vnc-frame" allow="fullscreen" allowfullscreen src="//${location.hostname.replace('airtag', 'airtag-vnc')}/vnc.html?autoconnect=true&resize=scale"></iframe></div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-shrink:0">
+            <button class="btn ghost small" onclick="stopVm()">Cancel & Stop VM</button>
+            <div style="display:flex;flex:1;gap:8px;align-items:center">
+              <input type="password" id="vm-password" placeholder="macOS user password" style="flex:1;padding:10px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee;font-size:0.95em">
+              <button class="btn sync" onclick="completeVmSetup()" style="white-space:nowrap">Complete Setup</button>
+            </div>
+          </div>
+        </div>
+      `;
     }
 
     async function completeVmSetup() {
@@ -427,17 +480,7 @@
       `;
     }
 
-    async function triggerAutoInstall() {
-      const btn = document.getElementById('auto-install-btn');
-      if (btn) { btn.disabled = true; btn.textContent = 'Running...'; }
-      try {
-        const res = await fetch('/api/vm/auto-install', {method: 'POST'});
-        const data = await res.json();
-        if (data.error) { alert(data.error); if (btn) { btn.disabled = false; btn.textContent = 'Auto-install'; } return; }
-        vmSetupStep = 1;
-        renderVmStep();
-      } catch(e) { alert('Auto-install failed: ' + e.message); if (btn) { btn.disabled = false; btn.textContent = 'Auto-install'; } }
-    }
+
 
     async function stopVm() {
       await fetch('/api/vm/stop', {method: 'POST'});
