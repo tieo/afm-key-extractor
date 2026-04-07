@@ -282,7 +282,7 @@ def vm_start_setup():
         "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
         "-device", "vmxnet3,netdev=net0,id=net0,mac=52:54:00:c9:18:27",
         "-device", "vmware-svga",
-        "-vnc", ":1",
+        "-vnc", "127.0.0.1:1",
         "-daemonize",
         "-pidfile", "/tmp/airtag-vm-setup.pid",
     ]
@@ -331,9 +331,10 @@ def vm_complete_setup():
     if not password:
         return jsonify({"error": "VM user password required"}), 400
 
-    # Save password
+    # Save password with restricted permissions
     pw_path = DATA_DIR / "vm-password"
     pw_path.write_text(password)
+    pw_path.chmod(0o600)
 
     # Stop the setup VM
     vm_stop()

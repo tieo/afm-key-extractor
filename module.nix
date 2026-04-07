@@ -113,7 +113,7 @@ in {
         description = "noVNC WebSocket proxy for macOS VM";
         serviceConfig = {
           Type = "simple";
-          ExecStart = "${pkgs.python3Packages.websockify}/bin/websockify --web ${pkgs.novnc}/share/webapps/novnc ${toString cfg.vm.websocketPort} localhost:${toString cfg.vm.vncPort}";
+          ExecStart = "${pkgs.python3Packages.websockify}/bin/websockify --web ${pkgs.novnc}/share/webapps/novnc 127.0.0.1:${toString cfg.vm.websocketPort} localhost:${toString cfg.vm.vncPort}";
           Restart = "on-failure";
         };
       };
