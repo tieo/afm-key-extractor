@@ -757,9 +757,19 @@ def _detect_screen(ppm_data):
 
     if menubar_brightness > 100:
         # Menu bar visible — could be recovery, terminal, installer, or setup wizard
-        # Check for Terminal's red traffic light button at top-left (~x=17, y=30)
-        red_r, red_g, red_b = _ppm_pixel(ppm_data, 17, 30)
-        if red_r > 150 and red_g < 100 and red_b < 100:
+        # Check for Terminal's red traffic light button (close button).
+        # The Terminal window position varies, so scan a region for any red pixel.
+        # Traffic light buttons appear at y≈25-80, x≈30-80 relative to screen.
+        has_red_button = False
+        for y in range(25, 90, 2):
+            for x in range(20, 100, 2):
+                r, g, b = _ppm_pixel(ppm_data, x, y)
+                if r > 150 and g < 80 and b < 80:
+                    has_red_button = True
+                    break
+            if has_red_button:
+                break
+        if has_red_button:
             return "terminal"
         return "recovery"
 
