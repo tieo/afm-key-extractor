@@ -104,6 +104,7 @@ in {
           { command = "/run/current-system/sw/bin/systemctl stop airtag-novnc"; options = [ "NOPASSWD" ]; }
           { command = "/run/current-system/sw/bin/systemctl start airtag-extract-keys"; options = [ "NOPASSWD" ]; }
           { command = "/run/current-system/sw/bin/systemctl stop airtag-extract-keys"; options = [ "NOPASSWD" ]; }
+          { command = "/run/current-system/sw/bin/systemctl start airtag-provision-vm"; options = [ "NOPASSWD" ]; }
         ];
       }];
 
