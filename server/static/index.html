@@ -204,9 +204,10 @@
     <div class="settings-section" id="vm-section" style="display:none">
       <h3>macOS VM</h3>
       <div id="vm-info">Checking...</div>
-      <div style="display:flex;gap:8px;margin-top:8px">
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
         <button class="btn small sync" onclick="syncKeys();toggleSettings()">Extract Keys Now</button>
         <button class="btn small" onclick="startVmSetup()">Open VM Setup</button>
+        <button class="btn small danger" onclick="reinstallVm()">Reinstall macOS</button>
       </div>
     </div>
   </div>
@@ -682,6 +683,18 @@
       } else {
         el.innerHTML = `<span class="dot green"></span> Ready${data.vm_running ? ' (VM running)' : ''}`;
       }
+    }
+
+    async function reinstallVm() {
+      if (!confirm('This will wipe the macOS VM and start a fresh install. All VM data will be lost. Are you sure?')) return;
+      try {
+        const res = await fetch('/api/vm/reinstall', {method: 'POST'});
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+        document.getElementById('settings-panel').style.display = 'none';
+        loadVmInfo();
+        loadEvents();
+      } catch(e) { alert('Reinstall failed: ' + e.message); }
     }
 
     async function loadKeysList() {

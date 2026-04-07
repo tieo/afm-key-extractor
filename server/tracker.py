@@ -560,6 +560,37 @@ def vm_complete_setup():
     return jsonify({"status": "complete"})
 
 
+@app.route("/api/vm/reinstall", methods=["POST"])
+def vm_reinstall():
+    """Wipe the macOS VM and reprovision from scratch."""
+    if not VM_ENABLED:
+        return jsonify({"error": "VM not enabled"}), 400
+
+    emit("info", "vm", "Reinstalling macOS VM — wiping disk and reprovisioning")
+
+    # Stop VM if running
+    vm_stop()
+
+    # Remove disk image, password, and installer media
+    import shutil
+    for f in ["mac_hdd_ng.img", "BaseSystem.img", "BaseSystem.dmg"]:
+        p = VM_DIR / f
+        if p.exists():
+            p.unlink()
+    recovery = VM_DIR / "com.apple.recovery.boot"
+    if recovery.exists():
+        shutil.rmtree(recovery, ignore_errors=True)
+    pw_path = DATA_DIR / "vm-password"
+    if pw_path.exists():
+        pw_path.unlink()
+
+    emit("info", "vm", "Disk wiped, starting reprovisioning")
+    _systemctl("start", "airtag-provision-vm")
+    threading.Thread(target=_tail_journal, args=("airtag-provision-vm", "vm"), daemon=True).start()
+
+    return jsonify({"status": "reprovisioning"})
+
+
 @app.route("/api/account/status")
 def account_status():
     """Check if Apple account is configured and session is valid."""
