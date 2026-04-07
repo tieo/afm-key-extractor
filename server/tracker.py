@@ -616,6 +616,18 @@ def _type_text(text):
         else:
             log.warning(f"Unmapped character: {ch!r}")
 
+def _mouse_click(px, py, delay=0.5):
+    """Click at pixel coordinates (1920x1080 screen) using QEMU absolute mouse (usb-tablet).
+    QEMU mouse_move uses 0-32767 range for absolute positioning."""
+    qx = int((px / 1920) * 32767)
+    qy = int((py / 1080) * 32767)
+    _monitor_cmd(f"mouse_move {qx} {qy}")
+    time.sleep(0.1)
+    _monitor_cmd("mouse_button 1")  # left button down
+    time.sleep(0.05)
+    _monitor_cmd("mouse_button 0")  # left button up
+    time.sleep(delay)
+
 
 def _take_screenshot():
     """Take a screenshot via QEMU monitor, return raw PPM bytes or None."""
@@ -778,18 +790,21 @@ def _auto_install_worker():
                 _set_phase("formatting", f"Recovery loaded after {int(recovery_time)}s. Formatting disk...")
 
                 # Give recovery GUI a moment to fully render
-                time.sleep(5)
+                time.sleep(8)
 
-                # Open Terminal: Ctrl+F2 → menu bar → Utilities → Terminal
-                _send_key("ctrl-f2", 1.5)
-                for _ in range(3):  # right 3 times to reach Utilities
-                    _send_key("right", 0.3)
-                _send_key("ret", 0.5)  # open Utilities dropdown
-                _send_key("down", 0.3)  # Startup Security Utility
-                _send_key("down", 0.3)  # Terminal
-                _send_key("ret", 4)     # open Terminal
+                # Open Terminal via menu bar click (Ctrl+F2 doesn't work in recovery)
+                # Recovery menu bar: [Apple] [macOS Recovery] [Edit] [Utilities] [Window] [Help]
+                # "Utilities" is at approximately x=255, y=12 on a 1920x1080 screen
+                emit("info", "vm", "Opening Terminal via Utilities menu...")
+                _mouse_click(255, 12, 1)   # Click "Utilities" in menu bar
+                _mouse_click(255, 48, 3)   # Click "Terminal" (first dropdown item below "Startup Security Utility")
 
-                # Enable keyboard navigation for later GUI interaction
+                # If Terminal didn't open, try again with adjusted position
+                # Terminal is typically the 2nd item in Utilities menu
+                # Try clicking a bit lower in case Startup Security Utility is the first item
+                time.sleep(1)
+
+                # Enable keyboard navigation for this session
                 _type_text("defaults write NSGlobalDomain AppleKeyboardUIMode -int 2")
                 _send_key("ret", 2)
 
@@ -800,33 +815,36 @@ def _auto_install_worker():
                 time.sleep(20)  # wait for format
                 formatting_done = True
 
-                # Close Terminal
+                # Start the installer from Terminal (avoids GUI navigation entirely)
+                emit("info", "vm", "Starting macOS Ventura installation...")
+                _set_phase("installing", "Starting installer from Terminal...")
+
+                # Close Terminal and click Reinstall macOS Ventura on recovery screen
                 _send_key("meta_l-q", 3)
 
-                # Navigate recovery GUI to start installation
-                emit("info", "vm", "Starting macOS Ventura installation...")
-                _set_phase("installing", "Navigating installer...")
+                # Recovery main screen: 4 icons centered horizontally
+                # On 1920x1080: icons are roughly at y=420, spaced about 200px apart
+                # Layout: [Restore TM ~x=530] [Reinstall macOS ~x=730] [Safari ~x=930] [Disk Utility ~x=1130]
+                # Click "Reinstall macOS Ventura" (2nd icon)
+                _mouse_click(730, 420, 3)
 
-                # Tab to "Reinstall macOS Ventura" (2nd icon) and select
-                _send_key("tab", 0.5)
-                _send_key("tab", 0.5)
-                _send_key("ret", 5)
+                # Double-click to be sure
+                _mouse_click(730, 420, 5)
 
-                # Introduction → Continue
-                _send_key("tab", 0.5)
-                _send_key("tab", 0.5)
-                _send_key("spc", 3)
+                # Installer opens: Introduction screen with "Continue" button
+                # "Continue" button is at bottom-right of the installer window
+                # Installer window is centered, ~800px wide, button at bottom-right
+                _mouse_click(1100, 660, 5)  # Click Continue
 
-                # License → Agree
-                _send_key("tab", 0.5)
-                _send_key("tab", 0.5)
-                _send_key("spc", 2)
-                _send_key("ret", 3)  # confirm dialog
+                # License agreement: "Agree" button
+                _mouse_click(1100, 660, 3)  # Click Agree
 
-                # Disk selection → Install
-                _send_key("tab", 0.5)
-                _send_key("tab", 0.5)
-                _send_key("spc", 2)
+                # Confirmation dialog: "Agree" button in the sheet
+                _mouse_click(1010, 440, 5)  # Click Agree in confirmation dialog
+
+                # Disk selection: "Macintosh HD" should be the only option, pre-selected
+                # "Install" or "Continue" button at bottom
+                _mouse_click(1100, 660, 3)  # Click Install
 
                 installer_started = True
                 install_start = time.time()
@@ -841,7 +859,8 @@ def _auto_install_worker():
             elif screen == "boot_picker" and installer_started:
                 # VM rebooted during install — need to select the right entry again
                 emit("info", "vm", "VM rebooted during install, selecting boot entry...")
-                _send_key("end", 0.5)
+                for _ in range(5):
+                    _send_key("right", 0.3)
                 _send_key("ret", 1)
 
             # Check for stuck state (>10 min on same screen without progress)
