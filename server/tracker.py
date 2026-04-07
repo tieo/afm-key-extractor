@@ -1,6 +1,7 @@
 """AirTag tracker server — polls Apple's Find My network and serves location history."""
 
 import json
+import math
 import sqlite3
 import subprocess as sp
 import time
@@ -35,6 +36,51 @@ app = Flask(__name__, static_folder=str(STATIC_DIR))
 # In-memory state for login flow
 _pending_account = None
 _pending_2fa_methods = None
+
+
+SETTINGS_PATH = DATA_DIR / "settings.json"
+
+DEFAULT_SETTINGS = {
+    "idle_interval": POLL_INTERVAL,   # seconds between polls when stationary
+    "active_interval": 120,           # seconds between polls when moving
+    "movement_threshold": 50,         # meters — distance to consider "moved"
+    "cooldown_polls": 5,              # polls with no movement before returning to idle
+}
+
+_settings_lock = threading.Lock()
+_poll_state = {
+    "moving": False,
+    "idle_count": 0,                  # consecutive polls with no movement
+    "last_positions": {},             # airtag_id -> (lat, lon)
+    "current_interval": POLL_INTERVAL,
+    "last_poll": None,
+}
+
+
+def load_settings():
+    if SETTINGS_PATH.exists():
+        try:
+            with open(SETTINGS_PATH) as f:
+                saved = json.load(f)
+            return {**DEFAULT_SETTINGS, **saved}
+        except Exception:
+            pass
+    return dict(DEFAULT_SETTINGS)
+
+
+def save_settings(settings):
+    with open(SETTINGS_PATH, "w") as f:
+        json.dump(settings, f, indent=2)
+
+
+def haversine(lat1, lon1, lat2, lon2):
+    """Distance in meters between two GPS coordinates."""
+    R = 6371000
+    rlat1, rlat2 = math.radians(lat1), math.radians(lat2)
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(rlat1) * math.cos(rlat2) * math.sin(dlon / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 def init_db():
@@ -104,16 +150,19 @@ def save_locations(airtag_id, airtag_name, reports):
 
 
 def poll_locations():
-    """Fetch latest locations for all AirTags."""
+    """Fetch latest locations for all AirTags. Returns True if any moved."""
     acc = get_account()
     if not acc:
         log.warning("No Apple account configured, skipping poll")
-        return
+        return False
 
     tags = load_airtags()
     if not tags:
         log.info("No AirTags configured, skipping poll")
-        return
+        return False
+
+    settings = load_settings()
+    any_moved = False
 
     try:
         accessories = [tag for _, tag in tags]
@@ -123,10 +172,19 @@ def poll_locations():
             if reports:
                 save_locations(tag_id, getattr(tag, "name", tag_id), reports)
                 log.info(f"Saved {len(reports)} reports for {tag_id}")
+
+                # Check movement
+                latest = max(reports, key=lambda r: r.timestamp)
+                last_pos = _poll_state["last_positions"].get(tag_id)
+                if last_pos:
+                    dist = haversine(last_pos[0], last_pos[1], latest.latitude, latest.longitude)
+                    if dist > settings["movement_threshold"]:
+                        any_moved = True
+                        log.info(f"{tag_id} moved {dist:.0f}m")
+                _poll_state["last_positions"][tag_id] = (latest.latitude, latest.longitude)
             else:
                 log.info(f"No new reports for {tag_id}")
 
-        # Save updated account state and tag alignment
         acc.to_json(str(ACCOUNT_PATH))
         for (tag_id, tag) in tags:
             tag.to_json(str(KEYS_DIR / f"{tag_id}.json"))
@@ -134,15 +192,37 @@ def poll_locations():
     except Exception as e:
         log.error(f"Poll failed: {e}", exc_info=True)
 
+    return any_moved
+
 
 def poll_loop():
-    """Background thread that polls on an interval."""
+    """Background thread with adaptive polling interval."""
     while True:
+        settings = load_settings()
         try:
-            poll_locations()
+            moved = poll_locations()
+            _poll_state["last_poll"] = datetime.now(timezone.utc).isoformat()
+
+            with _settings_lock:
+                if settings.get("adaptive", True) and moved:
+                    _poll_state["moving"] = True
+                    _poll_state["idle_count"] = 0
+                    _poll_state["current_interval"] = settings["active_interval"]
+                elif settings.get("adaptive", True):
+                    _poll_state["idle_count"] += 1
+                    if _poll_state["idle_count"] >= settings["cooldown_polls"]:
+                        _poll_state["moving"] = False
+                        _poll_state["current_interval"] = settings["idle_interval"]
+                else:
+                    _poll_state["moving"] = False
+                    _poll_state["current_interval"] = settings["idle_interval"]
+
         except Exception as e:
             log.error(f"Poll loop error: {e}", exc_info=True)
-        time.sleep(POLL_INTERVAL)
+
+        interval = _poll_state["current_interval"]
+        log.info(f"Next poll in {interval}s ({'active' if _poll_state['moving'] else 'idle'})")
+        time.sleep(interval)
 
 
 # --- API routes ---
@@ -150,6 +230,41 @@ def poll_loop():
 @app.route("/")
 def index():
     return send_from_directory(str(STATIC_DIR), "index.html")
+
+
+@app.route("/api/settings", methods=["GET"])
+def get_settings():
+    """Get current polling settings and state."""
+    settings = load_settings()
+    return jsonify({
+        **settings,
+        "adaptive": settings.get("adaptive", True),
+        "state": {
+            "moving": _poll_state["moving"],
+            "current_interval": _poll_state["current_interval"],
+            "idle_count": _poll_state["idle_count"],
+            "last_poll": _poll_state["last_poll"],
+        },
+    })
+
+
+@app.route("/api/settings", methods=["PUT"])
+def update_settings():
+    """Update polling settings."""
+    data = request.get_json()
+    settings = load_settings()
+    allowed = {"idle_interval", "active_interval", "movement_threshold", "cooldown_polls", "adaptive"}
+    for key in allowed:
+        if key in data:
+            settings[key] = data[key]
+    save_settings(settings)
+
+    # Apply new idle interval immediately if not moving
+    with _settings_lock:
+        if not _poll_state["moving"]:
+            _poll_state["current_interval"] = settings["idle_interval"]
+
+    return jsonify(settings)
 
 
 @app.route("/api/airtags")

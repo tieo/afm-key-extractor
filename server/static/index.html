@@ -119,6 +119,33 @@
     </div>
 
     <div class="settings-section">
+      <h3>Polling</h3>
+      <div id="poll-status" style="margin-bottom:12px;font-size:0.85em;color:#aaa"></div>
+      <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;cursor:pointer">
+        <input type="checkbox" id="set-adaptive" onchange="savePollingSettings()"> Adaptive polling (faster when moving)
+      </label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div>
+          <label style="font-size:0.8em;color:#888">Idle interval (min)</label>
+          <input type="number" id="set-idle" min="1" max="1440" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee">
+        </div>
+        <div>
+          <label style="font-size:0.8em;color:#888">Active interval (min)</label>
+          <input type="number" id="set-active" min="1" max="60" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee">
+        </div>
+        <div>
+          <label style="font-size:0.8em;color:#888">Movement threshold (m)</label>
+          <input type="number" id="set-threshold" min="1" max="10000" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee">
+        </div>
+        <div>
+          <label style="font-size:0.8em;color:#888">Cooldown polls</label>
+          <input type="number" id="set-cooldown" min="1" max="100" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee">
+        </div>
+      </div>
+      <button class="btn small" style="margin-top:10px" onclick="savePollingSettings()">Save</button>
+    </div>
+
+    <div class="settings-section">
       <h3>Apple Account</h3>
       <div id="account-info">Checking...</div>
       <button class="btn small" style="margin-top:8px" onclick="showLoginForm()">Re-login</button>
@@ -496,10 +523,44 @@
       const panel = document.getElementById('settings-panel');
       panel.classList.toggle('hidden');
       if (!panel.classList.contains('hidden')) {
+        loadPollingSettings();
         loadAccountInfo();
         loadKeysList();
         loadVmInfo();
       }
+    }
+
+    async function loadPollingSettings() {
+      const res = await fetch('/api/settings');
+      const data = await res.json();
+      document.getElementById('set-adaptive').checked = data.adaptive !== false;
+      document.getElementById('set-idle').value = Math.round(data.idle_interval / 60);
+      document.getElementById('set-active').value = Math.round(data.active_interval / 60);
+      document.getElementById('set-threshold').value = data.movement_threshold;
+      document.getElementById('set-cooldown').value = data.cooldown_polls;
+
+      const state = data.state;
+      const statusEl = document.getElementById('poll-status');
+      const mode = state.moving ? 'Active' : 'Idle';
+      const interval = Math.round(state.current_interval / 60);
+      const lastPoll = state.last_poll ? timeAgo(state.last_poll) : 'never';
+      statusEl.innerHTML = `<span class="dot ${state.moving ? 'green' : 'yellow'}"></span> ${mode} &mdash; polling every ${interval}min &mdash; last: ${lastPoll}`;
+    }
+
+    async function savePollingSettings() {
+      const settings = {
+        adaptive: document.getElementById('set-adaptive').checked,
+        idle_interval: parseInt(document.getElementById('set-idle').value) * 60,
+        active_interval: parseInt(document.getElementById('set-active').value) * 60,
+        movement_threshold: parseInt(document.getElementById('set-threshold').value),
+        cooldown_polls: parseInt(document.getElementById('set-cooldown').value),
+      };
+      await fetch('/api/settings', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(settings),
+      });
+      loadPollingSettings();
     }
 
     async function loadAccountInfo() {
