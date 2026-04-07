@@ -899,9 +899,7 @@ def _auto_install_worker():
                             emit("info", "vm", f"Screen changed: {last_screen} → {screen} ({elapsed_min} min)")
                             last_screen = screen
                         if screen == "boot_picker":
-                            emit("info", "vm", "VM rebooted to boot picker, selecting boot entry...")
-                            for _ in range(5):
-                                _send_key("right", 0.3)
+                            emit("info", "vm", "VM rebooted to boot picker, selecting first entry...")
                             _send_key("ret", 1)
                         elif screen == "apple_logo":
                             if poll % 6 == 0:
@@ -1024,13 +1022,14 @@ def _auto_install_worker():
                 last_screen = screen
 
             if screen == "boot_picker":
-                emit("info", "vm", "VM rebooted to boot picker, selecting boot entry...")
-                for _ in range(5):
-                    _send_key("right", 0.3)
+                # After startosinstall, the first boot entry should be "macOS Installer"
+                # or the installed macOS. Just press Enter to boot the default/first entry.
+                # Do NOT navigate right — that would select the recovery BaseSystem.
+                emit("info", "vm", "VM rebooted to boot picker, selecting first entry...")
                 _send_key("ret", 1)
 
-            elif screen in ("terminal", "recovery") and elapsed_min < 20:
-                # startosinstall still preparing in Terminal
+            elif screen in ("terminal", "recovery") and elapsed_min < 45:
+                # startosinstall still preparing in Terminal, or intermediate recovery boot
                 if poll % 6 == 0:
                     emit("info", "vm", f"Installer preparing... ({elapsed_min} min)")
 
@@ -1043,8 +1042,8 @@ def _auto_install_worker():
                 if poll % 12 == 0:
                     emit("info", "vm", f"VM rebooting... ({elapsed_min} min)")
 
-            elif screen == "recovery" and elapsed_min >= 20:
-                # Recovery screen after a long install period = likely setup wizard
+            elif screen == "recovery" and elapsed_min >= 45:
+                # Recovery/menu-bar screen after a long install = likely setup wizard
                 # (setup wizard has a menu bar but no Terminal traffic lights)
                 _set_phase("done", "macOS appears to be installed. Setup wizard should be visible in VNC.")
                 return
