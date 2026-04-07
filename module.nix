@@ -106,6 +106,7 @@ in {
           { command = "/run/current-system/sw/bin/systemctl stop airtag-extract-keys"; options = [ "NOPASSWD" ]; }
           { command = "/run/current-system/sw/bin/systemctl start airtag-provision-vm"; options = [ "NOPASSWD" ]; }
           { command = "/run/current-system/sw/bin/systemctl restart airtag-provision-vm"; options = [ "NOPASSWD" ]; }
+          { command = "/run/current-system/sw/bin/systemctl restart --no-block airtag-provision-vm"; options = [ "NOPASSWD" ]; }
         ];
       }];
 
