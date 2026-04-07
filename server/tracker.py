@@ -773,11 +773,11 @@ def _detect_screen(ppm_data):
             return "terminal"
         return "recovery"
 
+    if center_brightness > 500:  # White apple logo (with or without progress bar)
+        return "apple_logo"
+
     if icon_area_brightness > 50:
         return "boot_picker"
-
-    if center_brightness > 500:  # White apple logo
-        return "apple_logo"
 
     return "unknown"
 
