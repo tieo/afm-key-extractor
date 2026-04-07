@@ -296,7 +296,7 @@
           <div class="step-dot done"></div><div class="step-dot active"></div><div class="step-dot"></div>
         </div>
         <h2>Set up macOS VM</h2>
-        <p>macOS is pre-installed. You just need to sign into your Apple ID and enable Find My. Takes a few minutes, all in your browser.</p>
+        <p>A one-time setup is needed: install macOS, sign into your Apple ID, and enable Find My. This all happens in your browser via VNC.</p>
         <button class="btn" onclick="startVmSetup()">Start Setup</button>
       `;
     }
@@ -333,12 +333,28 @@
     let vmSetupStep = 0;
     const vmSteps = [
       {
-        title: '1. Sign into Apple ID',
-        text: 'macOS is pre-installed and will boot automatically. Once on the desktop, open <b>System Preferences &rarr; Apple ID</b> and sign in with the same Apple ID your AirTags are paired to. The default macOS password is <b>alpine</b>.',
+        title: '1. Boot into installer',
+        text: 'At the boot picker, select <b>macOS Base System</b>. Wait for the Recovery screen to load (globe icon may spin for a minute).',
       },
       {
-        title: '2. Enable Find My',
-        text: 'After signing in, go to <b>Apple ID &rarr; iCloud &rarr; Find My Mac</b> and turn it on. This makes your AirTag keys available in the macOS Keychain. Then click <b>Complete Setup</b> below.',
+        title: '2. Format the virtual disk',
+        text: 'Select <b>Disk Utility</b> and click Continue. Click <b>View &rarr; Show All Devices</b>. Select the top-level <b>QEMU HARDDISK Media</b> (85.9 GB, the parent &mdash; not the indented child). Click <b>Erase</b>: set Scheme to <b>GUID Partition Map</b>, Format to <b>APFS</b> (name doesn\'t matter). Click Erase, then close Disk Utility.',
+      },
+      {
+        title: '3. Install macOS',
+        text: 'Select <b>Reinstall macOS Ventura</b> and click Continue. Pick the disk you just formatted. Installation downloads ~12 GB and takes 30-60 min. The VM reboots 2-3 times &mdash; each time, pick <b>macOS Installer</b> or your disk from the boot picker.',
+      },
+      {
+        title: '4. macOS setup',
+        text: 'Go through the setup wizard: pick region, language, keyboard. <b>Skip Apple ID</b> for now (click "Set Up Later"). Create a local user account &mdash; remember the password. Skip everything optional.',
+      },
+      {
+        title: '5. Enable SSH + sign into Apple ID',
+        text: 'Open <b>System Settings &rarr; General &rarr; Sharing</b> and turn on <b>Remote Login</b> (SSH). Then open <b>System Settings &rarr; Apple ID</b>, sign in with the Apple ID your AirTags are paired to, and enable <b>Find My Mac</b> under iCloud.',
+      },
+      {
+        title: '6. Done!',
+        text: 'Enter the macOS user password below and click <b>Complete Setup</b>. The VM will shut down and the server will extract your AirTag keys automatically.',
       },
     ];
 
@@ -372,8 +388,9 @@
           <div class="vnc-wrap"><iframe class="vnc-frame" allow="fullscreen" allowfullscreen src="//${location.hostname.replace('airtag', 'airtag-vnc')}/vnc.html?autoconnect=true&resize=scale"></iframe></div>
           <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-shrink:0">
             <button class="btn ghost small" onclick="stopVm()">Cancel & Stop VM</button>
-            <div id="vm-password-row" style="display:none;flex:1">
-              <button class="btn sync" onclick="completeVmSetup()" style="white-space:nowrap;padding:10px 20px">Complete Setup</button>
+            <div id="vm-password-row" style="display:none;flex:1;gap:8px;align-items:center">
+              <input type="password" id="vm-password" placeholder="macOS user password" style="flex:1;padding:10px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee;font-size:0.95em">
+              <button class="btn sync" onclick="completeVmSetup()" style="white-space:nowrap">Complete Setup</button>
             </div>
           </div>
         </div>
@@ -383,10 +400,13 @@
     }
 
     async function completeVmSetup() {
+      const password = document.getElementById('vm-password').value;
+      if (!password) { alert('Enter the macOS user password'); return; }
+
       const res = await fetch('/api/vm/complete-setup', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({})
+        body: JSON.stringify({password})
       });
       const data = await res.json();
       if (data.error) { alert(data.error); return; }

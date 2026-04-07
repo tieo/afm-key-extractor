@@ -458,7 +458,8 @@ def vm_start_setup():
         except (ValueError, ProcessLookupError):
             pid_file.unlink(missing_ok=True)
 
-    emit("info", "vm", "Starting VM for Apple ID setup")
+    has_base_system = (VM_DIR / "BaseSystem.img").exists()
+    emit("info", "vm", f"Starting VM for setup (installer media: {has_base_system})")
 
     qemu_args = [
         "qemu-system-x86_64",
@@ -485,6 +486,13 @@ def vm_start_setup():
         "-daemonize",
         "-pidfile", "/tmp/airtag-vm-setup.pid",
     ]
+
+    # Add installer media if present (first install only)
+    if has_base_system:
+        qemu_args.extend([
+            "-drive", f"id=InstallMedia,if=none,file={VM_DIR}/BaseSystem.img,format=raw",
+            "-device", "ide-hd,bus=sata.3,drive=InstallMedia",
+        ])
 
     try:
         result = sp.run(qemu_args, capture_output=True, text=True, timeout=30)
@@ -521,14 +529,29 @@ def vm_stop():
 @app.route("/api/vm/complete-setup", methods=["POST"])
 def vm_complete_setup():
     """Mark VM setup as complete. Saves VM password and stops the VM."""
-    emit("info", "vm", "VM setup marked complete (Apple ID configured)")
+    data = request.get_json()
+    password = data.get("password")
+    if not password:
+        return jsonify({"error": "VM user password required"}), 400
 
-    # Pre-built image uses user:alpine
+    emit("info", "vm", "VM setup marked complete, saving password")
     pw_path = DATA_DIR / "vm-password"
-    pw_path.write_text("alpine")
+    pw_path.write_text(password)
     pw_path.chmod(0o600)
 
     vm_stop()
+
+    # Remove installer media so future boots skip straight to macOS
+    for f in ["BaseSystem.img", "BaseSystem.dmg"]:
+        p = VM_DIR / f
+        if p.exists():
+            p.unlink()
+            emit("info", "vm", f"Removed installer media ({f})")
+    recovery = VM_DIR / "com.apple.recovery.boot"
+    if recovery.exists():
+        import shutil
+        shutil.rmtree(recovery, ignore_errors=True)
+        emit("info", "vm", "Removed recovery boot files")
 
     emit("info", "vm", "Triggering first key extraction")
     _systemctl("start", "airtag-extract-keys")
