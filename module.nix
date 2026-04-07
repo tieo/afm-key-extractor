@@ -97,6 +97,16 @@ in {
 
       environment.systemPackages = [ pkgs.qemu ];
 
+      security.sudo.extraRules = [{
+        users = [ "airtag-tracker" ];
+        commands = [
+          { command = "/run/current-system/sw/bin/systemctl start airtag-novnc"; options = [ "NOPASSWD" ]; }
+          { command = "/run/current-system/sw/bin/systemctl stop airtag-novnc"; options = [ "NOPASSWD" ]; }
+          { command = "/run/current-system/sw/bin/systemctl start airtag-extract-keys"; options = [ "NOPASSWD" ]; }
+          { command = "/run/current-system/sw/bin/systemctl stop airtag-extract-keys"; options = [ "NOPASSWD" ]; }
+        ];
+      }];
+
       # One-time VM provisioning — downloads macOS + OSX-KVM, creates disk.
       systemd.services.airtag-provision-vm = {
         description = "Provision macOS VM for AirTag key extraction";

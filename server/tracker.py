@@ -381,7 +381,7 @@ def trigger_extract():
 # --- VM setup management (noVNC) ---
 
 def _systemctl(action, service):
-    return sp.run(["systemctl", action, service], capture_output=True, text=True, timeout=10)
+    return sp.run(["sudo", "systemctl", action, service], capture_output=True, text=True, timeout=10)
 
 
 def _tail_journal(unit, category):
