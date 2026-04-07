@@ -529,28 +529,57 @@ def vm_stop():
             emit("info", "vm", "VM process already gone")
         pid_file.unlink(missing_ok=True)
 
+    _monitor_disconnect()
     _systemctl("stop", "airtag-novnc")
     return jsonify({"status": "stopped"})
 
 
 # --- QEMU monitor helpers for VM automation ---
 MONITOR_SOCK = "/tmp/airtag-vm-monitor.sock"
+_monitor_lock = threading.Lock()
+_monitor_sock = None
+
+def _monitor_connect():
+    """Get or create a persistent connection to QEMU monitor."""
+    global _monitor_sock
+    if _monitor_sock is not None:
+        return _monitor_sock
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(5)
+        s.connect(MONITOR_SOCK)
+        s.recv(4096)  # read greeting
+        _monitor_sock = s
+        return s
+    except Exception as e:
+        log.error(f"Monitor connect failed: {e}")
+        _monitor_sock = None
+        return None
+
+def _monitor_disconnect():
+    global _monitor_sock
+    if _monitor_sock:
+        try:
+            _monitor_sock.close()
+        except Exception:
+            pass
+        _monitor_sock = None
 
 def _monitor_cmd(cmd):
-    """Send a command to QEMU's human monitor interface."""
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(5)
-        sock.connect(MONITOR_SOCK)
-        sock.recv(4096)  # read greeting
-        sock.sendall(f"{cmd}\n".encode())
-        time.sleep(0.1)
-        resp = sock.recv(4096).decode(errors="replace")
-        sock.close()
-        return resp
-    except Exception as e:
-        log.error(f"Monitor command failed: {e}")
-        return None
+    """Send a command to QEMU's human monitor interface (persistent connection)."""
+    with _monitor_lock:
+        sock = _monitor_connect()
+        if not sock:
+            return None
+        try:
+            sock.sendall(f"{cmd}\n".encode())
+            time.sleep(0.1)
+            resp = sock.recv(4096).decode(errors="replace")
+            return resp
+        except Exception as e:
+            log.error(f"Monitor command failed: {e}")
+            _monitor_disconnect()
+            return None
 
 def _send_key(key, delay=0.15):
     """Send a single keystroke via QEMU monitor."""
@@ -664,7 +693,7 @@ def _detect_screen(ppm_data):
             return "recovery"  # Recovery has bright icons in center
         return "recovery"  # Any menu bar = recovery or macOS, either way proceed
 
-    if icon_area_brightness > 50 and bottom_brightness > 30:
+    if icon_area_brightness > 50:
         return "boot_picker"
 
     if center_brightness > 500:  # White apple logo
