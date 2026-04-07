@@ -369,14 +369,12 @@
 
       document.getElementById('vm-instructions').innerHTML = `
         <div class="steps-progress">${stepsHtml}</div>
-        <div style="margin-bottom:8px">
-          <b style="color:#4cc9f0">${step.title}</b>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <div style="width:60px">${vmSetupStep > 0 ? `<button class="btn ghost small" onclick="vmSetupStep--;renderVmStep()">&larr; Back</button>` : ''}</div>
+          <b style="color:#4cc9f0;font-size:0.95em">${step.title}</b>
+          <div style="width:60px;text-align:right">${vmSetupStep < vmSteps.length - 1 ? `<button class="btn small" onclick="vmSetupStep++;renderVmStep()">Next &rarr;</button>` : ''}</div>
         </div>
-        <p style="color:#aaa;font-size:0.85em;line-height:1.6;margin-bottom:8px">${step.text}</p>
-        <div style="display:flex;gap:6px">
-          ${vmSetupStep > 0 ? `<button class="btn ghost small" onclick="vmSetupStep--;renderVmStep()">&larr; Back</button>` : ''}
-          ${vmSetupStep < vmSteps.length - 1 ? `<button class="btn small" onclick="vmSetupStep++;renderVmStep()">Next &rarr;</button>` : ''}
-        </div>
+        <p style="color:#aaa;font-size:0.85em;line-height:1.6;margin-bottom:4px">${step.text}</p>
       `;
 
       // Show password input only on the last step
