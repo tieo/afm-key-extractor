@@ -267,6 +267,17 @@
       if (vmState.enabled && !vmState.provisioned) {
         showProvisioningWait();
       } else if (vmState.enabled && !vmState.setup_complete) {
+        // If VM is already running with install in progress, show progress view
+        if (vmState.vm_running) {
+          try {
+            const installRes = await fetch('/api/vm/install-status');
+            const installData = await installRes.json();
+            if (installData.phase && installData.phase !== 'idle') {
+              showAutoInstallProgress();
+              return;
+            }
+          } catch(e) { /* fall through to wizard */ }
+        }
         showVmSetupWizard();
       } else if (!accData.configured) {
         showLoginForm();
@@ -378,6 +389,7 @@
           <div class="vnc-wrap"><iframe class="vnc-frame" allow="fullscreen" allowfullscreen src="//${location.hostname.replace('airtag', 'airtag-vnc')}/vnc.html?autoconnect=true&resize=scale"></iframe></div>
           <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-shrink:0">
             <button class="btn ghost small" onclick="stopVm()">Cancel</button>
+            <button class="btn ghost small danger" onclick="reinstallVm()">Reinstall</button>
             <div id="manual-setup-controls" style="display:none;flex:1;gap:8px;align-items:center">
               <input type="password" id="vm-password" placeholder="macOS user password" style="flex:1;padding:10px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee;font-size:0.95em">
               <button class="btn sync" onclick="completeVmSetup()" style="white-space:nowrap">Complete Setup</button>
@@ -421,7 +433,10 @@
           return; // stop polling
         } else if (phase === 'error') {
           const lastEvent = await fetch('/api/events').then(r => r.json()).then(events => events.filter(e => e.source === 'vm').pop());
-          document.getElementById('install-detail').textContent = lastEvent?.message || 'An error occurred. Check VNC for details.';
+          document.getElementById('install-detail').innerHTML =
+            (lastEvent?.message || 'An error occurred. Check VNC for details.') +
+            '<br><button class="btn small" onclick="startVmSetup()" style="margin-top:8px">Retry</button>' +
+            '<button class="btn small danger" onclick="reinstallVm()" style="margin-top:8px;margin-left:8px">Reinstall</button>';
           document.getElementById('install-progress-bar').style.background = '#e63946';
           return; // stop polling
         } else if (phase === 'formatting') {
