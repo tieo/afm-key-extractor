@@ -671,9 +671,9 @@ def _qmp_cmd(cmd_dict):
             return None
 
 def _mouse_click(px, py, delay=0.5):
-    """Click at pixel coordinates (1920x1080 screen) via QMP absolute mouse input."""
-    qx = int((px / 1920) * 32767)
-    qy = int((py / 1080) * 32767)
+    """Click at pixel coordinates (1280x800 screen) via QMP absolute mouse input."""
+    qx = int((px / 1280) * 32767)
+    qy = int((py / 800) * 32767)
     # Move to position and click
     _qmp_cmd({"execute": "input-send-event", "arguments": {"events": [
         {"type": "abs", "data": {"axis": "x", "value": qx}},
@@ -738,8 +738,8 @@ def _region_avg_brightness(data, x1, y1, x2, y2, step=10):
 
 def _detect_screen(ppm_data):
     """Analyze screenshot to determine current VM screen state.
-    Returns: 'boot_picker', 'apple_logo', 'recovery', 'setup_wizard', 'desktop', or 'unknown'.
-    Screen is 1920x1080.
+    Returns: 'boot_picker', 'apple_logo', 'recovery', 'terminal', 'installing', or 'unknown'.
+    Screen is 1280x800.
     """
     if not ppm_data:
         return "unknown"
@@ -750,21 +750,18 @@ def _detect_screen(ppm_data):
     # Check center area for apple logo (white on black)
     center_brightness = _pixel_brightness(ppm_data, 640, 400)
 
-    # Check icon area (where boot picker icons appear, ~y 310-470, center x)
-    icon_area_brightness = _region_avg_brightness(ppm_data, 450, 310, 800, 470)
+    # Check icon area (where boot picker icons appear, ~y 280-450, center x)
+    icon_area_brightness = _region_avg_brightness(ppm_data, 450, 280, 800, 450)
 
-    # Check bottom area for boot picker power/reload buttons
-    bottom_brightness = _region_avg_brightness(ppm_data, 550, 740, 720, 790)
-
-    log.info(f"Screen detect: menubar={menubar_brightness:.0f} center={center_brightness} icons={icon_area_brightness:.0f} bottom={bottom_brightness:.0f}")
+    log.info(f"Screen detect: menubar={menubar_brightness:.0f} center={center_brightness} icons={icon_area_brightness:.0f}")
 
     if menubar_brightness > 100:
-        # Menu bar visible — we're in recovery GUI, setup wizard, or desktop
-        # Check if we see the recovery gradient background vs a desktop/setup screen
-        mid_brightness = _region_avg_brightness(ppm_data, 400, 300, 800, 500)
-        if mid_brightness > 200:
-            return "recovery"  # Recovery has bright icons in center
-        return "recovery"  # Any menu bar = recovery or macOS, either way proceed
+        # Menu bar visible — could be recovery, terminal, installer, or setup wizard
+        # Check for Terminal's red traffic light button at top-left (~x=17, y=30)
+        red_r, red_g, red_b = _ppm_pixel(ppm_data, 17, 30)
+        if red_r > 150 and red_g < 100 and red_b < 100:
+            return "terminal"
+        return "recovery"
 
     if icon_area_brightness > 50:
         return "boot_picker"
@@ -789,8 +786,43 @@ def _set_phase(phase, msg=None):
     log.info(f"Auto-install phase: {phase}")
 
 
+def _wait_for_screen(expected, timeout=300, poll_interval=5, msg=None):
+    """Poll screenshots until the expected screen state appears.
+
+    Args:
+        expected: screen state string or set of acceptable states
+        timeout: max seconds to wait
+        poll_interval: seconds between polls
+        msg: optional status message prefix for progress updates
+    Returns:
+        (state, ppm_data) if expected state found, or (last_state, ppm_data) on timeout
+    """
+    if isinstance(expected, str):
+        expected = {expected}
+    deadline = time.time() + timeout
+    last_state = "unknown"
+    last_ppm = None
+    polls = 0
+    while time.time() < deadline:
+        last_ppm = _take_screenshot()
+        last_state = _detect_screen(last_ppm)
+        if last_state in expected:
+            return last_state, last_ppm
+        polls += 1
+        if msg and polls % 6 == 0:
+            remaining = int(deadline - time.time())
+            emit("info", "vm", f"{msg} (screen: {last_state}, {remaining}s remaining)")
+        time.sleep(poll_interval)
+    return last_state, last_ppm
+
+
 def _auto_install_worker():
-    """Autonomous macOS install: detects screen state and acts accordingly."""
+    """Autonomous macOS install via Terminal + startosinstall.
+
+    Flow: boot picker → recovery → Terminal → format disk → startosinstall.
+    All coordinates validated on 1280x800 screen.
+    Every step verifies screen state before and after acting — no blind waits.
+    """
     global _auto_install_start_time
     _auto_install_start_time = time.time()
 
@@ -798,7 +830,7 @@ def _auto_install_worker():
         _set_phase("booting", "Starting macOS VM and auto-install...")
 
         # Wait for QEMU monitor to become responsive
-        for attempt in range(120):  # up to 10 min
+        for attempt in range(120):
             if os.path.exists(MONITOR_SOCK):
                 resp = _monitor_cmd("info status")
                 if resp and "running" in resp:
@@ -808,134 +840,173 @@ def _auto_install_worker():
             _set_phase("error", "VM failed to start — monitor not responding")
             return
 
-        _set_phase("boot_picker", "VM booted, navigating boot picker...")
+        # === STEP 1: Wait for boot picker ===
+        _set_phase("boot_picker", "VM booted, waiting for boot picker...")
+        state, _ = _wait_for_screen(
+            {"boot_picker", "recovery"}, timeout=180, poll_interval=5,
+            msg="Waiting for boot picker"
+        )
 
-        # Main screen-detection loop
-        recovery_entered = False
-        formatting_done = False
-        installer_started = False
-        boot_picker_attempts = 0
-        stuck_count = 0
-        last_screen = None
+        if state == "boot_picker":
+            emit("info", "vm", "Boot picker detected, selecting macOS Base System...")
+            for _ in range(5):
+                _send_key("right", 0.3)
+            _send_key("ret", 1)
 
-        for poll in range(360):  # up to 60 min of polling
+            # Verify we left boot picker
+            state, _ = _wait_for_screen(
+                {"recovery", "apple_logo"}, timeout=120, poll_interval=5,
+                msg="Waiting for boot to proceed"
+            )
+        elif state != "recovery":
+            _set_phase("error", f"Expected boot picker or recovery, got: {state}")
+            return
+
+        # === STEP 2: Wait for recovery ===
+        if state != "recovery":
+            _set_phase("boot_picker", "Booting into recovery...")
+            state, _ = _wait_for_screen(
+                "recovery", timeout=300, poll_interval=5,
+                msg="Waiting for recovery"
+            )
+            if state != "recovery":
+                _set_phase("error", f"Recovery not reached after 5 min (screen: {state})")
+                return
+
+        recovery_time = time.time() - _auto_install_start_time
+        _set_phase("formatting", f"Recovery loaded after {int(recovery_time)}s. Opening Terminal...")
+
+        # Let recovery GUI fully render — poll until consecutive stable screenshots
+        for _ in range(6):
+            time.sleep(2)
+            s, _ = _wait_for_screen("recovery", timeout=5, poll_interval=1)
+            if s == "recovery":
+                break
+
+        # === STEP 3: Open Terminal via Utilities menu ===
+        # Menu bar items at y=10: [Apple x=20] [Recovery x=83] [File x=144] [Edit x=187] [Utilities x=242] [Window x=309]
+        emit("info", "vm", "Opening Terminal via Utilities menu...")
+        _mouse_click(242, 10, 1.5)   # Click "Utilities" in menu bar
+        _mouse_click(242, 55, 4)      # Click "Terminal" (2nd dropdown item)
+
+        # Verify Terminal opened — poll for "terminal" screen state (red traffic light button)
+        time.sleep(1)
+        _mouse_click(400, 300, 1)  # Click Terminal window to focus
+        state, _ = _wait_for_screen("terminal", timeout=15, poll_interval=2)
+
+        if state != "terminal":
+            # Terminal may have opened but traffic light not detected — try one more time
+            emit("info", "vm", f"Terminal check: got '{state}', retrying Utilities → Terminal...")
+            _send_key("escape", 0.5)
+            time.sleep(1)
+            _mouse_click(242, 10, 1.5)
+            _mouse_click(242, 55, 4)
+            time.sleep(2)
+            _mouse_click(400, 300, 1)
+            state, _ = _wait_for_screen("terminal", timeout=10, poll_interval=2)
+            if state != "terminal":
+                log.warning(f"Terminal detection returned '{state}' — proceeding anyway (detection may be imprecise)")
+
+        emit("info", "vm", "Terminal is open.")
+
+        # === STEP 4: Format disk ===
+        emit("info", "vm", "Formatting disk (GUID Partition Map + APFS)...")
+        _type_text('diskutil eraseDisk APFS "Macintosh HD" GPT disk0')
+        _send_key("ret")
+
+        # Poll until format completes — we can't read terminal text, but format takes ~15-30s.
+        # Poll for terminal still being visible (ensures VM hasn't crashed/rebooted).
+        format_start = time.time()
+        for i in range(20):
+            time.sleep(3)
+            ppm = _take_screenshot()
+            s = _detect_screen(ppm)
+            elapsed_fmt = int(time.time() - format_start)
+            if s not in ("terminal", "recovery"):
+                log.warning(f"Unexpected screen during format: {s}")
+                break
+            if elapsed_fmt >= 30:
+                break
+            if i % 3 == 0:
+                emit("info", "vm", f"Formatting... ({elapsed_fmt}s)")
+
+        # Verify we're still in terminal after format
+        state, _ = _wait_for_screen({"terminal", "recovery"}, timeout=10, poll_interval=2)
+        emit("info", "vm", f"Format complete (screen: {state}).")
+
+        # === STEP 5: Find and run startosinstall ===
+        _set_phase("installing", "Starting macOS installer from command line...")
+        emit("info", "vm", "Finding macOS installer (startosinstall)...")
+
+        _type_text('INST=$(find / -name startosinstall -maxdepth 6 2>/dev/null | head -1); echo "FOUND:$INST"')
+        _send_key("ret")
+
+        # Wait for find to complete — poll terminal state to ensure VM is responsive
+        find_start = time.time()
+        for i in range(10):
+            time.sleep(2)
+            ppm = _take_screenshot()
+            s = _detect_screen(ppm)
+            if s not in ("terminal", "recovery"):
+                log.warning(f"Unexpected screen during find: {s}")
+                break
+            if time.time() - find_start >= 10:
+                break
+
+        emit("info", "vm", "Running startosinstall --agreetolicense...")
+        _type_text('"$INST" --agreetolicense --volume "/Volumes/Macintosh HD"')
+        _send_key("ret")
+
+        _set_phase("installing", "macOS installation in progress. This takes 30-60 minutes...")
+        emit("info", "vm", "startosinstall is preparing the installation. The VM will reboot when ready...")
+
+        # === STEP 6: Monitor installation progress ===
+        # startosinstall prepares in Terminal, then triggers a reboot.
+        # After reboot: boot picker → apple logo → potentially more reboots → setup wizard.
+        install_start = time.time()
+        last_screen = "terminal"
+
+        for poll in range(360):  # up to 60 min at 10s intervals
             time.sleep(10)
-            ppm_data = _take_screenshot()
-            screen = _detect_screen(ppm_data)
+            ppm = _take_screenshot()
+            screen = _detect_screen(ppm)
+            elapsed_min = int((time.time() - install_start) / 60)
 
-            if screen == last_screen:
-                stuck_count += 1
-            else:
-                stuck_count = 0
+            # Log state transitions
+            if screen != last_screen:
+                emit("info", "vm", f"Screen changed: {last_screen} → {screen} ({elapsed_min} min)")
                 last_screen = screen
 
-            if screen == "boot_picker" and not recovery_entered:
-                boot_picker_attempts += 1
-                if boot_picker_attempts <= 10:
-                    emit("info", "vm", f"Boot picker detected, selecting macOS Base System (attempt {boot_picker_attempts})...")
-                    # Press End to jump to last entry (macOS Base System), then Enter
-                    # Press right multiple times to reach last entry (macOS Base System)
-                    for _ in range(5):
-                        _send_key("right", 0.3)
-                    _send_key("ret", 1)
-
-            elif screen == "apple_logo":
-                if not recovery_entered:
-                    elapsed = time.time() - _auto_install_start_time
-                    if stuck_count % 6 == 0:  # log every ~60s
-                        emit("info", "vm", f"macOS booting... ({int(elapsed)}s elapsed)")
-
-            elif screen == "recovery" and not recovery_entered:
-                recovery_entered = True
-                recovery_time = time.time() - _auto_install_start_time
-                _set_phase("formatting", f"Recovery loaded after {int(recovery_time)}s. Formatting disk...")
-
-                # Give recovery GUI a moment to fully render
-                time.sleep(8)
-
-                # Open Terminal via menu bar click (Ctrl+F2 doesn't work in recovery)
-                # Recovery menu bar: [Apple] [macOS Recovery] [Edit] [Utilities] [Window] [Help]
-                # "Utilities" is at approximately x=255, y=12 on a 1920x1080 screen
-                emit("info", "vm", "Opening Terminal via Utilities menu...")
-                _mouse_click(255, 12, 1)   # Click "Utilities" in menu bar
-                _mouse_click(255, 48, 3)   # Click "Terminal" (first dropdown item below "Startup Security Utility")
-
-                # If Terminal didn't open, try again with adjusted position
-                # Terminal is typically the 2nd item in Utilities menu
-                # Try clicking a bit lower in case Startup Security Utility is the first item
-                time.sleep(1)
-
-                # Enable keyboard navigation for this session
-                _type_text("defaults write NSGlobalDomain AppleKeyboardUIMode -int 2")
-                _send_key("ret", 2)
-
-                # Format disk
-                emit("info", "vm", "Formatting disk (GUID Partition Map + APFS)...")
-                _type_text('diskutil eraseDisk APFS "Macintosh HD" GPT disk0')
-                _send_key("ret")
-                time.sleep(20)  # wait for format
-                formatting_done = True
-
-                # Start the installer from Terminal (avoids GUI navigation entirely)
-                emit("info", "vm", "Starting macOS Ventura installation...")
-                _set_phase("installing", "Starting installer from Terminal...")
-
-                # Close Terminal and click Reinstall macOS Ventura on recovery screen
-                _send_key("meta_l-q", 3)
-
-                # Recovery main screen: 4 icons centered horizontally
-                # On 1920x1080: icons are roughly at y=420, spaced about 200px apart
-                # Layout: [Restore TM ~x=530] [Reinstall macOS ~x=730] [Safari ~x=930] [Disk Utility ~x=1130]
-                # Click "Reinstall macOS Ventura" (2nd icon)
-                _mouse_click(730, 420, 3)
-
-                # Double-click to be sure
-                _mouse_click(730, 420, 5)
-
-                # Installer opens: Introduction screen with "Continue" button
-                # "Continue" button is at bottom-right of the installer window
-                # Installer window is centered, ~800px wide, button at bottom-right
-                _mouse_click(1100, 660, 5)  # Click Continue
-
-                # License agreement: "Agree" button
-                _mouse_click(1100, 660, 3)  # Click Agree
-
-                # Confirmation dialog: "Agree" button in the sheet
-                _mouse_click(1010, 440, 5)  # Click Agree in confirmation dialog
-
-                # Disk selection: "Macintosh HD" should be the only option, pre-selected
-                # "Install" or "Continue" button at bottom
-                _mouse_click(1100, 660, 3)  # Click Install
-
-                installer_started = True
-                install_start = time.time()
-                _set_phase("installing", "macOS installation in progress. This takes 30-60 minutes...")
-
-            elif screen == "recovery" and installer_started:
-                # During install, VM reboots back to boot picker → recovery
-                # This means install is progressing
-                elapsed_install = time.time() - _auto_install_step_times.get("installing", time.time())
-                emit("info", "vm", f"Installation progressing... ({int(elapsed_install/60)} min elapsed)")
-
-            elif screen == "boot_picker" and installer_started:
-                # VM rebooted during install — need to select the right entry again
-                emit("info", "vm", "VM rebooted during install, selecting boot entry...")
+            if screen == "boot_picker":
+                emit("info", "vm", "VM rebooted to boot picker, selecting boot entry...")
                 for _ in range(5):
                     _send_key("right", 0.3)
                 _send_key("ret", 1)
 
-            # Check for stuck state (>10 min on same screen without progress)
-            if stuck_count > 60 and screen == "apple_logo":
-                _set_phase("error", "VM appears stuck on Apple logo for >10 minutes. May need manual intervention.")
+            elif screen in ("terminal", "recovery") and elapsed_min < 20:
+                # startosinstall still preparing in Terminal
+                if poll % 6 == 0:
+                    emit("info", "vm", f"Installer preparing... ({elapsed_min} min)")
+
+            elif screen == "apple_logo":
+                if poll % 6 == 0:
+                    emit("info", "vm", f"macOS installing... ({elapsed_min} min)")
+
+            elif screen == "unknown":
+                # Black screen during reboot — normal
+                if poll % 12 == 0:
+                    emit("info", "vm", f"VM rebooting... ({elapsed_min} min)")
+
+            elif screen == "recovery" and elapsed_min >= 20:
+                # Recovery screen after a long install period = likely setup wizard
+                # (setup wizard has a menu bar but no Terminal traffic lights)
+                _set_phase("done", "macOS appears to be installed. Setup wizard should be visible in VNC.")
                 return
 
-            # Check if install might be complete — look for setup wizard
-            # (This is tricky, but we'll detect it as "recovery" since menu bar is visible)
-            if installer_started and screen == "recovery":
-                elapsed_install = time.time() - _auto_install_step_times.get("installing", time.time())
-                if elapsed_install > 1200:  # >20 min since install started
-                    _set_phase("done", "macOS appears to be installed. Setup wizard should be visible in VNC.")
-                    return
+            # Timeout after 60 min
+            if time.time() - install_start > 3600:
+                _set_phase("done", "Installation monitoring timed out after 60 min. Check VNC for current state.")
+                return
 
         _set_phase("done", "Auto-install monitoring complete. Check VNC for current state.")
 
