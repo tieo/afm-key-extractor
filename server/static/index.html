@@ -337,27 +337,24 @@
     let vmSetupStep = 0;
     const vmSteps = [
       {
-        title: '1. Boot into installer',
-        text: 'At the boot picker, select <b>macOS Base System</b>. Wait for the Recovery screen to load (Apple logo may show for a minute).',
+        title: '1. Wait for Recovery to load',
+        text: 'The VM is booting into macOS Recovery. Wait until you see the Recovery screen with 4 icons (this takes 2-4 minutes). Then click <b>Auto-install</b> below.',
+        autoInstall: true,
       },
       {
-        title: '2. Format the virtual disk',
-        text: 'Select <b>Disk Utility</b> and click Continue. Click <b>View &rarr; Show All Devices</b>. Select the top-level <b>QEMU HARDDISK Media</b> (85.9 GB, the parent &mdash; not the indented child). Click <b>Erase</b>: set Scheme to <b>GUID Partition Map</b>, Format to <b>APFS</b> (name doesn\'t matter). Click Erase, then close Disk Utility.',
+        title: '2. Installing macOS (automatic)',
+        text: 'The disk is being formatted and macOS is being installed automatically. This downloads ~12 GB and takes 30-60 min. The VM reboots 2-3 times &mdash; just wait. When you see the macOS setup wizard (region selection), go to the next step.',
       },
       {
-        title: '3. Install macOS',
-        text: 'Select <b>Reinstall macOS Ventura</b> and click Continue. Pick the disk you just formatted. Installation downloads ~12 GB and takes 30-60 min. The VM reboots 2-3 times &mdash; each time, pick <b>macOS Installer</b> or your disk from the boot picker.',
-      },
-      {
-        title: '4. macOS setup',
+        title: '3. macOS setup',
         text: 'Go through the setup wizard: pick region, language, keyboard. <b>Skip Apple ID</b> for now (click "Set Up Later"). Create a local user account &mdash; remember the password. Skip everything optional.',
       },
       {
-        title: '5. Enable SSH + sign into Apple ID',
+        title: '4. Enable SSH + sign into Apple ID',
         text: 'Open <b>System Settings &rarr; General &rarr; Sharing</b> and turn on <b>Remote Login</b> (SSH). Then open <b>System Settings &rarr; Apple ID</b>, sign in with the Apple ID your AirTags are paired to, and enable <b>Find My Mac</b> under iCloud.',
       },
       {
-        title: '6. Done!',
+        title: '5. Done!',
         text: 'Enter the macOS user password below and click <b>Complete Setup</b>. The VM will shut down and the server will extract your AirTag keys automatically.',
       },
     ];
@@ -369,12 +366,14 @@
         return `<div class="step-dot ${cls}" style="cursor:pointer" onclick="vmSetupStep=${i};renderVmStep()"></div>`;
       }).join('');
 
+      const autoBtn = step.autoInstall ? `<button class="btn small sync" id="auto-install-btn" onclick="triggerAutoInstall()" style="margin-left:12px;white-space:nowrap">Auto-install</button>` : '';
+
       document.getElementById('vm-instructions').innerHTML = `
         <div class="steps-progress">${stepsHtml}</div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
           <div style="width:60px">${vmSetupStep > 0 ? `<button class="btn ghost small" onclick="vmSetupStep--;renderVmStep()">&larr; Back</button>` : ''}</div>
           <b style="color:#4cc9f0;font-size:0.95em">${step.title}</b>
-          <div style="width:60px;text-align:right">${vmSetupStep < vmSteps.length - 1 ? `<button class="btn small" onclick="vmSetupStep++;renderVmStep()">Next &rarr;</button>` : ''}</div>
+          <div style="display:flex;align-items:center">${autoBtn}${vmSetupStep < vmSteps.length - 1 ? `<button class="btn small" onclick="vmSetupStep++;renderVmStep()" style="margin-left:8px">Next &rarr;</button>` : ''}</div>
         </div>
         <p style="color:#aaa;font-size:0.85em;line-height:1.6;margin-bottom:4px">${step.text}</p>
       `;
@@ -426,6 +425,18 @@
         <p>Next: sign into your Apple ID so the server can query locations.</p>
         <button class="btn" onclick="showLoginForm()">Sign in with Apple ID</button>
       `;
+    }
+
+    async function triggerAutoInstall() {
+      const btn = document.getElementById('auto-install-btn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Running...'; }
+      try {
+        const res = await fetch('/api/vm/auto-install', {method: 'POST'});
+        const data = await res.json();
+        if (data.error) { alert(data.error); if (btn) { btn.disabled = false; btn.textContent = 'Auto-install'; } return; }
+        vmSetupStep = 1;
+        renderVmStep();
+      } catch(e) { alert('Auto-install failed: ' + e.message); if (btn) { btn.disabled = false; btn.textContent = 'Auto-install'; } }
     }
 
     async function stopVm() {

@@ -2,6 +2,7 @@
 
 import json
 import math
+import socket
 import sqlite3
 import subprocess as sp
 import time
@@ -483,6 +484,7 @@ def vm_start_setup():
         "-device", "vmxnet3,netdev=net0,id=net0,mac=52:54:00:c9:18:27",
         "-device", "vmware-svga",
         "-vnc", "127.0.0.1:1",
+        "-monitor", "unix:/tmp/airtag-vm-monitor.sock,server,nowait",
         "-daemonize",
         "-pidfile", "/tmp/airtag-vm-setup.pid",
     ]
@@ -524,6 +526,155 @@ def vm_stop():
 
     _systemctl("stop", "airtag-novnc")
     return jsonify({"status": "stopped"})
+
+
+# --- QEMU monitor helpers for VM automation ---
+MONITOR_SOCK = "/tmp/airtag-vm-monitor.sock"
+
+def _monitor_cmd(cmd):
+    """Send a command to QEMU's human monitor interface."""
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect(MONITOR_SOCK)
+        sock.recv(4096)  # read greeting
+        sock.sendall(f"{cmd}\n".encode())
+        time.sleep(0.1)
+        resp = sock.recv(4096).decode(errors="replace")
+        sock.close()
+        return resp
+    except Exception as e:
+        log.error(f"Monitor command failed: {e}")
+        return None
+
+def _send_key(key, delay=0.15):
+    """Send a single keystroke via QEMU monitor."""
+    _monitor_cmd(f"sendkey {key}")
+    time.sleep(delay)
+
+def _type_text(text):
+    """Type a string character by character via QEMU monitor."""
+    keymap = {
+        ' ': 'spc', '\n': 'ret', '-': 'minus', '=': 'equal',
+        '.': 'dot', ',': 'comma', '/': 'slash', '\\': 'backslash',
+        '[': 'bracket_left', ']': 'bracket_right', ';': 'semicolon',
+        '\'': 'apostrophe', '`': 'grave_accent', '0': '0', '1': '1',
+        '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7',
+        '8': '8', '9': '9',
+    }
+    shift_keymap = {
+        '"': 'apostrophe', '!': '1', '@': '2', '#': '3', '$': '4',
+        '%': '5', '^': '6', '&': '7', '*': '8', '(': '9', ')': '0',
+        '_': 'minus', '+': 'equal', '{': 'bracket_left', '}': 'bracket_right',
+        ':': 'semicolon', '<': 'comma', '>': 'dot', '?': 'slash',
+        '|': 'backslash', '~': 'grave_accent',
+    }
+    for ch in text:
+        if ch in shift_keymap:
+            _send_key(f"shift-{shift_keymap[ch]}", 0.05)
+        elif ch in keymap:
+            _send_key(keymap[ch], 0.05)
+        elif ch.isalpha():
+            if ch.isupper():
+                _send_key(f"shift-{ch.lower()}", 0.05)
+            else:
+                _send_key(ch, 0.05)
+        else:
+            log.warning(f"Unmapped character: {ch!r}")
+
+
+def _auto_install_worker():
+    """Background worker: automates disk formatting and macOS install in Ventura recovery."""
+    try:
+        emit("info", "vm", "Auto-install: waiting for recovery to load (~3 min)...")
+
+        # Poll until monitor socket is responsive (VM is booted)
+        for _ in range(60):
+            if os.path.exists(MONITOR_SOCK):
+                resp = _monitor_cmd("info status")
+                if resp and "running" in resp:
+                    break
+            time.sleep(5)
+
+        # Wait for recovery GUI to fully load after boot
+        emit("info", "vm", "Auto-install: VM booted, waiting for recovery GUI...")
+        time.sleep(180)  # 3 minutes for recovery to fully render
+
+        # Step 1: Open Terminal via Utilities menu
+        emit("info", "vm", "Auto-install: opening Terminal...")
+        # Ctrl+F2 focuses the menu bar in macOS
+        _send_key("ctrl-f2", 1.5)
+        # Navigate: Apple > macOS Recovery > Edit > Utilities
+        _send_key("right", 0.3)  # macOS Recovery
+        _send_key("right", 0.3)  # Edit
+        _send_key("right", 0.3)  # Utilities
+        _send_key("ret", 0.5)    # Open Utilities dropdown
+        _send_key("down", 0.3)   # Startup Security Utility
+        _send_key("down", 0.3)   # Terminal
+        _send_key("ret", 3)      # Open Terminal
+
+        # Step 2: Enable full keyboard access for GUI navigation later
+        emit("info", "vm", "Auto-install: enabling keyboard navigation...")
+        _type_text("defaults write NSGlobalDomain AppleKeyboardUIMode -int 2")
+        _send_key("ret", 2)
+
+        # Step 3: Format the disk
+        emit("info", "vm", "Auto-install: formatting disk (GUID + APFS)...")
+        _type_text('diskutil eraseDisk APFS "Macintosh HD" GPT disk0')
+        _send_key("ret")
+        time.sleep(15)  # wait for format to complete
+
+        # Step 4: Close Terminal → recovery window gets focus
+        emit("info", "vm", "Auto-install: closing Terminal...")
+        _send_key("meta_l-q", 3)
+
+        # Step 5: Navigate to "Reinstall macOS Ventura"
+        # Recovery shows 4 icons: Time Machine, Reinstall macOS, Safari, Disk Utility
+        # Tab cycles through them
+        emit("info", "vm", "Auto-install: selecting Reinstall macOS Ventura...")
+        _send_key("tab", 0.5)    # Time Machine (or first focusable)
+        _send_key("tab", 0.5)    # Reinstall macOS Ventura
+        _send_key("ret", 5)      # Open installer
+
+        # Step 6: Installer - Introduction screen → Continue
+        emit("info", "vm", "Auto-install: navigating installer (Continue)...")
+        _send_key("tab", 0.5)
+        _send_key("tab", 0.5)
+        _send_key("spc", 3)      # Click Continue
+
+        # Step 7: License agreement → Agree
+        emit("info", "vm", "Auto-install: accepting license...")
+        _send_key("tab", 0.5)
+        _send_key("tab", 0.5)
+        _send_key("spc", 2)      # Click Agree
+        _send_key("ret", 3)      # Confirm "Agree" in dialog
+
+        # Step 8: Disk selection → Install
+        # "Macintosh HD" should be the only/pre-selected APFS volume
+        emit("info", "vm", "Auto-install: selecting disk and starting install...")
+        _send_key("tab", 0.5)
+        _send_key("tab", 0.5)
+        _send_key("spc", 2)      # Click Install/Continue
+
+        emit("info", "vm", "Auto-install: macOS installation started! This takes 30-60 min. The VM will reboot 2-3 times automatically.")
+
+    except Exception as e:
+        emit("error", "vm", f"Auto-install failed: {e}. You can continue manually via VNC.")
+        log.exception("Auto-install error")
+
+
+@app.route("/api/vm/auto-install", methods=["POST"])
+def vm_auto_install():
+    """Automate disk formatting and macOS installation via QEMU monitor keystrokes."""
+    if not VM_ENABLED:
+        return jsonify({"error": "VM not enabled"}), 400
+
+    pid_file = Path("/tmp/airtag-vm-setup.pid")
+    if not pid_file.exists():
+        return jsonify({"error": "VM is not running. Start setup first."}), 400
+
+    threading.Thread(target=_auto_install_worker, daemon=True).start()
+    return jsonify({"status": "auto-install started"})
 
 
 @app.route("/api/vm/complete-setup", methods=["POST"])
