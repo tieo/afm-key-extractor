@@ -882,6 +882,40 @@ def _auto_install_worker():
                 msg="Waiting for recovery"
             )
             if state != "recovery":
+                if state == "apple_logo":
+                    # Apple logo persisting = likely a resumed/ongoing macOS installation
+                    # Skip straight to install monitoring
+                    _set_phase("installing", "macOS installation already in progress (resumed from previous attempt)...")
+                    emit("info", "vm", "Apple logo with progress bar detected — monitoring ongoing installation...")
+                    install_start = time.time() - 600  # assume started ~10 min ago
+                    last_screen = "apple_logo"
+                    # Jump to install monitoring (same loop as STEP 6)
+                    for poll in range(360):
+                        time.sleep(10)
+                        ppm = _take_screenshot()
+                        screen = _detect_screen(ppm)
+                        elapsed_min = int((time.time() - install_start) / 60)
+                        if screen != last_screen:
+                            emit("info", "vm", f"Screen changed: {last_screen} → {screen} ({elapsed_min} min)")
+                            last_screen = screen
+                        if screen == "boot_picker":
+                            emit("info", "vm", "VM rebooted to boot picker, selecting boot entry...")
+                            for _ in range(5):
+                                _send_key("right", 0.3)
+                            _send_key("ret", 1)
+                        elif screen == "apple_logo":
+                            if poll % 6 == 0:
+                                emit("info", "vm", f"macOS installing... ({elapsed_min} min)")
+                        elif screen == "recovery":
+                            _set_phase("done", "macOS appears to be installed. Setup wizard should be visible in VNC.")
+                            return
+                        elif screen == "unknown" and poll % 12 == 0:
+                            emit("info", "vm", f"VM rebooting... ({elapsed_min} min)")
+                        if time.time() - install_start > 4200:  # 70 min
+                            _set_phase("done", "Installation monitoring timed out. Check VNC for current state.")
+                            return
+                    _set_phase("done", "Auto-install monitoring complete. Check VNC.")
+                    return
                 _set_phase("error", f"Recovery not reached after 5 min (screen: {state})")
                 return
 
