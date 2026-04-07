@@ -65,12 +65,11 @@
 
     /* VNC viewer */
     .vnc-wrap {
-      position: relative; width: 100%; padding-bottom: 56.25%; /* 16:9 */
-      border-radius: 8px; overflow: hidden; background: #000; margin-bottom: 12px;
+      flex: 1; min-height: 0; width: 100%;
+      border-radius: 8px; overflow: hidden; background: #000; margin-bottom: 8px;
     }
     .vnc-frame {
-      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-      border: none;
+      width: 100%; height: 100%; border: none;
     }
 
     /* Settings panel */
@@ -389,7 +388,7 @@
       const overlay = document.getElementById('setup-overlay');
       overlay.classList.remove('hidden');
       overlay.innerHTML = `
-        <div style="width:98%;max-width:900px;padding:8px">
+        <div style="width:100%;height:100%;padding:8px;display:flex;flex-direction:column">
           <div id="vm-instructions"></div>
           <div class="vnc-wrap"><iframe class="vnc-frame" allow="fullscreen" allowfullscreen src="//${location.hostname.replace('airtag', 'airtag-vnc')}/vnc.html?autoconnect=true&resize=scale"></iframe></div>
           <div id="vm-password-row" style="display:none;gap:8px;margin-top:8px">
