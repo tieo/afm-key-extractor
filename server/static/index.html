@@ -65,8 +65,12 @@
 
     /* VNC viewer */
     .vnc-frame {
-      width: 100%; height: 70vh; border: none; border-radius: 8px;
+      width: 1920px; height: 1080px; border: none; border-radius: 8px;
       background: #000; margin-bottom: 12px;
+    }
+    .vnc-scroll {
+      width: 100%; overflow: auto; -webkit-overflow-scrolling: touch;
+      border-radius: 8px; margin-bottom: 12px;
     }
 
     /* Settings panel */
@@ -387,7 +391,7 @@
       overlay.innerHTML = `
         <div style="width:98%;max-width:900px;padding:8px">
           <div id="vm-instructions"></div>
-          <iframe class="vnc-frame" allow="fullscreen" allowfullscreen src="//${location.hostname.replace('airtag', 'airtag-vnc')}/vnc.html?autoconnect=true&resize=scale"></iframe>
+          <div class="vnc-scroll"><iframe class="vnc-frame" allow="fullscreen" allowfullscreen src="//${location.hostname.replace('airtag', 'airtag-vnc')}/vnc.html?autoconnect=true"></iframe></div>
           <div id="vm-password-row" style="display:none;gap:8px;margin-top:8px">
             <input type="password" id="vm-password" placeholder="macOS user password" style="flex:1;padding:10px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee;font-size:0.95em">
             <button class="btn sync" onclick="completeVmSetup()" style="white-space:nowrap">Complete Setup</button>
