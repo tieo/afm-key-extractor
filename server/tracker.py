@@ -901,21 +901,39 @@ def _wizard_find_button(target, ppm_data=None):
     if not img:
         return None
     target_lower = target.lower()
-    # Scan the button area at the bottom of the dialog, then widen if needed
-    # Avoid scanning body text which may contain matching words (e.g. "Later" in descriptions)
-    for y_start, y_end in [(630, 710), (580, 780)]:
-        region = img.crop((0, y_start, 1280, y_end))
-        try:
-            data = pytesseract.image_to_data(region, output_type=pytesseract.Output.DICT)
-        except Exception as e:
-            log.warning(f"OCR button search failed: {e}")
-            return None
-        for i, word in enumerate(data["text"]):
-            if word.strip().lower() and target_lower in word.strip().lower():
+    try:
+        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+    except Exception as e:
+        log.warning(f"OCR button search failed: {e}")
+        return None
+    # Search for target text — try multi-word match first, then single word
+    words = target_lower.split()
+    for i, word in enumerate(data["text"]):
+        if not word.strip():
+            continue
+        if len(words) == 1:
+            if target_lower in word.strip().lower():
                 x = data["left"][i] + data["width"][i] // 2
-                y = data["top"][i] + y_start + data["height"][i] // 2
+                y = data["top"][i] + data["height"][i] // 2
                 log.info(f"Found button '{target}' at ({x}, {y})")
                 return (x, y)
+        else:
+            # Multi-word: check if consecutive OCR words match
+            matched = True
+            for j, tw in enumerate(words):
+                idx = i + j
+                if idx >= len(data["text"]) or tw not in data["text"][idx].strip().lower():
+                    matched = False
+                    break
+            if matched:
+                # Center across all matched words
+                x1 = data["left"][i]
+                last = i + len(words) - 1
+                x2 = data["left"][last] + data["width"][last]
+                y1 = data["top"][i]
+                h = data["height"][i]
+                log.info(f"Found button '{target}' at ({(x1+x2)//2}, {y1 + h//2})")
+                return ((x1 + x2) // 2, y1 + h // 2)
     log.warning(f"Button '{target}' not found on screen")
     return None
 
@@ -938,8 +956,7 @@ def _wizard_click_continue():
 
 def _wizard_click_secondary():
     """Click the secondary/skip button (Not Now, Set Up Later, Skip, etc.)."""
-    # Try common secondary button labels in the button area (bottom of screen)
-    for label in ["Not Now", "Skip", "Set Up Later", "Don"]:
+    for label in ["Set Up Later", "Not Now", "Skip", "Don't Use"]:
         if _wizard_click_button(label):
             return
     # If no secondary button found, click Continue instead (safer than Back)
