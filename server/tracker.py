@@ -1,24 +1,28 @@
 """AirTag tracker server — polls Apple's Find My network and serves location history."""
 
+from __future__ import annotations
+
+import contextlib
 import io
 import json
+import logging
 import math
+import os
 import socket
 import sqlite3
 import subprocess as sp
-import time
 import threading
-import os
-import sys
-import logging
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from datetime import datetime, timezone
 
-from flask import Flask, jsonify, request, send_from_directory
-from findmy import FindMyAccessory, AppleAccount, LocalAnisetteProvider
-from findmy.reports import LoginState, SyncSmsSecondFactor
-from PIL import Image
 import pytesseract
+from findmy import AppleAccount, FindMyAccessory, LocalAnisetteProvider
+from findmy.reports import LoginState, SyncSmsSecondFactor
+from flask import Flask, jsonify, request, send_from_directory
+from PIL import Image
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("tracker")
@@ -50,7 +54,7 @@ MAX_EVENTS = 500
 def emit(level, category, message):
     """Add an event to the in-app log and also log to stdout."""
     entry = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": datetime.now(UTC).isoformat(),
         "level": level,
         "cat": category,
         "msg": message,
@@ -65,17 +69,17 @@ def emit(level, category, message):
 SETTINGS_PATH = DATA_DIR / "settings.json"
 
 DEFAULT_SETTINGS = {
-    "idle_interval": POLL_INTERVAL,   # seconds between polls when stationary
-    "active_interval": 120,           # seconds between polls when moving
-    "movement_threshold": 50,         # meters — distance to consider "moved"
-    "cooldown_polls": 5,              # polls with no movement before returning to idle
+    "idle_interval": POLL_INTERVAL,  # seconds between polls when stationary
+    "active_interval": 120,  # seconds between polls when moving
+    "movement_threshold": 50,  # meters — distance to consider "moved"
+    "cooldown_polls": 5,  # polls with no movement before returning to idle
 }
 
 _settings_lock = threading.Lock()
 _poll_state = {
     "moving": False,
-    "idle_count": 0,                  # consecutive polls with no movement
-    "last_positions": {},             # airtag_id -> (lat, lon)
+    "idle_count": 0,  # consecutive polls with no movement
+    "last_positions": {},  # airtag_id -> (lat, lon)
     "current_interval": POLL_INTERVAL,
     "last_poll": None,
 }
@@ -161,13 +165,20 @@ def get_account():
 def save_locations(airtag_id, airtag_name, reports):
     """Save location reports to the database."""
     db = sqlite3.connect(str(DB_PATH))
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     for report in reports:
         db.execute(
             "INSERT INTO locations (airtag_id, airtag_name, latitude, longitude, accuracy, timestamp, fetched_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (airtag_id, airtag_name, report.latitude, report.longitude,
-             report.horizontal_accuracy, report.timestamp.isoformat(), now),
+            (
+                airtag_id,
+                airtag_name,
+                report.latitude,
+                report.longitude,
+                report.horizontal_accuracy,
+                report.timestamp.isoformat(),
+                now,
+            ),
         )
     db.commit()
     db.close()
@@ -195,7 +206,9 @@ def poll_locations():
         emit("info", "poll", f"Querying Apple Find My for {len(accessories)} tag(s)")
         history = acc.fetch_location_history(accessories)
 
-        for (tag_id, tag), reports in zip(tags, [history.get(t, []) for t in accessories]):
+        for (tag_id, tag), reports in zip(
+            tags, [history.get(t, []) for t in accessories], strict=False
+        ):
             name = getattr(tag, "name", tag_id)
             if reports:
                 save_locations(tag_id, name, reports)
@@ -207,20 +220,39 @@ def poll_locations():
                     dist = haversine(last_pos[0], last_pos[1], latest.latitude, latest.longitude)
                     if dist > settings["movement_threshold"]:
                         any_moved = True
-                        emit("info", "movement", f"{name} moved {dist:.0f}m (threshold: {settings['movement_threshold']}m)")
+                        emit(
+                            "info",
+                            "movement",
+                            f"{name} moved {dist:.0f}m (threshold: {settings['movement_threshold']}m)",
+                        )
                     else:
-                        emit("info", "poll", f"{name}: {len(reports)} report(s), stationary ({dist:.0f}m)")
+                        emit(
+                            "info",
+                            "poll",
+                            f"{name}: {len(reports)} report(s), stationary ({dist:.0f}m)",
+                        )
                 else:
-                    emit("info", "poll", f"{name}: {len(reports)} report(s), first position recorded")
-                _poll_state["last_positions"][tag_id] = (latest.latitude, latest.longitude)
+                    emit(
+                        "info",
+                        "poll",
+                        f"{name}: {len(reports)} report(s), first position recorded",
+                    )
+                _poll_state["last_positions"][tag_id] = (
+                    latest.latitude,
+                    latest.longitude,
+                )
             else:
                 emit("info", "poll", f"{name}: no new reports")
 
         acc.to_json(str(ACCOUNT_PATH))
-        for (tag_id, tag) in tags:
+        for tag_id, tag in tags:
             tag.to_json(str(KEYS_DIR / f"{tag_id}.json"))
 
-        emit("info", "poll", f"Poll complete: {total_reports} report(s) from {len(tags)} tag(s)")
+        emit(
+            "info",
+            "poll",
+            f"Poll complete: {total_reports} report(s) from {len(tags)} tag(s)",
+        )
 
     except Exception as e:
         emit("error", "poll", f"Poll failed: {e}")
@@ -235,7 +267,7 @@ def poll_loop():
         settings = load_settings()
         try:
             moved = poll_locations()
-            _poll_state["last_poll"] = datetime.now(timezone.utc).isoformat()
+            _poll_state["last_poll"] = datetime.now(UTC).isoformat()
 
             with _settings_lock:
                 prev_moving = _poll_state["moving"]
@@ -244,13 +276,21 @@ def poll_loop():
                     _poll_state["idle_count"] = 0
                     _poll_state["current_interval"] = settings["active_interval"]
                     if not prev_moving:
-                        emit("info", "adaptive", f"Switching to active polling (every {settings['active_interval']}s)")
+                        emit(
+                            "info",
+                            "adaptive",
+                            f"Switching to active polling (every {settings['active_interval']}s)",
+                        )
                 elif settings.get("adaptive", True):
                     _poll_state["idle_count"] += 1
                     if _poll_state["idle_count"] >= settings["cooldown_polls"] and prev_moving:
                         _poll_state["moving"] = False
                         _poll_state["current_interval"] = settings["idle_interval"]
-                        emit("info", "adaptive", f"No movement for {settings['cooldown_polls']} polls, returning to idle (every {settings['idle_interval']}s)")
+                        emit(
+                            "info",
+                            "adaptive",
+                            f"No movement for {settings['cooldown_polls']} polls, returning to idle (every {settings['idle_interval']}s)",
+                        )
                     elif _poll_state["idle_count"] >= settings["cooldown_polls"]:
                         _poll_state["moving"] = False
                         _poll_state["current_interval"] = settings["idle_interval"]
@@ -266,6 +306,7 @@ def poll_loop():
 
 
 # --- API routes ---
+
 
 @app.route("/")
 def index():
@@ -291,16 +332,18 @@ def get_log():
 def get_settings():
     """Get current polling settings and state."""
     settings = load_settings()
-    return jsonify({
-        **settings,
-        "adaptive": settings.get("adaptive", True),
-        "state": {
-            "moving": _poll_state["moving"],
-            "current_interval": _poll_state["current_interval"],
-            "idle_count": _poll_state["idle_count"],
-            "last_poll": _poll_state["last_poll"],
-        },
-    })
+    return jsonify(
+        {
+            **settings,
+            "adaptive": settings.get("adaptive", True),
+            "state": {
+                "moving": _poll_state["moving"],
+                "current_interval": _poll_state["current_interval"],
+                "idle_count": _poll_state["idle_count"],
+                "last_poll": _poll_state["last_poll"],
+            },
+        }
+    )
 
 
 @app.route("/api/settings", methods=["PUT"])
@@ -308,7 +351,13 @@ def update_settings():
     """Update polling settings."""
     data = request.get_json()
     settings = load_settings()
-    allowed = {"idle_interval", "active_interval", "movement_threshold", "cooldown_polls", "adaptive"}
+    allowed = {
+        "idle_interval",
+        "active_interval",
+        "movement_threshold",
+        "cooldown_polls",
+        "adaptive",
+    }
     for key in allowed:
         if key in data:
             settings[key] = data[key]
@@ -369,14 +418,23 @@ def trigger_extract():
     try:
         result = sp.run(
             ["systemctl", "start", "--no-block", "airtag-extract-keys"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode != 0:
             emit("error", "vm", f"Failed to start extraction: {result.stderr.strip()}")
             return jsonify({"status": "error", "message": result.stderr.strip()}), 500
         emit("info", "vm", "Key extraction service started, VM booting")
-        threading.Thread(target=_tail_journal, args=("airtag-extract-keys", "vm"), daemon=True).start()
-        return jsonify({"status": "started", "message": "Key extraction started. This takes a few minutes."})
+        threading.Thread(
+            target=_tail_journal, args=("airtag-extract-keys", "vm"), daemon=True
+        ).start()
+        return jsonify(
+            {
+                "status": "started",
+                "message": "Key extraction started. This takes a few minutes.",
+            }
+        )
     except Exception as e:
         emit("error", "vm", f"Extract trigger error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -384,8 +442,19 @@ def trigger_extract():
 
 # --- VM setup management (noVNC) ---
 
+
 def _systemctl(action, service):
-    return sp.run(["/run/wrappers/bin/sudo", "/run/current-system/sw/bin/systemctl", action, service], capture_output=True, text=True, timeout=10)
+    return sp.run(
+        [
+            "/run/wrappers/bin/sudo",
+            "/run/current-system/sw/bin/systemctl",
+            action,
+            service,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
 
 
 def _tail_journal(unit, category):
@@ -393,7 +462,9 @@ def _tail_journal(unit, category):
     try:
         proc = sp.Popen(
             ["journalctl", "-u", unit, "-f", "-n", "0", "--no-hostname", "-o", "cat"],
-            stdout=sp.PIPE, stderr=sp.PIPE, text=True,
+            stdout=sp.PIPE,
+            stderr=sp.PIPE,
+            text=True,
         )
         emit("info", category, f"Streaming logs for {unit}")
         for line in proc.stdout:
@@ -405,8 +476,11 @@ def _tail_journal(unit, category):
             if check.stdout.strip() not in ("active", "activating"):
                 break
         proc.terminate()
-        rc = sp.run(["systemctl", "show", unit, "-p", "ExecMainStatus", "--value"],
-                     capture_output=True, text=True)
+        rc = sp.run(
+            ["systemctl", "show", unit, "-p", "ExecMainStatus", "--value"],
+            capture_output=True,
+            text=True,
+        )
         exit_code = rc.stdout.strip()
         if exit_code == "0":
             emit("info", category, f"{unit} completed successfully")
@@ -435,13 +509,15 @@ def vm_status():
         except (ValueError, ProcessLookupError):
             pid_file.unlink(missing_ok=True)
 
-    return jsonify({
-        "enabled": True,
-        "provisioned": vm_provisioned,
-        "setup_complete": vm_password,
-        "vm_running": vm_running,
-        "vnc_ws_port": VNC_WS_PORT,
-    })
+    return jsonify(
+        {
+            "enabled": True,
+            "provisioned": vm_provisioned,
+            "setup_complete": vm_password,
+            "vm_running": vm_running,
+            "vnc_ws_port": VNC_WS_PORT,
+        }
+    )
 
 
 @app.route("/api/vm/start-setup", methods=["POST"])
@@ -467,38 +543,68 @@ def vm_start_setup():
 
     qemu_args = [
         "qemu-system-x86_64",
-        "-enable-kvm", "-m", "8192",
-        "-cpu", "Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check",
-        "-machine", "q35",
-        "-device", "qemu-xhci,id=xhci",
-        "-device", "usb-kbd,bus=xhci.0", "-device", "usb-tablet,bus=xhci.0",
-        "-smp", "4,cores=2",
-        "-global", "ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off",
-        "-device", "isa-applesmc,osk=ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc",
-        "-drive", f"if=pflash,format=raw,readonly=on,file={VM_DIR}/OVMF_CODE_4M.fd",
-        "-drive", f"if=pflash,format=raw,file={VM_DIR}/OVMF_VARS-1920x1080.fd",
-        "-smbios", "type=2",
-        "-device", "ich9-ahci,id=sata",
-        "-drive", f"id=OpenCoreBoot,if=none,snapshot=on,format=qcow2,file={VM_DIR}/OpenCore/OpenCore.qcow2",
-        "-device", "ide-hd,bus=sata.2,drive=OpenCoreBoot",
-        "-drive", f"id=MacHDD,if=none,file={VM_DIR}/mac_hdd_ng.img,format=qcow2",
-        "-device", "ide-hd,bus=sata.4,drive=MacHDD",
-        "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
-        "-device", "vmxnet3,netdev=net0,id=net0,mac=52:54:00:c9:18:27",
-        "-device", "vmware-svga",
-        "-vnc", "127.0.0.1:1",
-        "-monitor", "unix:/tmp/airtag-vm-monitor.sock,server,nowait",
-        "-qmp", "unix:/tmp/airtag-vm-qmp.sock,server,nowait",
+        "-enable-kvm",
+        "-m",
+        "8192",
+        "-cpu",
+        "Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check",
+        "-machine",
+        "q35",
+        "-device",
+        "qemu-xhci,id=xhci",
+        "-device",
+        "usb-kbd,bus=xhci.0",
+        "-device",
+        "usb-tablet,bus=xhci.0",
+        "-smp",
+        "4,cores=2",
+        "-global",
+        "ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off",
+        "-device",
+        "isa-applesmc,osk=ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc",
+        "-drive",
+        f"if=pflash,format=raw,readonly=on,file={VM_DIR}/OVMF_CODE_4M.fd",
+        "-drive",
+        f"if=pflash,format=raw,file={VM_DIR}/OVMF_VARS-1920x1080.fd",
+        "-smbios",
+        "type=2",
+        "-device",
+        "ich9-ahci,id=sata",
+        "-drive",
+        f"id=OpenCoreBoot,if=none,snapshot=on,format=qcow2,file={VM_DIR}/OpenCore/OpenCore.qcow2",
+        "-device",
+        "ide-hd,bus=sata.2,drive=OpenCoreBoot",
+        "-drive",
+        f"id=MacHDD,if=none,file={VM_DIR}/mac_hdd_ng.img,format=qcow2",
+        "-device",
+        "ide-hd,bus=sata.4,drive=MacHDD",
+        "-netdev",
+        "user,id=net0,hostfwd=tcp::2222-:22",
+        "-device",
+        "vmxnet3,netdev=net0,id=net0,mac=52:54:00:c9:18:27",
+        "-device",
+        "vmware-svga",
+        "-vnc",
+        "127.0.0.1:1",
+        "-monitor",
+        "unix:/tmp/airtag-vm-monitor.sock,server,nowait",
+        "-qmp",
+        "unix:/tmp/airtag-vm-qmp.sock,server,nowait",
         "-daemonize",
-        "-pidfile", "/tmp/airtag-vm-setup.pid",
+        "-pidfile",
+        "/tmp/airtag-vm-setup.pid",
     ]
 
     # Add installer media if present (first install only)
     if has_base_system:
-        qemu_args.extend([
-            "-drive", f"id=InstallMedia,if=none,file={VM_DIR}/BaseSystem.img,format=raw",
-            "-device", "ide-hd,bus=sata.3,drive=InstallMedia",
-        ])
+        qemu_args.extend(
+            [
+                "-drive",
+                f"id=InstallMedia,if=none,file={VM_DIR}/BaseSystem.img,format=raw",
+                "-device",
+                "ide-hd,bus=sata.3,drive=InstallMedia",
+            ]
+        )
 
     try:
         result = sp.run(qemu_args, capture_output=True, text=True, timeout=30)
@@ -513,7 +619,13 @@ def vm_start_setup():
         if has_base_system:
             threading.Thread(target=_auto_install_worker, daemon=True).start()
 
-        return jsonify({"status": "started", "vnc_ws_port": VNC_WS_PORT, "auto_install": has_base_system})
+        return jsonify(
+            {
+                "status": "started",
+                "vnc_ws_port": VNC_WS_PORT,
+                "auto_install": has_base_system,
+            }
+        )
     except Exception as e:
         emit("error", "vm", f"VM start error: {e}")
         return jsonify({"error": str(e)}), 500
@@ -544,6 +656,7 @@ MONITOR_SOCK = "/tmp/airtag-vm-monitor.sock"
 _monitor_lock = threading.Lock()
 _monitor_sock = None
 
+
 def _monitor_connect():
     """Get or create a persistent connection to QEMU monitor."""
     global _monitor_sock
@@ -561,14 +674,14 @@ def _monitor_connect():
         _monitor_sock = None
         return None
 
+
 def _monitor_disconnect():
     global _monitor_sock
     if _monitor_sock:
-        try:
+        with contextlib.suppress(Exception):
             _monitor_sock.close()
-        except Exception:
-            pass
         _monitor_sock = None
+
 
 def _monitor_cmd(cmd):
     """Send a command to QEMU's human monitor interface (persistent connection)."""
@@ -586,27 +699,62 @@ def _monitor_cmd(cmd):
             _monitor_disconnect()
             return None
 
+
 def _send_key(key, delay=0.15):
     """Send a single keystroke via QEMU monitor."""
     _monitor_cmd(f"sendkey {key}")
     time.sleep(delay)
 
+
 def _type_text(text):
     """Type a string character by character via QEMU monitor."""
     keymap = {
-        ' ': 'spc', '\n': 'ret', '-': 'minus', '=': 'equal',
-        '.': 'dot', ',': 'comma', '/': 'slash', '\\': 'backslash',
-        '[': 'bracket_left', ']': 'bracket_right', ';': 'semicolon',
-        '\'': 'apostrophe', '`': 'grave_accent', '0': '0', '1': '1',
-        '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7',
-        '8': '8', '9': '9',
+        " ": "spc",
+        "\n": "ret",
+        "-": "minus",
+        "=": "equal",
+        ".": "dot",
+        ",": "comma",
+        "/": "slash",
+        "\\": "backslash",
+        "[": "bracket_left",
+        "]": "bracket_right",
+        ";": "semicolon",
+        "'": "apostrophe",
+        "`": "grave_accent",
+        "0": "0",
+        "1": "1",
+        "2": "2",
+        "3": "3",
+        "4": "4",
+        "5": "5",
+        "6": "6",
+        "7": "7",
+        "8": "8",
+        "9": "9",
     }
     shift_keymap = {
-        '"': 'apostrophe', '!': '1', '@': '2', '#': '3', '$': '4',
-        '%': '5', '^': '6', '&': '7', '*': '8', '(': '9', ')': '0',
-        '_': 'minus', '+': 'equal', '{': 'bracket_left', '}': 'bracket_right',
-        ':': 'semicolon', '<': 'comma', '>': 'dot', '?': 'slash',
-        '|': 'backslash', '~': 'grave_accent',
+        '"': "apostrophe",
+        "!": "1",
+        "@": "2",
+        "#": "3",
+        "$": "4",
+        "%": "5",
+        "^": "6",
+        "&": "7",
+        "*": "8",
+        "(": "9",
+        ")": "0",
+        "_": "minus",
+        "+": "equal",
+        "{": "bracket_left",
+        "}": "bracket_right",
+        ":": "semicolon",
+        "<": "comma",
+        ">": "dot",
+        "?": "slash",
+        "|": "backslash",
+        "~": "grave_accent",
     }
     for ch in text:
         if ch in shift_keymap:
@@ -621,10 +769,12 @@ def _type_text(text):
         else:
             log.warning(f"Unmapped character: {ch!r}")
 
+
 QMP_SOCK = "/tmp/airtag-vm-qmp.sock"
 _qmp_lock = threading.Lock()
 _qmp_sock = None
 _qmp_initialized = False
+
 
 def _qmp_connect():
     """Connect to QEMU QMP socket and negotiate capabilities."""
@@ -635,7 +785,7 @@ def _qmp_connect():
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(5)
         s.connect(QMP_SOCK)
-        greeting = s.recv(4096)  # QMP greeting
+        s.recv(4096)  # QMP greeting
         # Send capabilities negotiation
         s.sendall(b'{"execute": "qmp_capabilities"}\n')
         s.recv(4096)  # response
@@ -648,15 +798,15 @@ def _qmp_connect():
         _qmp_initialized = False
         return None
 
+
 def _qmp_disconnect():
     global _qmp_sock, _qmp_initialized
     if _qmp_sock:
-        try:
+        with contextlib.suppress(Exception):
             _qmp_sock.close()
-        except Exception:
-            pass
     _qmp_sock = None
     _qmp_initialized = False
+
 
 def _qmp_cmd(cmd_dict):
     """Send a QMP command and return the response."""
@@ -673,23 +823,45 @@ def _qmp_cmd(cmd_dict):
             _qmp_disconnect()
             return None
 
+
 def _mouse_click(px, py, delay=0.5):
     """Click at pixel coordinates (1280x800 screen) via QMP absolute mouse input."""
     qx = int((px / 1280) * 32767)
     qy = int((py / 800) * 32767)
     # Move to position and click
-    _qmp_cmd({"execute": "input-send-event", "arguments": {"events": [
-        {"type": "abs", "data": {"axis": "x", "value": qx}},
-        {"type": "abs", "data": {"axis": "y", "value": qy}},
-    ]}})
+    _qmp_cmd(
+        {
+            "execute": "input-send-event",
+            "arguments": {
+                "events": [
+                    {"type": "abs", "data": {"axis": "x", "value": qx}},
+                    {"type": "abs", "data": {"axis": "y", "value": qy}},
+                ]
+            },
+        }
+    )
     time.sleep(0.1)
-    _qmp_cmd({"execute": "input-send-event", "arguments": {"events": [
-        {"type": "btn", "data": {"down": True, "button": "left"}},
-    ]}})
+    _qmp_cmd(
+        {
+            "execute": "input-send-event",
+            "arguments": {
+                "events": [
+                    {"type": "btn", "data": {"down": True, "button": "left"}},
+                ]
+            },
+        }
+    )
     time.sleep(0.05)
-    _qmp_cmd({"execute": "input-send-event", "arguments": {"events": [
-        {"type": "btn", "data": {"down": False, "button": "left"}},
-    ]}})
+    _qmp_cmd(
+        {
+            "execute": "input-send-event",
+            "arguments": {
+                "events": [
+                    {"type": "btn", "data": {"down": False, "button": "left"}},
+                ]
+            },
+        }
+    )
     time.sleep(delay)
 
 
@@ -704,6 +876,7 @@ def _take_screenshot():
     except FileNotFoundError:
         return None
 
+
 def _ppm_pixel(data, x, y):
     """Read (R, G, B) from raw PPM (P6) data at pixel (x, y)."""
     # Parse P6 header: "P6\n<width> <height>\n<maxval>\n"
@@ -712,23 +885,25 @@ def _ppm_pixel(data, x, y):
     header_end = 0
     newlines = 0
     for i, b in enumerate(data):
-        if b == ord('\n'):
+        if b == ord("\n"):
             newlines += 1
             if newlines == 3:
                 header_end = i + 1
                 break
     # Parse width/height from header
     header = data[:header_end].decode("ascii", errors="replace")
-    lines = header.strip().split('\n')
+    lines = header.strip().split("\n")
     w, h = map(int, lines[1].split())
     if x < 0 or x >= w or y < 0 or y >= h:
         return (0, 0, 0)
     offset = header_end + (y * w + x) * 3
-    return (data[offset], data[offset+1], data[offset+2])
+    return (data[offset], data[offset + 1], data[offset + 2])
+
 
 def _pixel_brightness(data, x, y):
     r, g, b = _ppm_pixel(data, x, y)
     return r + g + b
+
 
 def _region_avg_brightness(data, x1, y1, x2, y2, step=10):
     """Average brightness of a rectangular region (sampled)."""
@@ -739,6 +914,7 @@ def _region_avg_brightness(data, x1, y1, x2, y2, step=10):
             count += 1
     return total / max(count, 1)
 
+
 def _ppm_to_image(ppm_data):
     """Convert raw PPM bytes to a PIL Image."""
     if not ppm_data:
@@ -747,6 +923,7 @@ def _ppm_to_image(ppm_data):
         return Image.open(io.BytesIO(ppm_data))
     except Exception:
         return None
+
 
 def _ocr_region(image, x1, y1, x2, y2):
     """Run OCR on a cropped region of a PIL Image. Returns lowercase text."""
@@ -759,6 +936,7 @@ def _ocr_region(image, x1, y1, x2, y2):
     except Exception as e:
         log.warning(f"OCR failed: {e}")
         return ""
+
 
 def _detect_screen(ppm_data):
     """Analyze screenshot via OCR to determine current VM screen state.
@@ -794,15 +972,26 @@ def _detect_screen(ppm_data):
 
     # Setup wizard keywords — distinctive phrases that only appear in the setup wizard
     setup_keywords = [
-        "select your language", "country or region", "written and spoken",
-        "accessibility features", "data & privacy", "data and privacy",
-        "migration assistant", "transfer information",
-        "apple id", "terms and conditions",
-        "create a computer account", "full name",
-        "enable location", "select your time zone",
-        "analytics", "screen time",
-        "choose your look", "express set up",
-        "set up later", "not now",
+        "select your language",
+        "country or region",
+        "written and spoken",
+        "accessibility features",
+        "data & privacy",
+        "data and privacy",
+        "migration assistant",
+        "transfer information",
+        "apple id",
+        "terms and conditions",
+        "create a computer account",
+        "full name",
+        "enable location",
+        "select your time zone",
+        "analytics",
+        "screen time",
+        "choose your look",
+        "express set up",
+        "set up later",
+        "not now",
         "transferring your information",
     ]
     setup_matches = sum(1 for kw in setup_keywords if kw in text)
@@ -811,8 +1000,11 @@ def _detect_screen(ppm_data):
 
     # Recovery keywords
     recovery_keywords = [
-        "macos recovery", "reinstall macos", "disk utility",
-        "restore from time machine", "startup security utility",
+        "macos recovery",
+        "reinstall macos",
+        "disk utility",
+        "restore from time machine",
+        "startup security utility",
     ]
     recovery_matches = sum(1 for kw in recovery_keywords if kw in text)
     if recovery_matches >= 1:
@@ -820,8 +1012,15 @@ def _detect_screen(ppm_data):
 
     # Terminal — look for shell prompt indicators or command-line text
     terminal_keywords = [
-        "bash", "-sh", "root#", "terminal", "last login",
-        "diskutil", "volumes", "localhost", "macintosh",
+        "bash",
+        "-sh",
+        "root#",
+        "terminal",
+        "last login",
+        "diskutil",
+        "volumes",
+        "localhost",
+        "macintosh",
     ]
     terminal_matches = sum(1 for kw in terminal_keywords if kw in text)
     if terminal_matches >= 1:
@@ -844,9 +1043,12 @@ def _detect_screen(ppm_data):
 
 
 # --- Auto-install state machine ---
-_auto_install_phase = "idle"  # idle, booting, boot_picker, waiting_recovery, formatting, installing, done, error
+_auto_install_phase = (
+    "idle"  # idle, booting, boot_picker, waiting_recovery, formatting, installing, done, error
+)
 _auto_install_start_time = 0
 _auto_install_step_times = {}
+
 
 def _set_phase(phase, msg=None):
     global _auto_install_phase
@@ -889,225 +1091,228 @@ def _wait_for_screen(expected, timeout=300, poll_interval=5, msg=None):
 
 VM_USER = "airtag"
 VM_PASSWORD = "airtag"
-
-def _wizard_ocr_buttons(img):
-    """Single OCR pass over the full screen. Returns (full_text, buttons_found).
-
-    full_text: all text on screen as lowercase string.
-    buttons_found: dict mapping label -> (x, y) for every label we care about.
-    Does ONE pytesseract call, then scans the word list for all known labels.
-    """
-    try:
-        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-    except Exception as e:
-        log.warning(f"OCR failed: {e}")
-        return "", {}
-
-    # Build cleaned word list with positions
-    words = []
-    for i, raw in enumerate(data["text"]):
-        w = raw.strip()
-        if w:
-            cx = data["left"][i] + data["width"][i] // 2
-            cy = data["top"][i] + data["height"][i] // 2
-            words.append((w, cx, cy))
-
-    full_text = " ".join(w for w, _, _ in words).lower()
-
-    # All button labels we ever want to find, searched in one pass
-    ALL_LABELS = [
-        "Not Now", "Set Up Later", "Skip", "Don't Use", "Customize Settings",
-        "Agree", "Continue", "Next",
-        "Full Name",
-    ]
-
-    found = {}
-    for label in ALL_LABELS:
-        parts = label.lower().split()
-        for i, (w, cx, cy) in enumerate(words):
-            if parts[0] not in w.lower():
-                continue
-            if len(parts) == 1:
-                found[label] = (cx, cy)
-                break
-            # Multi-word: check consecutive words
-            ok = True
-            for j, part in enumerate(parts[1:], 1):
-                if i + j < len(words) and part in words[i + j][0].lower():
-                    continue
-                ok = False
-                break
-            if ok:
-                xs = [words[i + k][1] for k in range(len(parts))]
-                found[label] = (sum(xs) // len(xs), cy)
-                break
-
-    if found:
-        log.info(f"Buttons found: {', '.join(f'{k} ({v[0]},{v[1]})' for k, v in found.items())}")
-
-    return full_text, found
+WIZARD_TIMEOUT = 600
 
 
-# Keywords that make a screen DANGEROUS — Continue must NEVER be clicked.
-# If Continue is clicked on these screens, it starts an unwanted action
-# (data transfer, iCloud sign-in, etc.) that's hard to undo.
-_DANGEROUS_KEYWORDS = ["migration", "transfer information", "transferring",
-                       "apple id", "sign in with", "icloud"]
+# ── Setup Wizard ─────────────────────────────────────────────────────────
+#
+# Version-specific screen definitions. Each macOS version has different wizard
+# screens. To add a new version, add entries to WIZARD_SCREENS below.
 
-# Button priority: skip buttons are always preferred over advance buttons.
-_SKIP_BUTTONS = ["Not Now", "Set Up Later", "Skip", "Don't Use", "Customize Settings"]
-_ADVANCE_BUTTONS = ["Agree", "Continue", "Next"]
+MACOS_VERSION = "catalina"
 
 
-def _wizard_click(pos, label, delay=2):
-    """Click a button at pos and log it."""
-    emit("info", "vm", f"Clicking '{label}' at ({pos[0]}, {pos[1]})")
-    _mouse_click(pos[0], pos[1], delay)
+@dataclass
+class WizardScreen:
+    """A setup wizard screen: how to identify it and what to do."""
 
+    id: str
+    match: list[str]  # All must appear in OCR text to identify this screen
+    button: str  # Button text to find and click via OCR
+    confirm_button: str | None = None  # Click after main action (e.g. T&C "Agree" popup)
+    custom_action: Callable | None = None  # Override for non-button screens (account form)
 
-def _wizard_step(ppm):
-    """Execute one wizard step: OCR the screen, decide what to click, click it.
+    def matches(self, text: str) -> bool:
+        return all(kw in text for kw in self.match)
 
-    Strategy (no screen-specific elifs):
-      1. OCR the full screen in one pass → get text + all button positions
-      2. If it's the account-creation screen → fill the form (only true special case)
-      3. Check if screen is dangerous (migration, apple id, etc.)
-      4. Try skip buttons first (always safe on any screen)
-      5. If not dangerous, try advance buttons (Agree, Continue)
-      6. If dangerous and nothing found → Escape
-      7. If not dangerous and nothing found → click Continue fallback position
-
-    After clicking, check for confirmation dialogs (Agree/Skip popups)
-    and handle them the same way.
-    """
-    img = _ppm_to_image(ppm)
-    if not img:
-        emit("info", "vm", "Failed to parse screenshot")
-        return
-
-    text, buttons = _wizard_ocr_buttons(img)
-    is_dangerous = any(kw in text for kw in _DANGEROUS_KEYWORDS)
-    context = "DANGEROUS" if is_dangerous else "safe"
-    emit("info", "vm", f"Screen ({context}): {text[:80]!r}")
-    emit("info", "vm", f"Buttons visible: {list(buttons.keys()) or 'none'}")
-
-    # --- Special case: account creation (needs form fill, not just a click) ---
-    if "create a computer account" in text or ("full name" in text and "password" in text):
-        emit("info", "vm", "Creating user account...")
-        pos = buttons.get("Full Name")
-        if pos:
-            _mouse_click(pos[0] + 200, pos[1], 0.5)
-        else:
-            _mouse_click(790, 330, 0.5)
-        _type_text(VM_USER)
-        _send_key("tab", 0.3)  # Account Name (auto-filled)
-        _send_key("tab", 0.3)  # Password
-        _type_text(VM_PASSWORD)
-        _send_key("tab", 0.3)  # Verify
-        _type_text(VM_PASSWORD)
-        _send_key("tab", 0.3)  # Hint
-        time.sleep(0.5)
-        pos = buttons.get("Continue")
-        if pos:
-            _wizard_click(pos, "Continue")
-        else:
-            _mouse_click(984, 670, 2)
-        time.sleep(5)
-        return
-
-    # --- General strategy: pick the best button ---
-    # 1. Try skip buttons (always safe, any screen)
-    for label in _SKIP_BUTTONS:
-        if label in buttons:
-            _wizard_click(buttons[label], label)
-            time.sleep(2)
-            _wizard_handle_confirmation()
+    def execute(self) -> None:
+        if self.custom_action:
+            self.custom_action()
             return
-
-    # 2. Try advance buttons (only if screen is NOT dangerous)
-    if not is_dangerous:
-        for label in _ADVANCE_BUTTONS:
-            if label in buttons:
-                _wizard_click(buttons[label], label)
-                time.sleep(2)
-                _wizard_handle_confirmation()
-                return
-
-    # 3. Nothing found
-    if is_dangerous:
-        emit("info", "vm", "Dangerous screen, no skip button found — pressing Escape")
-        _send_key("escape", 2)
-    else:
-        emit("info", "vm", "No buttons found via OCR — clicking Continue fallback position")
-        _mouse_click(984, 670, 2)
+        _find_and_click(self.button)
+        if self.confirm_button:
+            time.sleep(1.5)
+            _find_and_click(self.confirm_button)
 
 
-def _wizard_handle_confirmation():
-    """After clicking a button, check if a confirmation dialog appeared (Agree/Skip popup)."""
+WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
+    "catalina": [
+        WizardScreen("country", ["select your country or region"], "Continue"),
+        WizardScreen("language", ["written and spoken"], "Continue"),
+        WizardScreen("preferred_languages", ["preferred languages"], "Continue"),
+        WizardScreen("input_sources", ["input sources"], "Continue"),
+        WizardScreen("dictation", ["dictation"], "Continue"),
+        WizardScreen("accessibility", ["accessibility", "features"], "Not Now"),
+        WizardScreen("privacy", ["data", "privacy"], "Continue"),
+        WizardScreen("migration", ["migration assistant"], "Not Now"),
+        WizardScreen("transfer_info", ["transfer information to this mac"], "Not Now"),
+        WizardScreen("apple_id", ["sign in with your apple id"], "Set Up Later"),
+        WizardScreen("icloud_signin", ["sign in to icloud"], "Set Up Later"),
+        WizardScreen("skip_confirm", ["skip"], "Skip"),
+        WizardScreen("terms", ["terms and conditions"], "Agree", confirm_button="Agree"),
+        WizardScreen(
+            "create_account",
+            ["create a computer account"],
+            "Continue",
+            custom_action=lambda: _fill_account_form(),
+        ),
+        WizardScreen("express_setup", ["express set up"], "Customize Settings"),
+        WizardScreen("location", ["enable location"], "Continue"),
+        WizardScreen("timezone", ["time zone"], "Continue"),
+        WizardScreen("analytics", ["analytics"], "Continue"),
+        WizardScreen("siri", ["siri"], "Continue"),
+        WizardScreen("screen_time", ["screen time"], "Set Up Later"),
+        WizardScreen("appearance", ["choose your look"], "Continue"),
+        WizardScreen("touch_id", ["touch id"], "Continue"),
+        WizardScreen("apple_pay", ["apple pay"], "Set Up Later"),
+    ],
+}
+
+
+def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
+    """High-contrast grayscale for reliable button text detection."""
+    gray = img.convert("L")
+    lo, hi = gray.getextrema()
+    if hi == lo:
+        return gray
+    scale = 255.0 / (hi - lo)
+    return gray.point(lambda p: int((p - lo) * scale))
+
+
+def _find_button_pos(img: Image.Image, label: str) -> tuple[int, int] | None:
+    """Find a button's center coordinates by its text label via OCR."""
+    processed = _preprocess_for_ocr(img)
+    try:
+        data = pytesseract.image_to_data(processed, output_type=pytesseract.Output.DICT)
+    except Exception as e:
+        log.warning(f"OCR image_to_data failed: {e}")
+        return None
+
+    words = label.lower().split()
+    for i, raw in enumerate(data["text"]):
+        if not raw.strip():
+            continue
+        if words[0] not in raw.strip().lower():
+            continue
+        if len(words) == 1:
+            return (
+                data["left"][i] + data["width"][i] // 2,
+                data["top"][i] + data["height"][i] // 2,
+            )
+        matched = all(
+            i + j < len(data["text"]) and part in data["text"][i + j].strip().lower()
+            for j, part in enumerate(words[1:], 1)
+        )
+        if matched:
+            last = i + len(words) - 1
+            x = (data["left"][i] + data["left"][last] + data["width"][last]) // 2
+            y = data["top"][i] + data["height"][i] // 2
+            return (x, y)
+    return None
+
+
+def _find_and_click(label: str) -> bool:
+    """Screenshot → find button by OCR → click it. Retries once on failure."""
+    for attempt in range(2):
+        if attempt > 0:
+            time.sleep(1)
+        ppm = _take_screenshot()
+        img = _ppm_to_image(ppm)
+        if not img:
+            continue
+        pos = _find_button_pos(img, label)
+        if pos:
+            emit("info", "vm", f"  → '{label}' at ({pos[0]}, {pos[1]})")
+            _mouse_click(pos[0], pos[1], 0.3)
+            return True
+    log.warning(f"Button '{label}' not found after 2 attempts")
+    return False
+
+
+def _fill_account_form() -> None:
+    """Fill the Create a Computer Account form."""
+    emit("info", "vm", "  → Filling account form")
     ppm = _take_screenshot()
     img = _ppm_to_image(ppm)
-    if not img:
-        return
-    text, buttons = _wizard_ocr_buttons(img)
+    pos = _find_button_pos(img, "Full Name") if img else None
+    _mouse_click(pos[0] + 200, pos[1], 0.3) if pos else _mouse_click(790, 330, 0.3)
+    _type_text(VM_USER)
+    _send_key("tab", 0.2)
+    _send_key("tab", 0.2)
+    _type_text(VM_PASSWORD)
+    _send_key("tab", 0.2)
+    _type_text(VM_PASSWORD)
+    _send_key("tab", 0.2)
+    time.sleep(0.3)
+    _find_and_click("Continue")
+    time.sleep(3)
 
-    # Common confirmation dialogs: "Are you sure?" with Skip, or T&C with Agree
-    for label in ["Skip", "Agree"]:
-        if label in buttons:
-            emit("info", "vm", f"Confirmation dialog — clicking '{label}'")
-            _wizard_click(buttons[label], label, delay=1)
-            return
+
+def _wizard_ocr(ppm: bytes) -> str:
+    """OCR the screen for wizard identification."""
+    img = _ppm_to_image(ppm)
+    if not img:
+        return ""
+    return _ocr_region(img, 50, 50, 1230, 750)
+
+
+def _wizard_identify(text: str) -> WizardScreen | None:
+    """Match OCR text against known screens for the current macOS version."""
+    for screen in WIZARD_SCREENS[MACOS_VERSION]:
+        if screen.matches(text):
+            return screen
+    return None
 
 
 def _run_setup_wizard():
-    """Automate macOS setup wizard using OCR.
-
-    Design: instead of recognizing every possible screen, we do ONE OCR pass
-    per step to find all text and buttons, then pick the best button using
-    simple priority rules. Only one special case exists (account creation).
-    """
-    _set_phase("setup_wizard", "Automating macOS setup wizard...")
-    emit("info", "vm", "Setup wizard detected, starting automation...")
+    """Walk through macOS setup wizard using version-specific screen definitions."""
+    _set_phase("setup_wizard", "Automating setup wizard...")
+    screens = WIZARD_SCREENS[MACOS_VERSION]
+    emit("info", "vm", f"Using {MACOS_VERSION} definitions ({len(screens)} screens)")
 
     try:
-        time.sleep(5)
-        prev_text = ""
+        time.sleep(3)
+        last_id = None
+        stuck = 0
+        deadline = time.time() + WIZARD_TIMEOUT
 
-        for step in range(30):
+        while time.time() < deadline:
             ppm = _take_screenshot()
-            screen = _detect_screen(ppm)
+            screen_type = _detect_screen(ppm)
 
-            if screen != "setup_wizard":
-                if screen in ("unknown", "apple_logo"):
-                    state, ppm = _wait_for_screen("setup_wizard", timeout=15, poll_interval=2)
-                    if state != "setup_wizard":
-                        emit("info", "vm", f"Left setup wizard (screen: {state}). Done.")
-                        break
-                else:
-                    emit("info", "vm", f"Left setup wizard (screen: {screen}). Done.")
+            if screen_type not in ("setup_wizard", "unknown", "apple_logo"):
+                emit("info", "vm", f"Left wizard (screen: {screen_type}).")
+                break
+
+            if screen_type in ("unknown", "apple_logo"):
+                state, ppm = _wait_for_screen("setup_wizard", timeout=20, poll_interval=2)
+                if state != "setup_wizard":
+                    emit("info", "vm", f"Wizard ended (screen: {state}).")
                     break
 
-            # Check if screen actually changed from last step (avoid re-clicking same screen)
-            cur_text = _ocr_region(_ppm_to_image(ppm), 100, 50, 1180, 750) if _ppm_to_image(ppm) else ""
-            if prev_text and cur_text:
-                overlap = sum(1 for a, b in zip(cur_text, prev_text) if a == b)
-                max_len = max(len(cur_text), len(prev_text), 1)
-                if overlap / max_len > 0.85:
-                    emit("info", "vm", f"Step {step+1}: screen unchanged, retaking in 3s...")
-                    time.sleep(3)
-                    ppm = _take_screenshot()
+            text = _wizard_ocr(ppm)
+            if not text:
+                time.sleep(1)
+                continue
 
-            emit("info", "vm", f"=== Wizard step {step+1} ===")
-            _wizard_step(ppm)
-            prev_text = cur_text
-            time.sleep(2)
+            screen = _wizard_identify(text)
+            if not screen:
+                emit("info", "vm", f"Unknown screen: {text[:80]!r}")
+                _find_and_click("Continue")
+                time.sleep(1)
+                continue
 
-        emit("info", "vm", "Setup wizard complete! Saving credentials...")
+            if screen.id == last_id:
+                stuck += 1
+                if stuck >= 3:
+                    emit("info", "vm", f"Stuck on '{screen.id}', trying Tab+Enter")
+                    _send_key("tab", 0.3)
+                    _send_key("ret", 1)
+                    time.sleep(1)
+                    continue
+            else:
+                stuck = 0
+
+            last_id = screen.id
+            emit("info", "vm", f"Screen: {screen.id} → '{screen.button}'")
+            screen.execute()
+            time.sleep(1)
+
         pw_path = DATA_DIR / "vm-password"
         pw_path.write_text(VM_PASSWORD)
         pw_path.chmod(0o600)
-
         _set_phase("done", "macOS setup complete!")
-        emit("info", "vm", f"User account: {VM_USER} / {VM_PASSWORD}")
+        emit("info", "vm", f"Account: {VM_USER} / {VM_PASSWORD}")
 
     except Exception as e:
         _set_phase("error", f"Setup wizard failed: {e}")
@@ -1128,7 +1333,7 @@ def _auto_install_worker():
         _set_phase("booting", "Starting macOS VM and auto-install...")
 
         # Wait for QEMU monitor to become responsive
-        for attempt in range(120):
+        for _attempt in range(120):
             if os.path.exists(MONITOR_SOCK):
                 resp = _monitor_cmd("info status")
                 if resp and "running" in resp:
@@ -1141,8 +1346,10 @@ def _auto_install_worker():
         # === STEP 1: Wait for boot picker ===
         _set_phase("boot_picker", "VM booted, waiting for boot picker...")
         state, _ = _wait_for_screen(
-            {"boot_picker", "recovery", "setup_wizard"}, timeout=180, poll_interval=5,
-            msg="Waiting for boot picker"
+            {"boot_picker", "recovery", "setup_wizard"},
+            timeout=180,
+            poll_interval=5,
+            msg="Waiting for boot picker",
         )
 
         # macOS already installed — setup wizard is showing
@@ -1158,8 +1365,10 @@ def _auto_install_worker():
 
             # Verify we left boot picker
             state, _ = _wait_for_screen(
-                {"recovery", "apple_logo", "setup_wizard"}, timeout=120, poll_interval=5,
-                msg="Waiting for boot to proceed"
+                {"recovery", "apple_logo", "setup_wizard"},
+                timeout=120,
+                poll_interval=5,
+                msg="Waiting for boot to proceed",
             )
             if state == "setup_wizard":
                 _run_setup_wizard()
@@ -1172,15 +1381,21 @@ def _auto_install_worker():
         if state != "recovery":
             _set_phase("boot_picker", "Booting into recovery...")
             state, _ = _wait_for_screen(
-                "recovery", timeout=300, poll_interval=5,
-                msg="Waiting for recovery"
+                "recovery", timeout=300, poll_interval=5, msg="Waiting for recovery"
             )
             if state != "recovery":
                 if state == "apple_logo":
                     # Apple logo persisting = likely a resumed/ongoing macOS installation
                     # Skip straight to install monitoring
-                    _set_phase("installing", "macOS installation already in progress (resumed from previous attempt)...")
-                    emit("info", "vm", "Apple logo with progress bar detected — monitoring ongoing installation...")
+                    _set_phase(
+                        "installing",
+                        "macOS installation already in progress (resumed from previous attempt)...",
+                    )
+                    emit(
+                        "info",
+                        "vm",
+                        "Apple logo with progress bar detected — monitoring ongoing installation...",
+                    )
                     install_start = time.time() - 600  # assume started ~10 min ago
                     last_screen = "apple_logo"
                     # Jump to install monitoring (same loop as STEP 6)
@@ -1190,25 +1405,46 @@ def _auto_install_worker():
                         screen = _detect_screen(ppm)
                         elapsed_min = int((time.time() - install_start) / 60)
                         if screen != last_screen:
-                            emit("info", "vm", f"Screen changed: {last_screen} → {screen} ({elapsed_min} min)")
+                            emit(
+                                "info",
+                                "vm",
+                                f"Screen changed: {last_screen} → {screen} ({elapsed_min} min)",
+                            )
                             last_screen = screen
                         if screen == "boot_picker":
-                            emit("info", "vm", "VM rebooted to boot picker, selecting first entry...")
+                            emit(
+                                "info",
+                                "vm",
+                                "VM rebooted to boot picker, selecting first entry...",
+                            )
                             _send_key("ret", 1)
                         elif screen == "setup_wizard":
-                            _set_phase("done", "macOS is installed! Setup wizard is ready in VNC.")
+                            _set_phase(
+                                "done",
+                                "macOS is installed! Setup wizard is ready in VNC.",
+                            )
                             return
                         elif screen == "apple_logo":
                             if poll % 6 == 0:
-                                emit("info", "vm", f"macOS installing... ({elapsed_min} min)")
+                                emit(
+                                    "info",
+                                    "vm",
+                                    f"macOS installing... ({elapsed_min} min)",
+                                )
                         elif screen == "recovery":
                             if elapsed_min > 45:
-                                _set_phase("done", "macOS may be installed. Check VNC for current state.")
+                                _set_phase(
+                                    "done",
+                                    "macOS may be installed. Check VNC for current state.",
+                                )
                                 return
                         elif screen == "unknown" and poll % 12 == 0:
                             emit("info", "vm", f"VM rebooting... ({elapsed_min} min)")
                         if time.time() - install_start > 4200:  # 70 min
-                            _set_phase("done", "Installation monitoring timed out. Check VNC for current state.")
+                            _set_phase(
+                                "done",
+                                "Installation monitoring timed out. Check VNC for current state.",
+                            )
                             return
                     _set_phase("done", "Auto-install monitoring complete. Check VNC.")
                     return
@@ -1216,7 +1452,10 @@ def _auto_install_worker():
                 return
 
         recovery_time = time.time() - _auto_install_start_time
-        _set_phase("formatting", f"Recovery loaded after {int(recovery_time)}s. Opening Terminal...")
+        _set_phase(
+            "formatting",
+            f"Recovery loaded after {int(recovery_time)}s. Opening Terminal...",
+        )
 
         # Let recovery GUI fully render
         for _ in range(6):
@@ -1231,8 +1470,8 @@ def _auto_install_worker():
         # === STEP 3: Open Terminal via Utilities menu ===
         # Menu bar items at y=10: [Apple x=20] [Recovery x=83] [File x=144] [Edit x=187] [Utilities x=242] [Window x=309]
         emit("info", "vm", "Opening Terminal via Utilities menu...")
-        _mouse_click(242, 10, 1.5)   # Click "Utilities" in menu bar
-        _mouse_click(242, 55, 4)      # Click "Terminal" (2nd dropdown item)
+        _mouse_click(242, 10, 1.5)  # Click "Utilities" in menu bar
+        _mouse_click(242, 55, 4)  # Click "Terminal" (2nd dropdown item)
 
         # Verify Terminal opened — poll for "terminal" screen state (red traffic light button)
         time.sleep(1)
@@ -1241,7 +1480,11 @@ def _auto_install_worker():
 
         if state != "terminal":
             # Terminal may have opened but traffic light not detected — try one more time
-            emit("info", "vm", f"Terminal check: got '{state}', retrying Utilities → Terminal...")
+            emit(
+                "info",
+                "vm",
+                f"Terminal check: got '{state}', retrying Utilities → Terminal...",
+            )
             _send_key("escape", 0.5)
             time.sleep(1)
             _mouse_click(242, 10, 1.5)
@@ -1250,11 +1493,17 @@ def _auto_install_worker():
             _mouse_click(400, 300, 1)
             state, _ = _wait_for_screen("terminal", timeout=10, poll_interval=2)
             if state == "setup_wizard":
-                emit("info", "vm", "Setup wizard detected instead of recovery Terminal — macOS is already installed.")
+                emit(
+                    "info",
+                    "vm",
+                    "Setup wizard detected instead of recovery Terminal — macOS is already installed.",
+                )
                 _run_setup_wizard()
                 return
             if state != "terminal":
-                log.warning(f"Terminal detection returned '{state}' — proceeding anyway (detection may be imprecise)")
+                log.warning(
+                    f"Terminal detection returned '{state}' — proceeding anyway (detection may be imprecise)"
+                )
 
         emit("info", "vm", "Terminal is open.")
 
@@ -1287,12 +1536,14 @@ def _auto_install_worker():
         _set_phase("installing", "Starting macOS installer from command line...")
         emit("info", "vm", "Finding macOS installer (startosinstall)...")
 
-        _type_text('INST=$(find / -name startosinstall -maxdepth 6 2>/dev/null | head -1); echo "FOUND:$INST"')
+        _type_text(
+            'INST=$(find / -name startosinstall -maxdepth 6 2>/dev/null | head -1); echo "FOUND:$INST"'
+        )
         _send_key("ret")
 
         # Wait for find to complete — poll terminal state to ensure VM is responsive
         find_start = time.time()
-        for i in range(10):
+        for _ in range(10):
             time.sleep(2)
             ppm = _take_screenshot()
             s = _detect_screen(ppm)
@@ -1307,7 +1558,11 @@ def _auto_install_worker():
         _send_key("ret")
 
         _set_phase("installing", "macOS installation in progress. This takes 30-60 minutes...")
-        emit("info", "vm", "startosinstall is preparing the installation. The VM will reboot when ready...")
+        emit(
+            "info",
+            "vm",
+            "startosinstall is preparing the installation. The VM will reboot when ready...",
+        )
 
         # === STEP 6: Monitor installation progress ===
         # startosinstall prepares in Terminal, then triggers a reboot.
@@ -1323,7 +1578,11 @@ def _auto_install_worker():
 
             # Log state transitions
             if screen != last_screen:
-                emit("info", "vm", f"Screen changed: {last_screen} → {screen} ({elapsed_min} min)")
+                emit(
+                    "info",
+                    "vm",
+                    f"Screen changed: {last_screen} → {screen} ({elapsed_min} min)",
+                )
                 last_screen = screen
 
             if screen == "boot_picker":
@@ -1358,7 +1617,10 @@ def _auto_install_worker():
 
             # Timeout after 60 min
             if time.time() - install_start > 3600:
-                _set_phase("done", "Installation monitoring timed out after 60 min. Check VNC for current state.")
+                _set_phase(
+                    "done",
+                    "Installation monitoring timed out after 60 min. Check VNC for current state.",
+                )
                 return
 
         _set_phase("done", "Auto-install monitoring complete. Check VNC for current state.")
@@ -1372,11 +1634,15 @@ def _auto_install_worker():
 def vm_install_status():
     """Return current auto-install phase and timing info."""
     elapsed = time.time() - _auto_install_start_time if _auto_install_start_time else 0
-    return jsonify({
-        "phase": _auto_install_phase,
-        "elapsed_seconds": int(elapsed),
-        "step_times": {k: int(v - _auto_install_start_time) for k, v in _auto_install_step_times.items()},
-    })
+    return jsonify(
+        {
+            "phase": _auto_install_phase,
+            "elapsed_seconds": int(elapsed),
+            "step_times": {
+                k: int(v - _auto_install_start_time) for k, v in _auto_install_step_times.items()
+            },
+        }
+    )
 
 
 @app.route("/api/vm/complete-setup", methods=["POST"])
@@ -1404,6 +1670,7 @@ def vm_complete_setup():
     recovery = VM_DIR / "com.apple.recovery.boot"
     if recovery.exists():
         import shutil
+
         shutil.rmtree(recovery, ignore_errors=True)
         emit("info", "vm", "Removed recovery boot files")
 
@@ -1427,6 +1694,7 @@ def vm_reinstall():
 
     # Remove disk image, password, and installer media
     import shutil
+
     for f in ["mac_hdd_ng.img", "BaseSystem.img", "BaseSystem.dmg"]:
         p = VM_DIR / f
         if p.exists():
@@ -1440,8 +1708,18 @@ def vm_reinstall():
 
     emit("info", "vm", "Disk wiped, starting reprovisioning")
     # Use --no-block since restart waits for completion and provisioning takes >10s
-    sp.run(["/run/wrappers/bin/sudo", "/run/current-system/sw/bin/systemctl", "restart", "--no-block", "airtag-provision-vm"],
-           capture_output=True, text=True, timeout=10)
+    sp.run(
+        [
+            "/run/wrappers/bin/sudo",
+            "/run/current-system/sw/bin/systemctl",
+            "restart",
+            "--no-block",
+            "airtag-provision-vm",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
     threading.Thread(target=_tail_journal, args=("airtag-provision-vm", "vm"), daemon=True).start()
 
     return jsonify({"status": "reprovisioning"})
@@ -1450,10 +1728,12 @@ def vm_reinstall():
 @app.route("/api/account/status")
 def account_status():
     """Check if Apple account is configured and session is valid."""
-    return jsonify({
-        "configured": ACCOUNT_PATH.exists(),
-        "airtags": len(list(KEYS_DIR.glob("*.json"))) if KEYS_DIR.exists() else 0,
-    })
+    return jsonify(
+        {
+            "configured": ACCOUNT_PATH.exists(),
+            "airtags": len(list(KEYS_DIR.glob("*.json"))) if KEYS_DIR.exists() else 0,
+        }
+    )
 
 
 @app.route("/api/account/login", methods=["POST"])
@@ -1481,7 +1761,13 @@ def account_login():
             method_list = []
             for m in methods:
                 if isinstance(m, SyncSmsSecondFactor):
-                    method_list.append({"type": "sms", "phone": m.phone_number, "id": m.phone_number_id})
+                    method_list.append(
+                        {
+                            "type": "sms",
+                            "phone": m.phone_number,
+                            "id": m.phone_number_id,
+                        }
+                    )
                 else:
                     method_list.append({"type": "trusted_device"})
             emit("info", "account", f"2FA required ({len(methods)} method(s) available)")
@@ -1596,12 +1882,14 @@ def list_keys():
             try:
                 with open(f) as fh:
                     data = json.load(fh)
-                keys.append({
-                    "file": f.name,
-                    "name": data.get("name", f.stem),
-                    "model": data.get("model", "unknown"),
-                    "identifier": data.get("identifier", ""),
-                })
+                keys.append(
+                    {
+                        "file": f.name,
+                        "name": data.get("name", f.stem),
+                        "model": data.get("model", "unknown"),
+                        "identifier": data.get("identifier", ""),
+                    }
+                )
             except Exception:
                 keys.append({"file": f.name, "name": f.stem, "error": True})
     return jsonify(keys)
@@ -1630,15 +1918,24 @@ def main():
     n_keys = len(list(KEYS_DIR.glob("*.json"))) if KEYS_DIR.exists() else 0
     emit("info", "system", f"Loaded {n_keys} AirTag key(s)")
     adaptive = settings.get("adaptive", True)
-    emit("info", "system", f"Polling: idle={settings['idle_interval']}s, active={settings['active_interval']}s, adaptive={'on' if adaptive else 'off'}")
+    emit(
+        "info",
+        "system",
+        f"Polling: idle={settings['idle_interval']}s, active={settings['active_interval']}s, adaptive={'on' if adaptive else 'off'}",
+    )
 
     # Stream VM provisioning logs if it's running
     if VM_ENABLED:
-        check = sp.run(["systemctl", "is-active", "airtag-provision-vm"],
-                        capture_output=True, text=True)
+        check = sp.run(
+            ["systemctl", "is-active", "airtag-provision-vm"],
+            capture_output=True,
+            text=True,
+        )
         if check.stdout.strip() in ("active", "activating"):
             emit("info", "vm", "VM provisioning is running, streaming logs")
-            threading.Thread(target=_tail_journal, args=("airtag-provision-vm", "vm"), daemon=True).start()
+            threading.Thread(
+                target=_tail_journal, args=("airtag-provision-vm", "vm"), daemon=True
+            ).start()
 
     poller = threading.Thread(target=poll_loop, daemon=True)
     poller.start()
