@@ -1130,9 +1130,14 @@ def _auto_install_worker():
         _set_phase("formatting", f"Recovery loaded after {int(recovery_time)}s. Opening Terminal...")
 
         # Let recovery GUI fully render — poll until consecutive stable screenshots
+        # Also re-check for setup_wizard: a transitional frame (e.g. menubar=230 center=230)
+        # can briefly look like recovery, then resolve to setup_wizard once fully loaded.
         for _ in range(6):
             time.sleep(2)
-            s, _ = _wait_for_screen("recovery", timeout=5, poll_interval=1)
+            s, _ = _wait_for_screen({"recovery", "setup_wizard"}, timeout=5, poll_interval=1)
+            if s == "setup_wizard":
+                _run_setup_wizard()
+                return
             if s == "recovery":
                 break
 
@@ -1157,6 +1162,10 @@ def _auto_install_worker():
             time.sleep(2)
             _mouse_click(400, 300, 1)
             state, _ = _wait_for_screen("terminal", timeout=10, poll_interval=2)
+            if state == "setup_wizard":
+                emit("info", "vm", "Setup wizard detected instead of recovery Terminal — macOS is already installed.")
+                _run_setup_wizard()
+                return
             if state != "terminal":
                 log.warning(f"Terminal detection returned '{state}' — proceeding anyway (detection may be imprecise)")
 
