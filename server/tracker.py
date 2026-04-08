@@ -890,263 +890,227 @@ def _wait_for_screen(expected, timeout=300, poll_interval=5, msg=None):
 VM_USER = "airtag"
 VM_PASSWORD = "airtag"
 
-def _wizard_find_button(target, ppm_data=None):
-    """Use OCR to find a button's center coordinates on the current screen.
-    target: text to look for (case-insensitive substring match).
-    Returns (x, y) or None if not found.
+def _wizard_ocr_buttons(img):
+    """Single OCR pass over the full screen. Returns (full_text, buttons_found).
+
+    full_text: all text on screen as lowercase string.
+    buttons_found: dict mapping label -> (x, y) for every label we care about.
+    Does ONE pytesseract call, then scans the word list for all known labels.
     """
-    if ppm_data is None:
-        ppm_data = _take_screenshot()
-    img = _ppm_to_image(ppm_data)
-    if not img:
-        return None
-    target_lower = target.lower()
     try:
         data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
     except Exception as e:
-        log.warning(f"OCR button search failed: {e}")
-        return None
-    # Search for target text — try multi-word match first, then single word
-    words = target_lower.split()
-    for i, word in enumerate(data["text"]):
-        if not word.strip():
-            continue
-        if len(words) == 1:
-            if target_lower in word.strip().lower():
-                x = data["left"][i] + data["width"][i] // 2
-                y = data["top"][i] + data["height"][i] // 2
-                log.info(f"Found button '{target}' at ({x}, {y})")
-                return (x, y)
-        else:
-            # Multi-word: check if consecutive OCR words match
-            matched = True
-            for j, tw in enumerate(words):
-                idx = i + j
-                if idx >= len(data["text"]) or tw not in data["text"][idx].strip().lower():
-                    matched = False
-                    break
-            if matched:
-                # Center across all matched words
-                x1 = data["left"][i]
-                last = i + len(words) - 1
-                x2 = data["left"][last] + data["width"][last]
-                y1 = data["top"][i]
-                h = data["height"][i]
-                log.info(f"Found button '{target}' at ({(x1+x2)//2}, {y1 + h//2})")
-                return ((x1 + x2) // 2, y1 + h // 2)
-    log.warning(f"Button '{target}' not found on screen")
-    return None
+        log.warning(f"OCR failed: {e}")
+        return "", {}
 
-def _wizard_click_button(target, fallback=None, delay=2):
-    """Find and click a button by its text label. Falls back to coordinates if OCR fails."""
-    pos = _wizard_find_button(target)
-    if pos:
-        emit("info", "vm", f"Clicking '{target}' at ({pos[0]}, {pos[1]})")
-        _mouse_click(pos[0], pos[1], delay)
-        return True
-    if fallback:
-        emit("info", "vm", f"Button '{target}' not found via OCR, clicking fallback ({fallback[0]}, {fallback[1]})")
-        _mouse_click(fallback[0], fallback[1], delay)
-        return True
-    return False
+    # Build cleaned word list with positions
+    words = []
+    for i, raw in enumerate(data["text"]):
+        w = raw.strip()
+        if w:
+            cx = data["left"][i] + data["width"][i] // 2
+            cy = data["top"][i] + data["height"][i] // 2
+            words.append((w, cx, cy))
 
-def _wizard_click_continue():
-    """Click the Continue/Agree button."""
-    _wizard_click_button("Continue", fallback=(984, 670))
+    full_text = " ".join(w for w, _, _ in words).lower()
 
-def _wizard_click_secondary():
-    """Click the secondary/skip button (Not Now, Set Up Later, Skip, etc.)."""
-    for label in ["Set Up Later", "Not Now", "Skip", "Don't Use"]:
-        if _wizard_click_button(label):
-            return
-    # If no secondary button found, click Continue instead (safer than Back)
-    log.warning("No secondary button found, falling back to Continue")
-    _wizard_click_continue()
+    # All button labels we ever want to find, searched in one pass
+    ALL_LABELS = [
+        "Not Now", "Set Up Later", "Skip", "Don't Use", "Customize Settings",
+        "Agree", "Continue", "Next",
+        "Full Name",
+    ]
 
-def _wizard_read_screen(ppm_data=None):
-    """OCR the center of the screen and return lowercase text. Useful for wizard step identification."""
-    if ppm_data is None:
-        ppm_data = _take_screenshot()
-    img = _ppm_to_image(ppm_data)
+    found = {}
+    for label in ALL_LABELS:
+        parts = label.lower().split()
+        for i, (w, cx, cy) in enumerate(words):
+            if parts[0] not in w.lower():
+                continue
+            if len(parts) == 1:
+                found[label] = (cx, cy)
+                break
+            # Multi-word: check consecutive words
+            ok = True
+            for j, part in enumerate(parts[1:], 1):
+                if i + j < len(words) and part in words[i + j][0].lower():
+                    continue
+                ok = False
+                break
+            if ok:
+                xs = [words[i + k][1] for k in range(len(parts))]
+                found[label] = (sum(xs) // len(xs), cy)
+                break
+
+    if found:
+        log.info(f"Buttons found: {', '.join(f'{k} ({v[0]},{v[1]})' for k, v in found.items())}")
+
+    return full_text, found
+
+
+# Keywords that make a screen DANGEROUS — Continue must NEVER be clicked.
+# If Continue is clicked on these screens, it starts an unwanted action
+# (data transfer, iCloud sign-in, etc.) that's hard to undo.
+_DANGEROUS_KEYWORDS = ["migration", "transfer information", "transferring",
+                       "apple id", "sign in with", "icloud"]
+
+# Button priority: skip buttons are always preferred over advance buttons.
+_SKIP_BUTTONS = ["Not Now", "Set Up Later", "Skip", "Don't Use", "Customize Settings"]
+_ADVANCE_BUTTONS = ["Agree", "Continue", "Next"]
+
+
+def _wizard_click(pos, label, delay=2):
+    """Click a button at pos and log it."""
+    emit("info", "vm", f"Clicking '{label}' at ({pos[0]}, {pos[1]})")
+    _mouse_click(pos[0], pos[1], delay)
+
+
+def _wizard_step(ppm):
+    """Execute one wizard step: OCR the screen, decide what to click, click it.
+
+    Strategy (no screen-specific elifs):
+      1. OCR the full screen in one pass → get text + all button positions
+      2. If it's the account-creation screen → fill the form (only true special case)
+      3. Check if screen is dangerous (migration, apple id, etc.)
+      4. Try skip buttons first (always safe on any screen)
+      5. If not dangerous, try advance buttons (Agree, Continue)
+      6. If dangerous and nothing found → Escape
+      7. If not dangerous and nothing found → click Continue fallback position
+
+    After clicking, check for confirmation dialogs (Agree/Skip popups)
+    and handle them the same way.
+    """
+    img = _ppm_to_image(ppm)
     if not img:
-        return ""
-    return _ocr_region(img, 100, 50, 1180, 750)
+        emit("info", "vm", "Failed to parse screenshot")
+        return
 
-def _wizard_verify_screen_changed(prev_text, timeout=10):
-    """Wait until OCR text changes from prev_text."""
-    if not prev_text:
-        time.sleep(2)
-        return True
-    for _ in range(timeout * 2):
+    text, buttons = _wizard_ocr_buttons(img)
+    is_dangerous = any(kw in text for kw in _DANGEROUS_KEYWORDS)
+    context = "DANGEROUS" if is_dangerous else "safe"
+    emit("info", "vm", f"Screen ({context}): {text[:80]!r}")
+    emit("info", "vm", f"Buttons visible: {list(buttons.keys()) or 'none'}")
+
+    # --- Special case: account creation (needs form fill, not just a click) ---
+    if "create a computer account" in text or ("full name" in text and "password" in text):
+        emit("info", "vm", "Creating user account...")
+        pos = buttons.get("Full Name")
+        if pos:
+            _mouse_click(pos[0] + 200, pos[1], 0.5)
+        else:
+            _mouse_click(790, 330, 0.5)
+        _type_text(VM_USER)
+        _send_key("tab", 0.3)  # Account Name (auto-filled)
+        _send_key("tab", 0.3)  # Password
+        _type_text(VM_PASSWORD)
+        _send_key("tab", 0.3)  # Verify
+        _type_text(VM_PASSWORD)
+        _send_key("tab", 0.3)  # Hint
         time.sleep(0.5)
-        new_text = _wizard_read_screen()
-        # Consider changed if at least 30% of characters differ
-        if new_text and new_text != prev_text:
-            overlap = sum(1 for a, b in zip(new_text, prev_text) if a == b)
-            max_len = max(len(new_text), len(prev_text), 1)
-            if overlap / max_len < 0.7:
-                return True
-    return False
+        pos = buttons.get("Continue")
+        if pos:
+            _wizard_click(pos, "Continue")
+        else:
+            _mouse_click(984, 670, 2)
+        time.sleep(5)
+        return
+
+    # --- General strategy: pick the best button ---
+    # 1. Try skip buttons (always safe, any screen)
+    for label in _SKIP_BUTTONS:
+        if label in buttons:
+            _wizard_click(buttons[label], label)
+            time.sleep(2)
+            _wizard_handle_confirmation()
+            return
+
+    # 2. Try advance buttons (only if screen is NOT dangerous)
+    if not is_dangerous:
+        for label in _ADVANCE_BUTTONS:
+            if label in buttons:
+                _wizard_click(buttons[label], label)
+                time.sleep(2)
+                _wizard_handle_confirmation()
+                return
+
+    # 3. Nothing found
+    if is_dangerous:
+        emit("info", "vm", "Dangerous screen, no skip button found — pressing Escape")
+        _send_key("escape", 2)
+    else:
+        emit("info", "vm", "No buttons found via OCR — clicking Continue fallback position")
+        _mouse_click(984, 670, 2)
+
+
+def _wizard_handle_confirmation():
+    """After clicking a button, check if a confirmation dialog appeared (Agree/Skip popup)."""
+    ppm = _take_screenshot()
+    img = _ppm_to_image(ppm)
+    if not img:
+        return
+    text, buttons = _wizard_ocr_buttons(img)
+
+    # Common confirmation dialogs: "Are you sure?" with Skip, or T&C with Agree
+    for label in ["Skip", "Agree"]:
+        if label in buttons:
+            emit("info", "vm", f"Confirmation dialog — clicking '{label}'")
+            _wizard_click(buttons[label], label, delay=1)
+            return
 
 
 def _run_setup_wizard():
-    """Automate macOS setup wizard using OCR to identify each screen.
+    """Automate macOS setup wizard using OCR.
 
-    Reads screen text to determine which step we're on, then acts accordingly.
-    Handles screens in any order and retries if clicks don't advance.
+    Design: instead of recognizing every possible screen, we do ONE OCR pass
+    per step to find all text and buttons, then pick the best button using
+    simple priority rules. Only one special case exists (account creation).
     """
     _set_phase("setup_wizard", "Automating macOS setup wizard...")
-    emit("info", "vm", "Setup wizard detected, automating initial configuration...")
+    emit("info", "vm", "Setup wizard detected, starting automation...")
 
     try:
         time.sleep(5)
+        prev_text = ""
 
-        max_steps = 30  # safety limit
-        for step in range(max_steps):
+        for step in range(30):
             ppm = _take_screenshot()
             screen = _detect_screen(ppm)
+
             if screen != "setup_wizard":
                 if screen in ("unknown", "apple_logo"):
-                    # Might be transitioning — wait a moment
                     state, ppm = _wait_for_screen("setup_wizard", timeout=15, poll_interval=2)
                     if state != "setup_wizard":
-                        emit("info", "vm", f"Left setup wizard (screen: {state}). Wizard may be complete.")
+                        emit("info", "vm", f"Left setup wizard (screen: {state}). Done.")
                         break
                 else:
-                    emit("info", "vm", f"Left setup wizard (screen: {screen}). Wizard may be complete.")
+                    emit("info", "vm", f"Left setup wizard (screen: {screen}). Done.")
                     break
 
-            text = _wizard_read_screen(ppm)
-            emit("info", "vm", f"Setup wizard step {step+1}: {text[:80]!r}")
+            # Check if screen actually changed from last step (avoid re-clicking same screen)
+            cur_text = _ocr_region(_ppm_to_image(ppm), 100, 50, 1180, 750) if _ppm_to_image(ppm) else ""
+            if prev_text and cur_text:
+                overlap = sum(1 for a, b in zip(cur_text, prev_text) if a == b)
+                max_len = max(len(cur_text), len(prev_text), 1)
+                if overlap / max_len > 0.85:
+                    emit("info", "vm", f"Step {step+1}: screen unchanged, retaking in 3s...")
+                    time.sleep(3)
+                    ppm = _take_screenshot()
 
-            # Identify current screen and decide action
-            if "select your language" in text or ("language" in text and "country" not in text and step == 0):
-                _wizard_click_continue()
-
-            elif "country or region" in text:
-                _wizard_click_continue()
-
-            elif "written and spoken" in text:
-                _wizard_click_continue()
-
-            elif "accessibility" in text and "features" in text:
-                _wizard_click_continue()
-
-            elif "data & privacy" in text or "data and privacy" in text:
-                _wizard_click_continue()
-
-            elif "migration" in text or "transfer information" in text:
-                # IMPORTANT: Do NOT click Continue — it starts a data transfer.
-                # Look for "Not Now" anywhere on screen (may be a text link, not a button).
-                ppm = _take_screenshot()
-                img = _ppm_to_image(ppm)
-                if img:
-                    # Search entire screen for "Not Now"
-                    try:
-                        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-                        for i, word in enumerate(data["text"]):
-                            if "not" in word.strip().lower():
-                                # Check if next word is "now"
-                                if i + 1 < len(data["text"]) and "now" in data["text"][i+1].strip().lower():
-                                    x = data["left"][i] + data["width"][i] // 2
-                                    y = data["top"][i] + data["height"][i] // 2
-                                    log.info(f"Found 'Not Now' at ({x}, {y})")
-                                    _mouse_click(x, y, 2)
-                                    break
-                        else:
-                            log.warning("'Not Now' not found on migration screen, trying fallback")
-                            _wizard_click_button("Not", fallback=(984, 670))
-                    except Exception as e:
-                        log.warning(f"Migration button search failed: {e}")
-                        _wizard_click_button("Not", fallback=(984, 670))
-
-            elif "transferring" in text:
-                # Already started a transfer by accident — wait for it or try to cancel
-                emit("info", "vm", "Migration transfer in progress, waiting...")
-                time.sleep(10)
-
-            elif "apple id" in text or "sign in" in text:
-                # Skip Apple ID — click "Set Up Later"
-                emit("info", "vm", "Skipping Apple ID sign-in...")
-                _wizard_click_secondary()
-                time.sleep(2)
-                # Handle confirmation dialog
-                _wizard_click_button("Skip", fallback=(750, 455))
-                time.sleep(1)
-
-            elif "terms and conditions" in text or "terms & conditions" in text:
-                _wizard_click_button("Agree", fallback=(984, 670))
-                time.sleep(2)
-                # Handle "I have read and agree" confirmation dialog
-                _wizard_click_button("Agree", fallback=(750, 455))
-                time.sleep(1)
-
-            elif "create a computer account" in text or "full name" in text:
-                emit("info", "vm", "Creating user account...")
-                # Find and click the Full Name field via OCR
-                name_pos = _wizard_find_button("Full")  # "Full Name" label
-                if name_pos:
-                    _mouse_click(name_pos[0] + 200, name_pos[1], 0.5)  # Click input field (right of label)
-                else:
-                    _mouse_click(790, 330, 0.5)  # Fallback
-                _type_text(VM_USER)
-                _send_key("tab", 0.3)  # Account Name (auto-filled)
-                _send_key("tab", 0.3)  # Password
-                _type_text(VM_PASSWORD)
-                _send_key("tab", 0.3)  # Verify Password
-                _type_text(VM_PASSWORD)
-                _send_key("tab", 0.3)  # Hint
-                time.sleep(0.5)
-                _wizard_click_continue()
-                time.sleep(5)  # Account creation is slow
-
-            elif "location" in text:
-                _wizard_click_continue()
-
-            elif "time zone" in text or "select your time zone" in text:
-                _wizard_click_continue()
-
-            elif "analytics" in text or "improvements" in text:
-                _wizard_click_continue()
-
-            elif "screen time" in text:
-                _wizard_click_secondary()
-
-            elif "choose your look" in text or "appearance" in text or "light" in text and "dark" in text:
-                _wizard_click_continue()
-
-            elif "express" in text and "set up" in text:
-                # "Express Set Up" screen — click Customize or Continue
-                _wizard_click_continue()
-
-            elif "siri" in text:
-                _wizard_click_continue()
-
-            elif "touch id" in text or "fingerprint" in text:
-                _wizard_click_continue()
-
-            elif "apple pay" in text:
-                _wizard_click_secondary()
-
-            else:
-                # Unknown wizard screen — try Continue, fall back to secondary
-                log.warning(f"Unknown wizard screen: {text[:100]!r}")
-                _wizard_click_continue()
-
-            # Wait for screen transition
+            emit("info", "vm", f"=== Wizard step {step+1} ===")
+            _wizard_step(ppm)
+            prev_text = cur_text
             time.sleep(2)
 
-        # Save the password and signal completion
         emit("info", "vm", "Setup wizard complete! Saving credentials...")
         pw_path = DATA_DIR / "vm-password"
         pw_path.write_text(VM_PASSWORD)
         pw_path.chmod(0o600)
 
-        _set_phase("done", "macOS setup complete! Apple ID sign-in was skipped — sign in via VNC if needed.")
-        emit("info", "vm", "Automated setup finished. User account: airtag / airtag")
+        _set_phase("done", "macOS setup complete!")
+        emit("info", "vm", f"User account: {VM_USER} / {VM_PASSWORD}")
 
     except Exception as e:
-        _set_phase("error", f"Setup wizard automation failed: {e}")
+        _set_phase("error", f"Setup wizard failed: {e}")
         log.exception("Setup wizard error")
 
 
