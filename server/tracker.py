@@ -897,8 +897,9 @@ def _wizard_find_button(target, ppm_data=None):
     if not img:
         return None
     target_lower = target.lower()
-    # Scan the lower portion of the screen where buttons appear
-    for y_start, y_end in [(600, 780), (400, 600), (0, 800)]:
+    # Scan the button area at the bottom of the dialog, then widen if needed
+    # Avoid scanning body text which may contain matching words (e.g. "Later" in descriptions)
+    for y_start, y_end in [(630, 710), (580, 780)]:
         region = img.crop((0, y_start, 1280, y_end))
         try:
             data = pytesseract.image_to_data(region, output_type=pytesseract.Output.DICT)
@@ -931,13 +932,14 @@ def _wizard_click_continue():
     _wizard_click_button("Continue", fallback=(984, 670))
 
 def _wizard_click_secondary():
-    """Click the secondary/skip button (Not Now, Set Up Later, etc.)."""
-    # Try common secondary button labels
-    for label in ["Not Now", "Later", "Skip"]:
+    """Click the secondary/skip button (Not Now, Set Up Later, Skip, etc.)."""
+    # Try common secondary button labels in the button area (bottom of screen)
+    for label in ["Not Now", "Skip", "Set Up Later", "Don"]:
         if _wizard_click_button(label):
             return
-    # Fallback: click left-side button area
-    _wizard_click_button("Back", fallback=(911, 670))
+    # If no secondary button found, click Continue instead (safer than Back)
+    log.warning("No secondary button found, falling back to Continue")
+    _wizard_click_continue()
 
 def _wizard_read_screen(ppm_data=None):
     """OCR the center of the screen and return lowercase text. Useful for wizard step identification."""
@@ -1005,8 +1007,8 @@ def _run_setup_wizard():
             elif "written and spoken" in text:
                 _wizard_click_continue()
 
-            elif "accessibility" in text and ("not now" in text or "features" in text):
-                _wizard_click_secondary()
+            elif "accessibility" in text and "features" in text:
+                _wizard_click_continue()
 
             elif "data & privacy" in text or "data and privacy" in text:
                 _wizard_click_continue()
