@@ -830,6 +830,201 @@ def _wait_for_screen(expected, timeout=300, poll_interval=5, msg=None):
     return last_state, last_ppm
 
 
+VM_USER = "airtag"
+VM_PASSWORD = "airtag"
+
+def _wizard_click_continue():
+    """Click the Continue button (bottom-right of setup dialog, ~1090,690 on 1280x800)."""
+    _mouse_click(1090, 690, 2)
+
+def _wizard_click_secondary():
+    """Click the secondary/skip button (bottom-left area, ~190,690)."""
+    _mouse_click(190, 690, 2)
+
+def _wizard_verify_screen_changed(prev_ppm, timeout=10):
+    """Wait until the screen visually changes from prev_ppm."""
+    if not prev_ppm:
+        time.sleep(2)
+        return True
+    prev_center = _pixel_brightness(prev_ppm, 640, 400)
+    for _ in range(timeout * 2):
+        time.sleep(0.5)
+        ppm = _take_screenshot()
+        if ppm and abs(_pixel_brightness(ppm, 640, 400) - prev_center) > 50:
+            return True
+        # Also check a second point to catch subtle changes
+        if ppm and abs(_pixel_brightness(ppm, 400, 300) - _pixel_brightness(prev_ppm, 400, 300)) > 50:
+            return True
+    return False
+
+
+def _run_setup_wizard():
+    """Automate macOS Ventura setup wizard after installation.
+
+    Clicks through all setup screens automatically:
+    Language → Region → Accessibility → Migration → Terms → Account → etc.
+    Stops at Apple ID sign-in and waits for user to complete manually.
+    """
+    _set_phase("setup_wizard", "Automating macOS setup wizard...")
+    emit("info", "vm", "Setup wizard detected, automating initial configuration...")
+
+    try:
+        # Give the wizard a moment to fully render
+        time.sleep(5)
+
+        # The macOS Ventura setup wizard has a sequence of screens.
+        # Most screens have a Continue button at bottom-right (~1090, 690).
+        # Some have a secondary "Not Now"/"Skip" button at bottom-left (~190, 690).
+        #
+        # Screen sequence (may vary slightly):
+        # 1. Language selection — Continue
+        # 2. Country/Region — Continue
+        # 3. Written & Spoken Languages — Continue (may be skipped)
+        # 4. Accessibility — Not Now (bottom-left)
+        # 5. Data & Privacy — Continue
+        # 6. Migration Assistant — Not Now
+        # 7. Apple ID — Set Up Later (we stop here for user)
+        # 8. Terms & Conditions — Agree
+        # 9. Create Account — fill fields, Continue
+        # 10. Enable Location Services — Don't Use / Continue
+        # 11. Select Time Zone — Continue
+        # 12. Analytics & Improvements — Continue (with checkbox unchecked)
+        # 13. Screen Time — Set Up Later
+        # 14. Choose Your Look — select, Continue
+        #
+        # Strategy: click Continue for most screens, verify screen changes.
+        # For account creation, detect the input fields and type.
+        # For Apple ID, stop and let user interact.
+
+        # Click through the first batch of screens up to Apple ID
+        # These are all "click Continue" or "click Not Now" screens
+        wizard_steps = [
+            ("Language", "continue"),
+            ("Country/Region", "continue"),
+            ("Written & Spoken Languages", "continue"),
+            ("Accessibility", "secondary"),      # Not Now
+            ("Data & Privacy", "continue"),
+            ("Migration Assistant", "secondary"), # Not Now
+        ]
+
+        for step_name, action in wizard_steps:
+            emit("info", "vm", f"Setup wizard: {step_name}...")
+            ppm_before = _take_screenshot()
+            screen = _detect_screen(ppm_before)
+            if screen != "setup_wizard":
+                log.warning(f"Expected setup_wizard screen for '{step_name}', got '{screen}'")
+                if screen in ("unknown", "apple_logo", "boot_picker"):
+                    emit("info", "vm", f"Unexpected screen '{screen}' during wizard, waiting...")
+                    state, _ = _wait_for_screen("setup_wizard", timeout=30, poll_interval=2)
+                    if state != "setup_wizard":
+                        log.warning(f"Could not recover to setup_wizard, proceeding anyway")
+
+            if action == "continue":
+                _wizard_click_continue()
+            else:
+                _wizard_click_secondary()
+
+            # Verify screen changed
+            if not _wizard_verify_screen_changed(ppm_before, timeout=8):
+                log.warning(f"Screen didn't change after '{step_name}', clicking again...")
+                if action == "continue":
+                    _wizard_click_continue()
+                else:
+                    _wizard_click_secondary()
+                time.sleep(3)
+
+        # === Apple ID sign-in screen ===
+        # The Apple ID screen may show "Set Up Later" as a link/button.
+        # We need to skip it. On Ventura, "Set Up Later" is at the bottom-left.
+        emit("info", "vm", "Setup wizard: Skipping Apple ID sign-in...")
+        ppm_before = _take_screenshot()
+        _wizard_click_secondary()  # "Set Up Later"
+        time.sleep(2)
+        # A confirmation dialog may appear: "Are you sure you want to skip?"
+        # Click "Skip" which is typically the right button in the dialog
+        _mouse_click(750, 455, 2)  # "Skip" in confirmation dialog
+        time.sleep(2)
+
+        # === Terms & Conditions ===
+        emit("info", "vm", "Setup wizard: Accepting Terms & Conditions...")
+        ppm_before = _take_screenshot()
+        _wizard_click_continue()  # "Agree"
+        time.sleep(2)
+        # Confirmation dialog: "I have read and agree"
+        _mouse_click(750, 455, 2)  # "Agree" in confirmation dialog
+        time.sleep(3)
+
+        # === Create Account ===
+        emit("info", "vm", "Setup wizard: Creating user account...")
+        time.sleep(2)
+
+        # Full Name field — click and type
+        _mouse_click(790, 330, 0.5)  # Full Name field
+        _type_text(VM_USER)
+        _send_key("tab", 0.3)  # Move to Account Name (auto-filled from Full Name)
+        _send_key("tab", 0.3)  # Move to Password field
+        _type_text(VM_PASSWORD)
+        _send_key("tab", 0.3)  # Move to Verify Password
+        _type_text(VM_PASSWORD)
+        _send_key("tab", 0.3)  # Move to Hint (optional)
+        time.sleep(0.5)
+
+        _wizard_click_continue()
+        time.sleep(5)  # Account creation takes a moment
+
+        # === Location Services ===
+        emit("info", "vm", "Setup wizard: Location Services...")
+        _wizard_click_continue()
+        time.sleep(3)
+
+        # === Time Zone ===
+        emit("info", "vm", "Setup wizard: Time Zone...")
+        _wizard_click_continue()
+        time.sleep(3)
+
+        # === Analytics ===
+        emit("info", "vm", "Setup wizard: Analytics...")
+        _wizard_click_continue()
+        time.sleep(3)
+
+        # === Screen Time ===
+        emit("info", "vm", "Setup wizard: Screen Time...")
+        _wizard_click_secondary()  # Set Up Later
+        time.sleep(3)
+
+        # === Choose Your Look ===
+        emit("info", "vm", "Setup wizard: Appearance...")
+        _wizard_click_continue()
+        time.sleep(5)
+
+        # Check if we're now at the desktop (no longer setup_wizard)
+        state, _ = _wait_for_screen({"recovery", "unknown", "setup_wizard"}, timeout=30, poll_interval=3)
+
+        if state == "setup_wizard":
+            # Still more screens — keep clicking Continue
+            for extra in range(5):
+                emit("info", "vm", f"Setup wizard: additional screen {extra+1}...")
+                _wizard_click_continue()
+                time.sleep(3)
+                ppm = _take_screenshot()
+                s = _detect_screen(ppm)
+                if s != "setup_wizard":
+                    break
+
+        # Save the password and signal completion
+        emit("info", "vm", "Setup wizard complete! Saving credentials...")
+        pw_path = DATA_DIR / "vm-password"
+        pw_path.write_text(VM_PASSWORD)
+        pw_path.chmod(0o600)
+
+        _set_phase("done", "macOS setup complete! Apple ID sign-in was skipped — sign in via VNC if needed.")
+        emit("info", "vm", "Automated setup finished. User account: airtag / airtag")
+
+    except Exception as e:
+        _set_phase("error", f"Setup wizard automation failed: {e}")
+        log.exception("Setup wizard error")
+
+
 def _auto_install_worker():
     """Autonomous macOS install via Terminal + startosinstall.
 
@@ -863,7 +1058,7 @@ def _auto_install_worker():
 
         # macOS already installed — setup wizard is showing
         if state == "setup_wizard":
-            _set_phase("done", "macOS is installed! Setup wizard is ready in VNC.")
+            _run_setup_wizard()
             return
 
         if state == "boot_picker":
@@ -878,7 +1073,7 @@ def _auto_install_worker():
                 msg="Waiting for boot to proceed"
             )
             if state == "setup_wizard":
-                _set_phase("done", "macOS is installed! Setup wizard is ready in VNC.")
+                _run_setup_wizard()
                 return
         elif state != "recovery":
             _set_phase("error", f"Expected boot picker or recovery, got: {state}")
@@ -1052,7 +1247,7 @@ def _auto_install_worker():
                     emit("info", "vm", f"macOS installing... ({elapsed_min} min)")
 
             elif screen == "setup_wizard":
-                _set_phase("done", "macOS is installed! Setup wizard is ready in VNC.")
+                _run_setup_wizard()
                 return
 
             elif screen == "unknown":
@@ -1091,15 +1286,16 @@ def vm_install_status():
 @app.route("/api/vm/complete-setup", methods=["POST"])
 def vm_complete_setup():
     """Mark VM setup as complete. Saves VM password and stops the VM."""
-    data = request.get_json()
+    data = request.get_json() or {}
     password = data.get("password")
-    if not password:
-        return jsonify({"error": "VM user password required"}), 400
 
-    emit("info", "vm", "VM setup marked complete, saving password")
     pw_path = DATA_DIR / "vm-password"
-    pw_path.write_text(password)
-    pw_path.chmod(0o600)
+    if password:
+        emit("info", "vm", "VM setup marked complete, saving password")
+        pw_path.write_text(password)
+        pw_path.chmod(0o600)
+    elif not pw_path.exists():
+        return jsonify({"error": "VM user password required"}), 400
 
     vm_stop()
 

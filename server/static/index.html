@@ -353,18 +353,32 @@
       booting: 'Booting VM...',
       boot_picker: 'Navigating boot menu...',
       waiting_recovery: 'Loading macOS Recovery...',
-      formatting: 'Formatting disk...',
+      formatting: 'Formatting disk & starting installer...',
       installing: 'Installing macOS...',
-      done: 'Installation complete!',
+      setup_wizard: 'Configuring macOS...',
+      setup_appleid: 'Waiting for Apple ID sign-in...',
+      done: 'Setup complete!',
       error: 'Installation failed',
     };
 
-    const phaseProgress = {
-      booting: 5,
-      boot_picker: 10,
-      waiting_recovery: 15,
-      formatting: 25,
-      installing: 50,
+    // Expected duration of each phase in seconds (from real measurements)
+    const phaseEstimates = {
+      booting: 15,
+      boot_picker: 25,
+      formatting: 130,
+      installing: 1400,
+      setup_wizard: 120,
+      setup_appleid: 300,
+    };
+
+    // Cumulative progress % at the START of each phase
+    const phaseProgressStart = {
+      booting: 0,
+      boot_picker: 3,
+      formatting: 6,
+      installing: 15,
+      setup_wizard: 90,
+      setup_appleid: 95,
       done: 100,
       error: 0,
     };
@@ -400,41 +414,69 @@
       pollInstallStatus();
     }
 
+    function formatCountdown(phaseElapsed, estimate) {
+      const diff = estimate - phaseElapsed;
+      if (diff > 0) {
+        const m = Math.floor(diff / 60), s = diff % 60;
+        return m > 0 ? `~${m}m ${s}s remaining` : `~${s}s remaining`;
+      } else {
+        const over = -diff;
+        const m = Math.floor(over / 60), s = over % 60;
+        return m > 0 ? `+${m}m ${s}s over estimate` : `+${s}s over estimate`;
+      }
+    }
+
     async function pollInstallStatus() {
       try {
         const res = await fetch('/api/vm/install-status');
         const data = await res.json();
         const phase = data.phase;
         const elapsed = data.elapsed_seconds;
-        const mins = Math.floor(elapsed / 60);
-        const secs = elapsed % 60;
 
         document.getElementById('install-phase-label').textContent = phaseLabels[phase] || phase;
-        document.getElementById('install-elapsed').textContent = `${mins}m ${secs}s`;
 
-        let progress = phaseProgress[phase] || 0;
-        // During installing phase, estimate progress based on elapsed time (30-60 min expected)
-        if (phase === 'installing') {
-          const installElapsed = elapsed - (data.step_times?.installing || 0);
-          progress = Math.min(95, 25 + (installElapsed / 2400) * 70); // 40 min = 100%
+        // Calculate phase-local elapsed time
+        const phaseStart = data.step_times?.[phase] || 0;
+        const phaseElapsed = Math.max(0, elapsed - phaseStart);
+        const estimate = phaseEstimates[phase] || 0;
+
+        // Show countdown or count-up for the current phase
+        if (estimate > 0) {
+          document.getElementById('install-elapsed').textContent = formatCountdown(phaseElapsed, estimate);
+        } else {
+          const mins = Math.floor(elapsed / 60), secs = elapsed % 60;
+          document.getElementById('install-elapsed').textContent = `${mins}m ${secs}s`;
         }
+
+        // Progress bar: interpolate within the current phase's allocated range
+        const startPct = phaseProgressStart[phase] ?? 0;
+        const phases = Object.keys(phaseProgressStart);
+        const nextIdx = phases.indexOf(phase) + 1;
+        const endPct = nextIdx < phases.length ? (phaseProgressStart[phases[nextIdx]] ?? 100) : 100;
+        let phaseFraction = estimate > 0 ? Math.min(1.5, phaseElapsed / estimate) : 1;
+        let progress = Math.min(99, startPct + (endPct - startPct) * Math.min(1, phaseFraction));
+        if (phase === 'done') progress = 100;
         document.getElementById('install-progress-bar').style.width = progress + '%';
 
+        // Phase-specific detail text
         if (phase === 'installing') {
-          const installElapsed = elapsed - (data.step_times?.installing || 0);
-          const estRemaining = Math.max(0, 2400 - installElapsed);
-          const remMins = Math.floor(estRemaining / 60);
           document.getElementById('install-detail').textContent =
-            `macOS is downloading and installing. Estimated ${remMins} min remaining. The VM reboots automatically during this process.`;
+            'macOS is installing. The VM reboots automatically during this process.';
+        } else if (phase === 'setup_wizard') {
+          document.getElementById('install-detail').textContent =
+            'Automating macOS setup wizard (language, region, user account)...';
+        } else if (phase === 'setup_appleid') {
+          document.getElementById('install-detail').innerHTML =
+            'Sign into your Apple ID and enable Find My Mac in VNC below. Then enter your macOS password and click <b>Complete Setup</b>.';
+          document.getElementById('manual-setup-controls').style.display = 'flex';
         } else if (phase === 'done') {
           document.getElementById('install-detail').innerHTML =
-            'macOS is installed! Complete the setup wizard in VNC below: create a user account, sign into Apple ID, enable Find My Mac and SSH. Then enter your password and click <b>Complete Setup</b>.';
+            'macOS is fully set up! Click <b>Complete Setup</b> to finalize and start tracking.';
           document.getElementById('manual-setup-controls').style.display = 'flex';
           return; // stop polling
         } else if (phase === 'error') {
-          const lastEvent = await fetch('/api/events').then(r => r.json()).then(events => events.filter(e => e.source === 'vm').pop());
           document.getElementById('install-detail').innerHTML =
-            (lastEvent?.message || 'An error occurred. Check VNC for details.') +
+            (data.message || 'An error occurred. Check VNC for details.') +
             '<br><button class="btn small" onclick="startVmSetup()" style="margin-top:8px">Retry</button>' +
             '<button class="btn small danger" onclick="reinstallVm()" style="margin-top:8px;margin-left:8px">Reinstall</button>';
           document.getElementById('install-progress-bar').style.background = '#e63946';
