@@ -1140,7 +1140,12 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         WizardScreen("dictation", ["dictation"], "Continue"),
         WizardScreen("accessibility", ["accessibility", "features"], "Not Now"),
         WizardScreen("privacy", ["data", "privacy"], "Continue"),
-        WizardScreen("migration", ["migration assistant"], "Not Now", fallback_pos=(959, 665)),
+        WizardScreen(
+            "migration",
+            ["migration assistant"],
+            "Continue",
+            custom_action=lambda: _skip_migration(),
+        ),
         WizardScreen(
             "transfer_info",
             ["transfer information to this mac"],
@@ -1199,8 +1204,11 @@ def _find_button_pos(img: Image.Image, label: str) -> tuple[int, int] | None:
         log.warning(f"OCR image_to_data failed: {e}")
         return None
 
-    all_words = [(w.strip(), data["left"][i], data["top"][i])
-                  for i, w in enumerate(data["text"]) if w.strip()]
+    all_words = [
+        (w.strip(), data["left"][i], data["top"][i])
+        for i, w in enumerate(data["text"])
+        if w.strip()
+    ]
     log.info(f"Button search '{label}': {[(w, x, y) for w, x, y in all_words if y > 600]}")
 
     words = label.lower().split()
@@ -1242,6 +1250,32 @@ def _find_and_click(label: str) -> bool:
             return True
     log.warning(f"Button '{label}' not found after 2 attempts")
     return False
+
+
+def _skip_migration() -> None:
+    """Skip Migration Assistant by selecting the 'Not now' radio option, then clicking Continue.
+
+    In Catalina, the Migration Assistant screen has radio options in the body
+    (From a Mac, From a Windows PC, From Time Machine, Not now). 'Not now' is
+    NOT a button — it's a list/radio item that must be clicked first.
+    """
+    emit("info", "vm", "  → Selecting 'Not now' radio option")
+    ppm = _take_screenshot()
+    img = _ppm_to_image(ppm)
+    if img:
+        # Try to find "Not" in the body text (part of "Not now" radio option)
+        pos = _find_button_pos(img, "Not now")
+        if pos:
+            emit("info", "vm", f"  → 'Not now' radio at ({pos[0]}, {pos[1]})")
+            _mouse_click(pos[0], pos[1], 0.5)
+        else:
+            # Fallback: the "Not now" radio is typically around (170, 480) in Catalina
+            emit("info", "vm", "  → fallback click for 'Not now' radio at (170, 480)")
+            _mouse_click(170, 480, 0.5)
+    time.sleep(1)
+    if not _find_and_click("Continue"):
+        emit("info", "vm", "  → fallback Continue at (959, 665)")
+        _mouse_click(959, 665, 0.3)
 
 
 def _fill_account_form() -> None:
