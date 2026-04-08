@@ -803,6 +803,7 @@ def _detect_screen(ppm_data):
         "analytics", "screen time",
         "choose your look", "express set up",
         "set up later", "not now",
+        "transferring your information",
     ]
     setup_matches = sum(1 for kw in setup_keywords if kw in text)
     if setup_matches >= 1:
@@ -826,10 +827,11 @@ def _detect_screen(ppm_data):
     if terminal_matches >= 1:
         return "terminal"
 
-    # Boot picker text (OpenCore)
-    boot_keywords = ["boot", "opencore", "base system", "macintosh"]
+    # Boot picker text (OpenCore) — require 2+ matches to avoid false positives
+    # ("base system" can appear in migration transfer screen text)
+    boot_keywords = ["boot", "opencore", "base system"]
     boot_matches = sum(1 for kw in boot_keywords if kw in text)
-    if boot_matches >= 1:
+    if boot_matches >= 2:
         return "boot_picker"
 
     # Bright screen with menubar but no recognized text — likely transitional
@@ -1016,7 +1018,34 @@ def _run_setup_wizard():
                 _wizard_click_continue()
 
             elif "migration" in text or "transfer information" in text:
-                _wizard_click_secondary()
+                # IMPORTANT: Do NOT click Continue — it starts a data transfer.
+                # Look for "Not Now" anywhere on screen (may be a text link, not a button).
+                ppm = _take_screenshot()
+                img = _ppm_to_image(ppm)
+                if img:
+                    # Search entire screen for "Not Now"
+                    try:
+                        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+                        for i, word in enumerate(data["text"]):
+                            if "not" in word.strip().lower():
+                                # Check if next word is "now"
+                                if i + 1 < len(data["text"]) and "now" in data["text"][i+1].strip().lower():
+                                    x = data["left"][i] + data["width"][i] // 2
+                                    y = data["top"][i] + data["height"][i] // 2
+                                    log.info(f"Found 'Not Now' at ({x}, {y})")
+                                    _mouse_click(x, y, 2)
+                                    break
+                        else:
+                            log.warning("'Not Now' not found on migration screen, trying fallback")
+                            _wizard_click_button("Not", fallback=(984, 670))
+                    except Exception as e:
+                        log.warning(f"Migration button search failed: {e}")
+                        _wizard_click_button("Not", fallback=(984, 670))
+
+            elif "transferring" in text:
+                # Already started a transfer by accident — wait for it or try to cancel
+                emit("info", "vm", "Migration transfer in progress, waiting...")
+                time.sleep(10)
 
             elif "apple id" in text or "sign in" in text:
                 # Skip Apple ID — click "Set Up Later"
