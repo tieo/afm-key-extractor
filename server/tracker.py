@@ -1109,7 +1109,9 @@ class WizardScreen:
     id: str
     match: list[str]  # All must appear in OCR text to identify this screen
     button: str  # Button text to find and click via OCR
+    fallback_pos: tuple[int, int] = (986, 670)  # Click here if OCR can't find button
     confirm_button: str | None = None  # Click after main action (e.g. T&C "Agree" popup)
+    confirm_fallback: tuple[int, int] | None = None
     custom_action: Callable | None = None  # Override for non-button screens (account form)
 
     def matches(self, text: str) -> bool:
@@ -1119,10 +1121,14 @@ class WizardScreen:
         if self.custom_action:
             self.custom_action()
             return
-        _find_and_click(self.button)
+        if not _find_and_click(self.button):
+            emit("info", "vm", f"  → fallback click at {self.fallback_pos}")
+            _mouse_click(self.fallback_pos[0], self.fallback_pos[1], 0.3)
         if self.confirm_button:
             time.sleep(1.5)
-            _find_and_click(self.confirm_button)
+            if not _find_and_click(self.confirm_button) and self.confirm_fallback:
+                emit("info", "vm", f"  → confirm fallback at {self.confirm_fallback}")
+                _mouse_click(self.confirm_fallback[0], self.confirm_fallback[1], 0.3)
 
 
 WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
@@ -1134,12 +1140,27 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         WizardScreen("dictation", ["dictation"], "Continue"),
         WizardScreen("accessibility", ["accessibility", "features"], "Not Now"),
         WizardScreen("privacy", ["data", "privacy"], "Continue"),
-        WizardScreen("migration", ["migration assistant"], "Not Now"),
-        WizardScreen("transfer_info", ["transfer information to this mac"], "Not Now"),
-        WizardScreen("apple_id", ["sign in with your apple id"], "Set Up Later"),
-        WizardScreen("icloud_signin", ["sign in to icloud"], "Set Up Later"),
-        WizardScreen("skip_confirm", ["skip"], "Skip"),
-        WizardScreen("terms", ["terms and conditions"], "Agree", confirm_button="Agree"),
+        WizardScreen("migration", ["migration assistant"], "Not Now", fallback_pos=(196, 670)),
+        WizardScreen(
+            "transfer_info",
+            ["transfer information to this mac"],
+            "Not Now",
+            fallback_pos=(196, 670),
+        ),
+        WizardScreen(
+            "apple_id", ["sign in with your apple id"], "Set Up Later", fallback_pos=(196, 670)
+        ),
+        WizardScreen(
+            "icloud_signin", ["sign in to icloud"], "Set Up Later", fallback_pos=(196, 670)
+        ),
+        WizardScreen("skip_confirm", ["skip"], "Skip", fallback_pos=(750, 455)),
+        WizardScreen(
+            "terms",
+            ["terms and conditions"],
+            "Agree",
+            confirm_button="Agree",
+            confirm_fallback=(750, 455),
+        ),
         WizardScreen(
             "create_account",
             ["create a computer account"],
@@ -1151,10 +1172,10 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         WizardScreen("timezone", ["time zone"], "Continue"),
         WizardScreen("analytics", ["analytics"], "Continue"),
         WizardScreen("siri", ["siri"], "Continue"),
-        WizardScreen("screen_time", ["screen time"], "Set Up Later"),
+        WizardScreen("screen_time", ["screen time"], "Set Up Later", fallback_pos=(196, 670)),
         WizardScreen("appearance", ["choose your look"], "Continue"),
         WizardScreen("touch_id", ["touch id"], "Continue"),
-        WizardScreen("apple_pay", ["apple pay"], "Set Up Later"),
+        WizardScreen("apple_pay", ["apple pay"], "Set Up Later", fallback_pos=(196, 670)),
     ],
 }
 
@@ -1177,10 +1198,6 @@ def _find_button_pos(img: Image.Image, label: str) -> tuple[int, int] | None:
     except Exception as e:
         log.warning(f"OCR image_to_data failed: {e}")
         return None
-
-    # Log all detected words for debugging button search
-    all_words = [w.strip() for w in data["text"] if w.strip()]
-    log.info(f"OCR words for '{label}': {all_words}")
 
     words = label.lower().split()
     for i, raw in enumerate(data["text"]):
