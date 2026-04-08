@@ -792,24 +792,26 @@ def _detect_screen(ppm_data):
     text = _ocr_region(img, 50, 0, 1230, 780)
     log.info(f"Screen detect OCR ({len(text)} chars): {text[:120]!r}")
 
-    # Setup wizard keywords (very distinctive)
+    # Setup wizard keywords — distinctive phrases that only appear in the setup wizard
     setup_keywords = [
         "select your language", "country or region", "written and spoken",
-        "accessibility", "data & privacy", "migration assistant",
-        "apple id", "sign in", "terms and conditions", "create a computer account",
-        "enable location", "time zone", "analytics", "screen time",
-        "choose your look", "express set up", "transfer information",
-        "not now", "set up later", "continue",
+        "accessibility features", "data & privacy", "data and privacy",
+        "migration assistant", "transfer information",
+        "apple id", "terms and conditions",
+        "create a computer account", "full name",
+        "enable location", "select your time zone",
+        "analytics", "screen time",
+        "choose your look", "express set up",
+        "set up later", "not now",
     ]
     setup_matches = sum(1 for kw in setup_keywords if kw in text)
-    if setup_matches >= 2:
+    if setup_matches >= 1:
         return "setup_wizard"
 
     # Recovery keywords
     recovery_keywords = [
         "macos recovery", "reinstall macos", "disk utility",
-        "utilities", "recover", "restore from time machine",
-        "safari", "startup security",
+        "restore from time machine", "startup security utility",
     ]
     recovery_matches = sum(1 for kw in recovery_keywords if kw in text)
     if recovery_matches >= 1:
