@@ -1,5 +1,6 @@
 """AirTag tracker server — polls Apple's Find My network and serves location history."""
 
+import io
 import json
 import math
 import socket
@@ -16,6 +17,8 @@ from datetime import datetime, timezone
 from flask import Flask, jsonify, request, send_from_directory
 from findmy import FindMyAccessory, AppleAccount, LocalAnisetteProvider
 from findmy.reports import LoginState, SyncSmsSecondFactor
+from PIL import Image
+import pytesseract
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("tracker")
@@ -736,52 +739,102 @@ def _region_avg_brightness(data, x1, y1, x2, y2, step=10):
             count += 1
     return total / max(count, 1)
 
+def _ppm_to_image(ppm_data):
+    """Convert raw PPM bytes to a PIL Image."""
+    if not ppm_data:
+        return None
+    try:
+        return Image.open(io.BytesIO(ppm_data))
+    except Exception:
+        return None
+
+def _ocr_region(image, x1, y1, x2, y2):
+    """Run OCR on a cropped region of a PIL Image. Returns lowercase text."""
+    if not image:
+        return ""
+    try:
+        region = image.crop((x1, y1, x2, y2))
+        text = pytesseract.image_to_string(region, config="--psm 6")
+        return text.lower().strip()
+    except Exception as e:
+        log.warning(f"OCR failed: {e}")
+        return ""
+
 def _detect_screen(ppm_data):
-    """Analyze screenshot to determine current VM screen state.
-    Returns: 'boot_picker', 'apple_logo', 'recovery', 'terminal', 'installing', or 'unknown'.
+    """Analyze screenshot via OCR to determine current VM screen state.
+    Returns: 'boot_picker', 'apple_logo', 'recovery', 'terminal', 'setup_wizard', or 'unknown'.
     Screen is 1280x800.
     """
     if not ppm_data:
         return "unknown"
 
-    # Check menu bar area (top 25px) — recovery/desktop have a visible menu bar
+    # Fast brightness check first — black/dark screens don't need OCR
+    center_brightness = _pixel_brightness(ppm_data, 640, 400)
+    icon_area_brightness = _region_avg_brightness(ppm_data, 450, 280, 800, 450)
     menubar_brightness = _region_avg_brightness(ppm_data, 50, 2, 400, 22)
 
-    # Check center area for apple logo (white on black)
-    center_brightness = _pixel_brightness(ppm_data, 640, 400)
+    # Mostly-black screen: apple logo or boot picker or unknown
+    if menubar_brightness < 50 and icon_area_brightness < 50:
+        if center_brightness > 500:
+            return "apple_logo"
+        return "unknown"
 
-    # Check icon area (where boot picker icons appear, ~y 280-450, center x)
-    icon_area_brightness = _region_avg_brightness(ppm_data, 450, 280, 800, 450)
-
-    log.info(f"Screen detect: menubar={menubar_brightness:.0f} center={center_brightness} icons={icon_area_brightness:.0f}")
-
-    if menubar_brightness > 100:
-        # Menu bar visible — could be recovery, terminal, or setup wizard
-        # Setup wizard has a bright white background (center > 400), recovery is dark (center < 200)
-        if center_brightness > 400:
-            return "setup_wizard"
-
-        # Check for Terminal's red traffic light button (close button).
-        has_red_button = False
-        for y in range(25, 90, 2):
-            for x in range(20, 100, 2):
-                r, g, b = _ppm_pixel(ppm_data, x, y)
-                if r > 150 and g < 80 and b < 80:
-                    has_red_button = True
-                    break
-            if has_red_button:
-                break
-        if has_red_button:
-            return "terminal"
-        return "recovery"
-
-    # Boot picker has bright icons (>100) AND may have bright center from OpenCore UI.
-    # Apple logo has bright center but low icon area (<100).
-    if icon_area_brightness > 100:
+    # Boot picker: dark background but bright icons in center area
+    if menubar_brightness < 50 and icon_area_brightness > 100:
         return "boot_picker"
 
-    if center_brightness > 500:  # White apple logo (with or without progress bar)
-        return "apple_logo"
+    # Screen has content — use OCR to identify it
+    img = _ppm_to_image(ppm_data)
+    if not img:
+        return "unknown"
+
+    # OCR the full screen (excluding extreme edges)
+    text = _ocr_region(img, 50, 0, 1230, 780)
+    log.info(f"Screen detect OCR ({len(text)} chars): {text[:120]!r}")
+
+    # Setup wizard keywords (very distinctive)
+    setup_keywords = [
+        "select your language", "country or region", "written and spoken",
+        "accessibility", "data & privacy", "migration assistant",
+        "apple id", "sign in", "terms and conditions", "create a computer account",
+        "enable location", "time zone", "analytics", "screen time",
+        "choose your look", "express set up", "transfer information",
+        "not now", "set up later", "continue",
+    ]
+    setup_matches = sum(1 for kw in setup_keywords if kw in text)
+    if setup_matches >= 2:
+        return "setup_wizard"
+
+    # Recovery keywords
+    recovery_keywords = [
+        "macos recovery", "reinstall macos", "disk utility",
+        "utilities", "recover", "restore from time machine",
+        "safari", "startup security",
+    ]
+    recovery_matches = sum(1 for kw in recovery_keywords if kw in text)
+    if recovery_matches >= 1:
+        return "recovery"
+
+    # Terminal — look for shell prompt indicators or command-line text
+    terminal_keywords = [
+        "bash", "-sh", "root#", "terminal", "last login",
+        "diskutil", "volumes", "localhost", "macintosh",
+    ]
+    terminal_matches = sum(1 for kw in terminal_keywords if kw in text)
+    if terminal_matches >= 1:
+        return "terminal"
+
+    # Boot picker text (OpenCore)
+    boot_keywords = ["boot", "opencore", "base system", "macintosh"]
+    boot_matches = sum(1 for kw in boot_keywords if kw in text)
+    if boot_matches >= 1:
+        return "boot_picker"
+
+    # Bright screen with menubar but no recognized text — likely transitional
+    if menubar_brightness > 100:
+        if center_brightness > 400:
+            return "setup_wizard"  # bright white = likely setup wizard loading
+        return "recovery"  # menubar visible, dark center = likely recovery
 
     return "unknown"
 
@@ -841,20 +894,29 @@ def _wizard_click_secondary():
     """Click the secondary/skip button (bottom-left area, ~190,690)."""
     _mouse_click(190, 690, 2)
 
-def _wizard_verify_screen_changed(prev_ppm, timeout=10):
-    """Wait until the screen visually changes from prev_ppm."""
-    if not prev_ppm:
+def _wizard_read_screen(ppm_data=None):
+    """OCR the center of the screen and return lowercase text. Useful for wizard step identification."""
+    if ppm_data is None:
+        ppm_data = _take_screenshot()
+    img = _ppm_to_image(ppm_data)
+    if not img:
+        return ""
+    return _ocr_region(img, 100, 50, 1180, 750)
+
+def _wizard_verify_screen_changed(prev_text, timeout=10):
+    """Wait until OCR text changes from prev_text."""
+    if not prev_text:
         time.sleep(2)
         return True
-    prev_center = _pixel_brightness(prev_ppm, 640, 400)
     for _ in range(timeout * 2):
         time.sleep(0.5)
-        ppm = _take_screenshot()
-        if ppm and abs(_pixel_brightness(ppm, 640, 400) - prev_center) > 50:
-            return True
-        # Also check a second point to catch subtle changes
-        if ppm and abs(_pixel_brightness(ppm, 400, 300) - _pixel_brightness(prev_ppm, 400, 300)) > 50:
-            return True
+        new_text = _wizard_read_screen()
+        # Consider changed if at least 30% of characters differ
+        if new_text and new_text != prev_text:
+            overlap = sum(1 for a, b in zip(new_text, prev_text) if a == b)
+            max_len = max(len(new_text), len(prev_text), 1)
+            if overlap / max_len < 0.7:
+                return True
     return False
 
 
@@ -909,8 +971,8 @@ def _run_setup_wizard():
 
         for step_name, action in wizard_steps:
             emit("info", "vm", f"Setup wizard: {step_name}...")
-            ppm_before = _take_screenshot()
-            screen = _detect_screen(ppm_before)
+            text_before = _wizard_read_screen()
+            screen = _detect_screen(_take_screenshot())
             if screen != "setup_wizard":
                 log.warning(f"Expected setup_wizard screen for '{step_name}', got '{screen}'")
                 if screen in ("unknown", "apple_logo", "boot_picker"):
@@ -925,7 +987,7 @@ def _run_setup_wizard():
                 _wizard_click_secondary()
 
             # Verify screen changed
-            if not _wizard_verify_screen_changed(ppm_before, timeout=8):
+            if not _wizard_verify_screen_changed(text_before, timeout=8):
                 log.warning(f"Screen didn't change after '{step_name}', clicking again...")
                 if action == "continue":
                     _wizard_click_continue()
@@ -1129,9 +1191,7 @@ def _auto_install_worker():
         recovery_time = time.time() - _auto_install_start_time
         _set_phase("formatting", f"Recovery loaded after {int(recovery_time)}s. Opening Terminal...")
 
-        # Let recovery GUI fully render — poll until consecutive stable screenshots
-        # Also re-check for setup_wizard: a transitional frame (e.g. menubar=230 center=230)
-        # can briefly look like recovery, then resolve to setup_wizard once fully loaded.
+        # Let recovery GUI fully render
         for _ in range(6):
             time.sleep(2)
             s, _ = _wait_for_screen({"recovery", "setup_wizard"}, timeout=5, poll_interval=1)

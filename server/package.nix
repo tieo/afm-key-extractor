@@ -1,4 +1,4 @@
-{ python3Packages, python3, lib, fetchPypi }:
+{ python3Packages, python3, lib, fetchPypi, tesseract }:
 
 let
   anisette = python3Packages.buildPythonPackage rec {
@@ -39,7 +39,7 @@ let
     pythonImportsCheck = [ "findmy" ];
   };
 
-  pythonEnv = python3.withPackages (ps: [ ps.flask findmy ]);
+  pythonEnv = python3.withPackages (ps: [ ps.flask ps.pytesseract ps.pillow findmy ]);
 
 in python3Packages.buildPythonApplication {
   pname = "airtag-tracker";
@@ -51,6 +51,8 @@ in python3Packages.buildPythonApplication {
   propagatedBuildInputs = with python3Packages; [
     flask
     findmy
+    pytesseract
+    pillow
   ];
 
   installPhase = ''
@@ -59,6 +61,7 @@ in python3Packages.buildPythonApplication {
     cp -r static/* $out/lib/airtag-tracker/static/
     cat > $out/bin/airtag-tracker <<WRAPPER
     #!/bin/sh
+    export PATH="${tesseract}/bin:\$PATH"
     exec ${pythonEnv}/bin/python3 $out/lib/airtag-tracker/tracker.py "\$@"
     WRAPPER
     chmod +x $out/bin/airtag-tracker
