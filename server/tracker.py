@@ -1140,7 +1140,7 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         WizardScreen("dictation", ["dictation"], "Continue"),
         WizardScreen("accessibility", ["accessibility", "features"], "Not Now"),
         WizardScreen("privacy", ["data", "privacy"], "Continue"),
-        WizardScreen("migration", ["migration assistant"], "Not Now", fallback_pos=(196, 670)),
+        WizardScreen("migration", ["migration assistant"], "Not Now", fallback_pos=(959, 665)),
         WizardScreen(
             "transfer_info",
             ["transfer information to this mac"],
