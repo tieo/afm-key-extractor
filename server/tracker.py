@@ -923,10 +923,11 @@ def _wizard_click_button(target, fallback=None, delay=2):
     """Find and click a button by its text label. Falls back to coordinates if OCR fails."""
     pos = _wizard_find_button(target)
     if pos:
+        emit("info", "vm", f"Clicking '{target}' at ({pos[0]}, {pos[1]})")
         _mouse_click(pos[0], pos[1], delay)
         return True
     if fallback:
-        log.warning(f"Button '{target}' not found, using fallback {fallback}")
+        emit("info", "vm", f"Button '{target}' not found via OCR, clicking fallback ({fallback[0]}, {fallback[1]})")
         _mouse_click(fallback[0], fallback[1], delay)
         return True
     return False

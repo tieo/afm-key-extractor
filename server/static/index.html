@@ -361,27 +361,43 @@
       error: 'Installation failed',
     };
 
-    // Expected duration of each phase in seconds (from real measurements)
-    const phaseEstimates = {
-      booting: 15,
-      boot_picker: 25,
-      formatting: 130,
-      installing: 1400,
-      setup_wizard: 120,
-      setup_appleid: 300,
+    // Default phase duration estimates (seconds). Overridden by actual times once phases complete.
+    const defaultEstimates = {
+      booting: 15, boot_picker: 15, formatting: 100,
+      installing: 2700, setup_wizard: 90, setup_appleid: 300,
     };
+    const phaseOrder = ['booting', 'boot_picker', 'formatting', 'installing', 'setup_wizard', 'setup_appleid', 'done'];
 
-    // Cumulative progress % at the START of each phase
-    const phaseProgressStart = {
-      booting: 0,
-      boot_picker: 3,
-      formatting: 6,
-      installing: 15,
-      setup_wizard: 90,
-      setup_appleid: 95,
-      done: 100,
-      error: 0,
-    };
+    function getPhaseEstimates(stepTimes, elapsed) {
+      // Use actual durations for completed phases, defaults for future ones.
+      // Scale future estimates based on how actual compares to expected.
+      const estimates = {};
+      let actualTotal = 0, expectedTotal = 0;
+      const sortedPhases = phaseOrder.filter(p => p !== 'done');
+
+      for (let i = 0; i < sortedPhases.length; i++) {
+        const phase = sortedPhases[i];
+        const start = stepTimes[phase];
+        const nextPhase = sortedPhases[i + 1];
+        const nextStart = nextPhase ? stepTimes[nextPhase] : undefined;
+
+        if (start !== undefined && nextStart !== undefined) {
+          // Phase completed — use actual duration
+          estimates[phase] = nextStart - start;
+          actualTotal += estimates[phase];
+          expectedTotal += defaultEstimates[phase] || 1;
+        } else {
+          // Phase not completed or in progress — scale default estimate
+          const scale = expectedTotal > 0 ? actualTotal / expectedTotal : 1;
+          estimates[phase] = Math.round((defaultEstimates[phase] || 60) * Math.max(0.3, scale));
+        }
+      }
+      return estimates;
+    }
+
+    function getTotalEstimate(estimates) {
+      return Object.values(estimates).reduce((a, b) => a + b, 0);
+    }
 
     let installPollTimer = null;
 
@@ -390,17 +406,19 @@
       overlay.classList.remove('hidden');
       overlay.innerHTML = `
         <div style="width:100%;height:100%;padding:12px 16px;display:flex;flex-direction:column">
-          <div id="install-status" style="margin-bottom:12px">
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+          <div id="install-status" style="margin-bottom:8px">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
               <b style="color:#4cc9f0;font-size:1.1em" id="install-phase-label">Starting...</b>
               <span style="color:#888;font-size:0.85em" id="install-elapsed"></span>
             </div>
-            <div style="background:#1a1a2e;border-radius:6px;height:8px;overflow:hidden;margin-bottom:6px">
+            <div style="background:#1a1a2e;border-radius:6px;height:8px;overflow:hidden;margin-bottom:4px">
               <div id="install-progress-bar" style="height:100%;background:linear-gradient(90deg,#4361ee,#4cc9f0);width:0%;transition:width 1s ease"></div>
             </div>
-            <p style="color:#888;font-size:0.8em;margin:0" id="install-detail">Waiting for VM to boot...</p>
           </div>
-          <div class="vnc-wrap"><iframe class="vnc-frame" allow="fullscreen" allowfullscreen src="//${location.hostname.replace('airtag', 'airtag-vnc')}/vnc.html?autoconnect=true&resize=scale"></iframe></div>
+          <div style="flex:1;display:flex;gap:10px;min-height:0">
+            <div class="vnc-wrap" style="flex:1;min-width:0"><iframe class="vnc-frame" allow="fullscreen" allowfullscreen src="//${location.hostname.replace('airtag', 'airtag-vnc')}/vnc.html?autoconnect=true&resize=scale"></iframe></div>
+            <div id="install-log" style="width:340px;flex-shrink:0;background:#0a0a1a;border-radius:8px;overflow-y:auto;padding:8px;font-family:monospace;font-size:0.72em;line-height:1.5;color:#8a8a9a"></div>
+          </div>
           <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-shrink:0">
             <button class="btn ghost small" onclick="stopVm()">Cancel</button>
             <button class="btn ghost small danger" onclick="reinstallVm()">Reinstall</button>
@@ -412,18 +430,40 @@
         </div>
       `;
       pollInstallStatus();
+      pollInstallLog();
     }
 
-    function formatCountdown(phaseElapsed, estimate) {
-      const diff = estimate - phaseElapsed;
-      if (diff > 0) {
-        const m = Math.floor(diff / 60), s = diff % 60;
-        return m > 0 ? `~${m}m ${s}s remaining` : `~${s}s remaining`;
-      } else {
-        const over = -diff;
-        const m = Math.floor(over / 60), s = over % 60;
-        return m > 0 ? `+${m}m ${s}s over estimate` : `+${s}s over estimate`;
-      }
+    let _lastLogTs = '';
+    async function pollInstallLog() {
+      try {
+        const url = _lastLogTs ? `/api/log?cat=vm&since=${encodeURIComponent(_lastLogTs)}` : '/api/log?cat=vm&limit=50';
+        const res = await fetch(url);
+        const entries = await res.json();
+        const logEl = document.getElementById('install-log');
+        if (!logEl) return;
+        for (const e of entries) {
+          const line = document.createElement('div');
+          const time = new Date(e.ts).toLocaleTimeString();
+          const color = e.level === 'error' ? '#e74c3c' : e.level === 'warning' ? '#f39c12' : '#8a8a9a';
+          line.style.color = color;
+          line.style.borderBottom = '1px solid #1a1a2e';
+          line.style.padding = '2px 0';
+          line.textContent = `${time} ${e.msg}`;
+          logEl.appendChild(line);
+          _lastLogTs = e.ts;
+        }
+        if (entries.length > 0) {
+          logEl.scrollTop = logEl.scrollHeight;
+        }
+      } catch (e) {}
+      installLogTimer = setTimeout(pollInstallLog, 3000);
+    }
+    let installLogTimer = null;
+
+    function formatTime(seconds) {
+      if (seconds < 0) seconds = 0;
+      const m = Math.floor(seconds / 60), s = Math.round(seconds % 60);
+      return m > 0 ? `${m}m ${s}s` : `${s}s`;
     }
 
     async function pollInstallStatus() {
@@ -432,30 +472,35 @@
         const data = await res.json();
         const phase = data.phase;
         const elapsed = data.elapsed_seconds;
+        const stepTimes = data.step_times || {};
 
         document.getElementById('install-phase-label').textContent = phaseLabels[phase] || phase;
 
-        // Calculate phase-local elapsed time
-        const phaseStart = data.step_times?.[phase] || 0;
-        const phaseElapsed = Math.max(0, elapsed - phaseStart);
-        const estimate = phaseEstimates[phase] || 0;
+        // Adaptive estimates based on actual completed phase durations
+        const estimates = getPhaseEstimates(stepTimes, elapsed);
+        const totalEstimate = getTotalEstimate(estimates);
+        const remaining = Math.max(0, totalEstimate - elapsed);
 
-        // Show countdown or count-up for the current phase
-        if (estimate > 0) {
-          document.getElementById('install-elapsed').textContent = formatCountdown(phaseElapsed, estimate);
+        // Show total remaining time (or overtime)
+        if (phase === 'done') {
+          document.getElementById('install-elapsed').textContent = `Done in ${formatTime(elapsed)}`;
+        } else if (phase === 'error') {
+          document.getElementById('install-elapsed').textContent = '';
+        } else if (elapsed > totalEstimate) {
+          document.getElementById('install-elapsed').textContent = `+${formatTime(elapsed - totalEstimate)} over estimate`;
         } else {
-          const mins = Math.floor(elapsed / 60), secs = elapsed % 60;
-          document.getElementById('install-elapsed').textContent = `${mins}m ${secs}s`;
+          document.getElementById('install-elapsed').textContent = `~${formatTime(remaining)} remaining`;
         }
 
-        // Progress bar: interpolate within the current phase's allocated range
-        const startPct = phaseProgressStart[phase] ?? 0;
-        const phases = Object.keys(phaseProgressStart);
-        const nextIdx = phases.indexOf(phase) + 1;
-        const endPct = nextIdx < phases.length ? (phaseProgressStart[phases[nextIdx]] ?? 100) : 100;
-        let phaseFraction = estimate > 0 ? Math.min(1.5, phaseElapsed / estimate) : 1;
-        let progress = Math.min(99, startPct + (endPct - startPct) * Math.min(1, phaseFraction));
-        if (phase === 'done') progress = 100;
+        // Progress bar: based on elapsed / total estimate
+        let progress;
+        if (phase === 'done') {
+          progress = 100;
+        } else if (phase === 'error') {
+          progress = 0;
+        } else {
+          progress = Math.min(99, Math.round((elapsed / Math.max(1, totalEstimate)) * 100));
+        }
         document.getElementById('install-progress-bar').style.width = progress + '%';
 
         // Phase-specific detail text
