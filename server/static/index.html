@@ -416,7 +416,10 @@
             </div>
           </div>
           <div style="flex:1;display:flex;gap:10px;min-height:0">
-            <div class="vnc-wrap" style="flex:1;min-width:0"><iframe class="vnc-frame" allow="fullscreen" allowfullscreen src="//${location.hostname.replace('airtag', 'airtag-vnc')}/vnc.html?autoconnect=true&resize=scale"></iframe></div>
+            <div class="vnc-wrap" style="flex:1;min-width:0;position:relative">
+              <iframe id="vnc-auto" class="vnc-frame" allow="fullscreen" allowfullscreen src="//${location.hostname.replace('airtag', 'airtag-vnc')}/vnc.html?autoconnect=true&resize=scale&view_only=true"></iframe>
+              <button id="vnc-interact-toggle" onclick="toggleVncInteract()" style="position:absolute;top:6px;right:6px;z-index:10;padding:4px 10px;border-radius:4px;border:1px solid #555;background:rgba(0,0,0,0.7);color:#aaa;font-size:0.75em;cursor:pointer">View Only</button>
+            </div>
             <div id="install-log" style="width:340px;flex-shrink:0;background:#0a0a1a;border-radius:8px;overflow-y:auto;padding:8px;font-family:monospace;font-size:0.72em;line-height:1.5;color:#8a8a9a"></div>
           </div>
           <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-shrink:0">
@@ -434,6 +437,23 @@
     }
 
     let _lastLogTs = '';
+    function toggleVncInteract() {
+      const iframe = document.getElementById('vnc-auto');
+      const btn = document.getElementById('vnc-interact-toggle');
+      const src = iframe.src;
+      if (src.includes('view_only=true')) {
+        iframe.src = src.replace('view_only=true', 'view_only=false');
+        btn.textContent = 'Interactive';
+        btn.style.color = '#4cc9f0';
+        btn.style.borderColor = '#4cc9f0';
+      } else {
+        iframe.src = src.replace('view_only=false', 'view_only=true');
+        btn.textContent = 'View Only';
+        btn.style.color = '#aaa';
+        btn.style.borderColor = '#555';
+      }
+    }
+
     async function pollInstallLog() {
       try {
         const url = _lastLogTs ? `/api/log?cat=vm&since=${encodeURIComponent(_lastLogTs)}` : '/api/log?cat=vm&limit=50';
