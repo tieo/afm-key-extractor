@@ -886,13 +886,58 @@ def _wait_for_screen(expected, timeout=300, poll_interval=5, msg=None):
 VM_USER = "airtag"
 VM_PASSWORD = "airtag"
 
+def _wizard_find_button(target, ppm_data=None):
+    """Use OCR to find a button's center coordinates on the current screen.
+    target: text to look for (case-insensitive substring match).
+    Returns (x, y) or None if not found.
+    """
+    if ppm_data is None:
+        ppm_data = _take_screenshot()
+    img = _ppm_to_image(ppm_data)
+    if not img:
+        return None
+    target_lower = target.lower()
+    # Scan the lower portion of the screen where buttons appear
+    for y_start, y_end in [(600, 780), (400, 600), (0, 800)]:
+        region = img.crop((0, y_start, 1280, y_end))
+        try:
+            data = pytesseract.image_to_data(region, output_type=pytesseract.Output.DICT)
+        except Exception as e:
+            log.warning(f"OCR button search failed: {e}")
+            return None
+        for i, word in enumerate(data["text"]):
+            if word.strip().lower() and target_lower in word.strip().lower():
+                x = data["left"][i] + data["width"][i] // 2
+                y = data["top"][i] + y_start + data["height"][i] // 2
+                log.info(f"Found button '{target}' at ({x}, {y})")
+                return (x, y)
+    log.warning(f"Button '{target}' not found on screen")
+    return None
+
+def _wizard_click_button(target, fallback=None, delay=2):
+    """Find and click a button by its text label. Falls back to coordinates if OCR fails."""
+    pos = _wizard_find_button(target)
+    if pos:
+        _mouse_click(pos[0], pos[1], delay)
+        return True
+    if fallback:
+        log.warning(f"Button '{target}' not found, using fallback {fallback}")
+        _mouse_click(fallback[0], fallback[1], delay)
+        return True
+    return False
+
 def _wizard_click_continue():
-    """Click the Continue button (bottom-right of setup dialog, ~1090,690 on 1280x800)."""
-    _mouse_click(1090, 690, 2)
+    """Click the Continue/Agree button."""
+    _wizard_click_button("Continue", fallback=(984, 670))
 
 def _wizard_click_secondary():
-    """Click the secondary/skip button (bottom-left area, ~190,690)."""
-    _mouse_click(190, 690, 2)
+    """Click the secondary/skip button (Not Now, Set Up Later, etc.)."""
+    # Try common secondary button labels
+    for label in ["Not Now", "Later", "Skip"]:
+        if _wizard_click_button(label):
+            return
+    # Fallback: click left-side button area
+    _wizard_click_button("Back", fallback=(911, 670))
 
 def _wizard_read_screen(ppm_data=None):
     """OCR the center of the screen and return lowercase text. Useful for wizard step identification."""
@@ -921,157 +966,124 @@ def _wizard_verify_screen_changed(prev_text, timeout=10):
 
 
 def _run_setup_wizard():
-    """Automate macOS Ventura setup wizard after installation.
+    """Automate macOS setup wizard using OCR to identify each screen.
 
-    Clicks through all setup screens automatically:
-    Language → Region → Accessibility → Migration → Terms → Account → etc.
-    Stops at Apple ID sign-in and waits for user to complete manually.
+    Reads screen text to determine which step we're on, then acts accordingly.
+    Handles screens in any order and retries if clicks don't advance.
     """
     _set_phase("setup_wizard", "Automating macOS setup wizard...")
     emit("info", "vm", "Setup wizard detected, automating initial configuration...")
 
     try:
-        # Give the wizard a moment to fully render
         time.sleep(5)
 
-        # The macOS Ventura setup wizard has a sequence of screens.
-        # Most screens have a Continue button at bottom-right (~1090, 690).
-        # Some have a secondary "Not Now"/"Skip" button at bottom-left (~190, 690).
-        #
-        # Screen sequence (may vary slightly):
-        # 1. Language selection — Continue
-        # 2. Country/Region — Continue
-        # 3. Written & Spoken Languages — Continue (may be skipped)
-        # 4. Accessibility — Not Now (bottom-left)
-        # 5. Data & Privacy — Continue
-        # 6. Migration Assistant — Not Now
-        # 7. Apple ID — Set Up Later (we stop here for user)
-        # 8. Terms & Conditions — Agree
-        # 9. Create Account — fill fields, Continue
-        # 10. Enable Location Services — Don't Use / Continue
-        # 11. Select Time Zone — Continue
-        # 12. Analytics & Improvements — Continue (with checkbox unchecked)
-        # 13. Screen Time — Set Up Later
-        # 14. Choose Your Look — select, Continue
-        #
-        # Strategy: click Continue for most screens, verify screen changes.
-        # For account creation, detect the input fields and type.
-        # For Apple ID, stop and let user interact.
-
-        # Click through the first batch of screens up to Apple ID
-        # These are all "click Continue" or "click Not Now" screens
-        wizard_steps = [
-            ("Language", "continue"),
-            ("Country/Region", "continue"),
-            ("Written & Spoken Languages", "continue"),
-            ("Accessibility", "secondary"),      # Not Now
-            ("Data & Privacy", "continue"),
-            ("Migration Assistant", "secondary"), # Not Now
-        ]
-
-        for step_name, action in wizard_steps:
-            emit("info", "vm", f"Setup wizard: {step_name}...")
-            text_before = _wizard_read_screen()
-            screen = _detect_screen(_take_screenshot())
+        max_steps = 30  # safety limit
+        for step in range(max_steps):
+            ppm = _take_screenshot()
+            screen = _detect_screen(ppm)
             if screen != "setup_wizard":
-                log.warning(f"Expected setup_wizard screen for '{step_name}', got '{screen}'")
-                if screen in ("unknown", "apple_logo", "boot_picker"):
-                    emit("info", "vm", f"Unexpected screen '{screen}' during wizard, waiting...")
-                    state, _ = _wait_for_screen("setup_wizard", timeout=30, poll_interval=2)
+                if screen in ("unknown", "apple_logo"):
+                    # Might be transitioning — wait a moment
+                    state, ppm = _wait_for_screen("setup_wizard", timeout=15, poll_interval=2)
                     if state != "setup_wizard":
-                        log.warning(f"Could not recover to setup_wizard, proceeding anyway")
+                        emit("info", "vm", f"Left setup wizard (screen: {state}). Wizard may be complete.")
+                        break
+                else:
+                    emit("info", "vm", f"Left setup wizard (screen: {screen}). Wizard may be complete.")
+                    break
 
-            if action == "continue":
+            text = _wizard_read_screen(ppm)
+            emit("info", "vm", f"Setup wizard step {step+1}: {text[:80]!r}")
+
+            # Identify current screen and decide action
+            if "select your language" in text or ("language" in text and "country" not in text and step == 0):
                 _wizard_click_continue()
-            else:
+
+            elif "country or region" in text:
+                _wizard_click_continue()
+
+            elif "written and spoken" in text:
+                _wizard_click_continue()
+
+            elif "accessibility" in text and ("not now" in text or "features" in text):
                 _wizard_click_secondary()
 
-            # Verify screen changed
-            if not _wizard_verify_screen_changed(text_before, timeout=8):
-                log.warning(f"Screen didn't change after '{step_name}', clicking again...")
-                if action == "continue":
-                    _wizard_click_continue()
-                else:
-                    _wizard_click_secondary()
-                time.sleep(3)
-
-        # === Apple ID sign-in screen ===
-        # The Apple ID screen may show "Set Up Later" as a link/button.
-        # We need to skip it. On Ventura, "Set Up Later" is at the bottom-left.
-        emit("info", "vm", "Setup wizard: Skipping Apple ID sign-in...")
-        ppm_before = _take_screenshot()
-        _wizard_click_secondary()  # "Set Up Later"
-        time.sleep(2)
-        # A confirmation dialog may appear: "Are you sure you want to skip?"
-        # Click "Skip" which is typically the right button in the dialog
-        _mouse_click(750, 455, 2)  # "Skip" in confirmation dialog
-        time.sleep(2)
-
-        # === Terms & Conditions ===
-        emit("info", "vm", "Setup wizard: Accepting Terms & Conditions...")
-        ppm_before = _take_screenshot()
-        _wizard_click_continue()  # "Agree"
-        time.sleep(2)
-        # Confirmation dialog: "I have read and agree"
-        _mouse_click(750, 455, 2)  # "Agree" in confirmation dialog
-        time.sleep(3)
-
-        # === Create Account ===
-        emit("info", "vm", "Setup wizard: Creating user account...")
-        time.sleep(2)
-
-        # Full Name field — click and type
-        _mouse_click(790, 330, 0.5)  # Full Name field
-        _type_text(VM_USER)
-        _send_key("tab", 0.3)  # Move to Account Name (auto-filled from Full Name)
-        _send_key("tab", 0.3)  # Move to Password field
-        _type_text(VM_PASSWORD)
-        _send_key("tab", 0.3)  # Move to Verify Password
-        _type_text(VM_PASSWORD)
-        _send_key("tab", 0.3)  # Move to Hint (optional)
-        time.sleep(0.5)
-
-        _wizard_click_continue()
-        time.sleep(5)  # Account creation takes a moment
-
-        # === Location Services ===
-        emit("info", "vm", "Setup wizard: Location Services...")
-        _wizard_click_continue()
-        time.sleep(3)
-
-        # === Time Zone ===
-        emit("info", "vm", "Setup wizard: Time Zone...")
-        _wizard_click_continue()
-        time.sleep(3)
-
-        # === Analytics ===
-        emit("info", "vm", "Setup wizard: Analytics...")
-        _wizard_click_continue()
-        time.sleep(3)
-
-        # === Screen Time ===
-        emit("info", "vm", "Setup wizard: Screen Time...")
-        _wizard_click_secondary()  # Set Up Later
-        time.sleep(3)
-
-        # === Choose Your Look ===
-        emit("info", "vm", "Setup wizard: Appearance...")
-        _wizard_click_continue()
-        time.sleep(5)
-
-        # Check if we're now at the desktop (no longer setup_wizard)
-        state, _ = _wait_for_screen({"recovery", "unknown", "setup_wizard"}, timeout=30, poll_interval=3)
-
-        if state == "setup_wizard":
-            # Still more screens — keep clicking Continue
-            for extra in range(5):
-                emit("info", "vm", f"Setup wizard: additional screen {extra+1}...")
+            elif "data & privacy" in text or "data and privacy" in text:
                 _wizard_click_continue()
-                time.sleep(3)
-                ppm = _take_screenshot()
-                s = _detect_screen(ppm)
-                if s != "setup_wizard":
-                    break
+
+            elif "migration" in text or "transfer information" in text:
+                _wizard_click_secondary()
+
+            elif "apple id" in text or "sign in" in text:
+                # Skip Apple ID — click "Set Up Later"
+                emit("info", "vm", "Skipping Apple ID sign-in...")
+                _wizard_click_secondary()
+                time.sleep(2)
+                # Handle confirmation dialog
+                _wizard_click_button("Skip", fallback=(750, 455))
+                time.sleep(1)
+
+            elif "terms and conditions" in text or "terms & conditions" in text:
+                _wizard_click_button("Agree", fallback=(984, 670))
+                time.sleep(2)
+                # Handle "I have read and agree" confirmation dialog
+                _wizard_click_button("Agree", fallback=(750, 455))
+                time.sleep(1)
+
+            elif "create a computer account" in text or "full name" in text:
+                emit("info", "vm", "Creating user account...")
+                # Find and click the Full Name field via OCR
+                name_pos = _wizard_find_button("Full")  # "Full Name" label
+                if name_pos:
+                    _mouse_click(name_pos[0] + 200, name_pos[1], 0.5)  # Click input field (right of label)
+                else:
+                    _mouse_click(790, 330, 0.5)  # Fallback
+                _type_text(VM_USER)
+                _send_key("tab", 0.3)  # Account Name (auto-filled)
+                _send_key("tab", 0.3)  # Password
+                _type_text(VM_PASSWORD)
+                _send_key("tab", 0.3)  # Verify Password
+                _type_text(VM_PASSWORD)
+                _send_key("tab", 0.3)  # Hint
+                time.sleep(0.5)
+                _wizard_click_continue()
+                time.sleep(5)  # Account creation is slow
+
+            elif "location" in text:
+                _wizard_click_continue()
+
+            elif "time zone" in text or "select your time zone" in text:
+                _wizard_click_continue()
+
+            elif "analytics" in text or "improvements" in text:
+                _wizard_click_continue()
+
+            elif "screen time" in text:
+                _wizard_click_secondary()
+
+            elif "choose your look" in text or "appearance" in text or "light" in text and "dark" in text:
+                _wizard_click_continue()
+
+            elif "express" in text and "set up" in text:
+                # "Express Set Up" screen — click Customize or Continue
+                _wizard_click_continue()
+
+            elif "siri" in text:
+                _wizard_click_continue()
+
+            elif "touch id" in text or "fingerprint" in text:
+                _wizard_click_continue()
+
+            elif "apple pay" in text:
+                _wizard_click_secondary()
+
+            else:
+                # Unknown wizard screen — try Continue, fall back to secondary
+                log.warning(f"Unknown wizard screen: {text[:100]!r}")
+                _wizard_click_continue()
+
+            # Wait for screen transition
+            time.sleep(2)
 
         # Save the password and signal completion
         emit("info", "vm", "Setup wizard complete! Saving credentials...")
