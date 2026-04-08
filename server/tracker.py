@@ -1178,6 +1178,10 @@ def _find_button_pos(img: Image.Image, label: str) -> tuple[int, int] | None:
         log.warning(f"OCR image_to_data failed: {e}")
         return None
 
+    # Log all detected words for debugging button search
+    all_words = [w.strip() for w in data["text"] if w.strip()]
+    log.info(f"OCR words for '{label}': {all_words}")
+
     words = label.lower().split()
     for i, raw in enumerate(data["text"]):
         if not raw.strip():
