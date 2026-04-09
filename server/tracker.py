@@ -1337,12 +1337,32 @@ def _run_setup_wizard():
             ppm = _take_screenshot()
             screen_type = _detect_screen(ppm)
 
-            if screen_type not in ("setup_wizard", "unknown", "apple_logo"):
+            # Post-migration reboot lands at boot picker — select Macintosh HD
+            if screen_type == "boot_picker":
+                emit("info", "vm", "Wizard: VM rebooted to boot picker, booting Macintosh HD...")
+                _send_key("ret", 1)
+                state, ppm = _wait_for_screen(
+                    {"setup_wizard", "apple_logo"},
+                    timeout=120,
+                    poll_interval=5,
+                    msg="Waiting for setup wizard to resume",
+                )
+                if state == "setup_wizard":
+                    continue
+                # apple_logo = still booting, fall through to wait below
+
+            if screen_type not in ("setup_wizard", "unknown", "apple_logo", "boot_picker"):
                 emit("info", "vm", f"Left wizard (screen: {screen_type}).")
                 break
 
             if screen_type in ("unknown", "apple_logo"):
-                state, ppm = _wait_for_screen("setup_wizard", timeout=20, poll_interval=2)
+                state, ppm = _wait_for_screen(
+                    {"setup_wizard", "boot_picker"},
+                    timeout=60,
+                    poll_interval=3,
+                )
+                if state == "boot_picker":
+                    continue  # handle boot picker at top of loop
                 if state != "setup_wizard":
                     emit("info", "vm", f"Wizard ended (screen: {state}).")
                     break
