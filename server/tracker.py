@@ -1727,8 +1727,11 @@ def _auto_install_worker():
         emit("info", "vm", "Terminal is open.")
 
         # === STEP 4: Format disk ===
-        emit("info", "vm", "Formatting disk (GUID Partition Map + APFS)...")
-        _type_text('diskutil eraseDisk APFS "Macintosh HD" GPT disk0')
+        # QEMU attaches: sata.2=OpenCore, sata.3=BaseSystem, sata.4=MacHDD(80GB).
+        # macOS enumerates: disk0=OpenCore, disk1=BaseSystem, disk2=MacHDD.
+        # We must format disk2 (the 80GB main disk), NOT disk0.
+        emit("info", "vm", "Formatting disk2 (80GB main disk, GUID + APFS)...")
+        _type_text('diskutil eraseDisk APFS "Macintosh HD" GPT disk2')
         _send_key("ret")
 
         # Poll until format completes — we can't read terminal text, but format takes ~15-30s.
