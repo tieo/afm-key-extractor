@@ -1172,9 +1172,8 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         WizardScreen("dictation", ["dictation"], "Continue"),
         WizardScreen("accessibility", ["accessibility", "features"], "Not Now"),
         WizardScreen("privacy", ["data", "privacy"], "Continue"),
-        # Skip Migration Assistant entirely — migration from the recovery
-        # partition breaks Macintosh HD boot. Cmd+Q quits Migration Assistant
-        # and Setup Assistant continues to Apple ID / create account.
+        # Select "Don't transfer any information now" — migration from the
+        # recovery partition breaks Macintosh HD boot.
         WizardScreen(
             "migration",
             ["migration assistant"],
@@ -1185,7 +1184,7 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
             "transfer_info",
             ["transfer information to this mac"],
             "",
-            custom_action=lambda: _skip_migration(),
+            custom_action=lambda: _go_back_from_transfer(),
         ),
         WizardScreen(
             "apple_id", ["sign in with your apple id"], "Set Up Later", fallback_pos=(196, 670)
@@ -1290,19 +1289,76 @@ def _find_and_click(label: str) -> bool:
 
 
 def _skip_migration() -> None:
-    """Skip Migration Assistant by pressing Cmd+Q to quit it.
+    """Select 'Don't transfer any information now' on the Migration Assistant screen.
 
-    Catalina's Migration Assistant has no 'Don't transfer' option, and
-    transferring from the recovery partition breaks Macintosh HD boot.
-    Cmd+Q closes Migration Assistant, and Setup Assistant continues
-    to Apple ID / create account screens.
+    Catalina's Setup Assistant Migration screen has three radio options:
+      1. From a Mac, Time Machine backup, or startup disk
+      2. From a Windows PC
+      3. Don't transfer any information now
+    We need option 3, then Continue.
     """
-    emit("info", "vm", "  → Skipping Migration Assistant (Cmd+Q)")
-    # In QEMU, macOS Command key = meta_l
-    _monitor_cmd("sendkey meta_l-q")
+    _skip_migration.attempts = getattr(_skip_migration, "attempts", 0) + 1
+    attempt = _skip_migration.attempts
+
+    # Save debug screenshot
+    ppm = _take_screenshot()
+    if ppm:
+        try:
+            img = _ppm_to_image(ppm)
+            if img:
+                img.save(f"/tmp/airtag-vm-migration-{attempt}.png")
+                emit("info", "vm", f"  → Saved migration screenshot (attempt {attempt})")
+        except Exception:
+            pass
+
+    # Try OCR to find "don't transfer" anywhere on screen
+    img = _ppm_to_image(ppm) if ppm else None
+    if img:
+        pos = _find_button_pos(img, "Don't transfer", min_y=0)
+        if not pos:
+            pos = _find_button_pos(img, "not transfer", min_y=0)
+        if pos:
+            emit("info", "vm", f"  → Found 'Don't transfer' at {pos}, clicking")
+            _mouse_click(pos[0], pos[1], 0.5)
+            time.sleep(0.5)
+            if not _find_and_click("Continue"):
+                _mouse_click(959, 665, 0.3)
+            time.sleep(2)
+            return
+
+    # Fallback: try different y positions for the radio buttons on each attempt
+    # Radio buttons are left-aligned around x=340-400
+    y_positions = [500, 480, 520, 460, 540]
+    y = y_positions[(attempt - 1) % len(y_positions)]
+    emit("info", "vm", f"  → OCR miss, trying radio position (380, {y}) [attempt {attempt}]")
+    _mouse_click(380, y, 0.5)
+    time.sleep(0.5)
+    if not _find_and_click("Continue"):
+        _mouse_click(959, 665, 0.3)
     time.sleep(2)
-    # Migration Assistant may show a confirmation dialog — click "Close" or press Enter
-    _send_key("ret", 2)
+
+
+def _go_back_from_transfer() -> None:
+    """Go back from 'Transfer Information' screen to the Migration Assistant screen.
+
+    If we ended up here, it means the first radio option was selected instead of
+    'Don't transfer'. Go back so the wizard loop hits the migration screen again.
+    """
+    ppm = _take_screenshot()
+    if ppm:
+        try:
+            img = _ppm_to_image(ppm)
+            if img:
+                img.save("/tmp/airtag-vm-transfer-info.png")
+        except Exception:
+            pass
+
+    emit("info", "vm", "  → Going back from transfer_info screen")
+    # Try OCR for "Go Back" button (bottom-left area)
+    if not _find_and_click("Go Back"):
+        # Fallback: Back button is typically at bottom-left
+        _mouse_click(196, 665, 0.3)
+    time.sleep(2)
 
 
 def _fill_account_form() -> None:
