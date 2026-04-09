@@ -1677,13 +1677,18 @@ def _auto_install_worker():
                 return
 
             elif screen == "uefi_error":
-                # UEFI firmware exhausted all boot entries. Press a key to enter
-                # Boot Manager, then select OpenCore to continue installation.
-                emit("info", "vm", f"UEFI boot failed, pressing key for Boot Manager... ({elapsed_min} min)")
-                _send_key("ret", 2)
-                # Boot Manager shows a list — first entry is usually the OpenCore disk.
-                # Press Enter to select it.
-                _send_key("ret", 1)
+                # UEFI firmware is trying boot entries (PXE, HTTP, etc). This takes
+                # minutes. Only press a key once "press any key" or "no bootable"
+                # appears — before that, the firmware is still enumerating.
+                img = _ppm_to_image(ppm)
+                full_text = _ocr_region(img, 0, 0, 1280, 800) if img else ""
+                if "press any key" in full_text or "no bootable" in full_text:
+                    emit("info", "vm", f"UEFI done enumerating, pressing key for Boot Manager... ({elapsed_min} min)")
+                    _send_key("ret", 3)
+                    # Boot Manager shows a list — first entry should be OpenCore.
+                    _send_key("ret", 1)
+                elif poll % 6 == 0:
+                    emit("info", "vm", f"UEFI enumerating boot entries... ({elapsed_min} min)")
 
             elif screen == "unknown":
                 # Black screen during reboot — normal
