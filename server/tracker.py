@@ -1198,8 +1198,15 @@ def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
     return gray.point(lambda p: int((p - lo) * scale))
 
 
-def _find_button_pos(img: Image.Image, label: str) -> tuple[int, int] | None:
-    """Find a button's center coordinates by its text label via OCR."""
+def _find_button_pos(img: Image.Image, label: str, min_y: int = 600) -> tuple[int, int] | None:
+    """Find a button's center coordinates by its text label via OCR.
+
+    Args:
+        img: Screenshot image to search.
+        label: Text label to find (e.g. "Continue", "Back").
+        min_y: Only consider text at or below this y coordinate. Default 600
+               restricts to the bottom button area. Use 0 to search full screen.
+    """
     processed = _preprocess_for_ocr(img)
     try:
         data = pytesseract.image_to_data(processed, output_type=pytesseract.Output.DICT)
@@ -1217,6 +1224,8 @@ def _find_button_pos(img: Image.Image, label: str) -> tuple[int, int] | None:
     words = label.lower().split()
     for i, raw in enumerate(data["text"]):
         if not raw.strip():
+            continue
+        if data["top"][i] < min_y:
             continue
         if words[0] not in raw.strip().lower():
             continue
@@ -1283,9 +1292,10 @@ def _skip_migration() -> None:
             continue
 
         # On the correct migration assistant screen — select "Don't transfer"
+        # Search the full screen (min_y=0) since radio options are in the body
         found = False
         for label in ["Don't transfer", "transfer any information now", "Not Now"]:
-            pos = _find_button_pos(img, label)
+            pos = _find_button_pos(img, label, min_y=0)
             if pos:
                 emit("info", "vm", f"  → Found '{label}' at ({pos[0]}, {pos[1]})")
                 _mouse_click(pos[0], pos[1], 0.5)
@@ -1293,9 +1303,12 @@ def _skip_migration() -> None:
                 break
 
         if not found:
-            # Fallback: last radio option is near bottom of the list
-            emit("info", "vm", "  → fallback click for 'Don't transfer' at (170, 555)")
-            _mouse_click(170, 555, 0.5)
+            # Fallback: use keyboard to navigate to last radio option
+            # Down arrow 3x selects the third option (Don't transfer)
+            emit("info", "vm", "  → Using keyboard: Down×3 to select 'Don't transfer'")
+            for _ in range(3):
+                _send_key("down", 0.3)
+            time.sleep(0.3)
 
         time.sleep(1.5)
         if not _find_and_click("Continue"):
@@ -1311,7 +1324,7 @@ def _fill_account_form() -> None:
     emit("info", "vm", "  → Filling account form")
     ppm = _take_screenshot()
     img = _ppm_to_image(ppm)
-    pos = _find_button_pos(img, "Full Name") if img else None
+    pos = _find_button_pos(img, "Full Name", min_y=0) if img else None
     _mouse_click(pos[0] + 200, pos[1], 0.3) if pos else _mouse_click(790, 330, 0.3)
     _type_text(VM_USER)
     _send_key("tab", 0.2)
