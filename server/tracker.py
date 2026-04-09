@@ -1786,19 +1786,32 @@ def vm_reinstall():
         pw_path.unlink()
 
     emit("info", "vm", "Disk wiped, starting reprovisioning")
-    # Use --no-block since restart waits for completion and provisioning takes >10s
-    sp.run(
-        [
-            "/run/wrappers/bin/sudo",
-            "/run/current-system/sw/bin/systemctl",
-            "restart",
-            "--no-block",
-            "airtag-provision-vm",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+
+    def _reinstall_worker():
+        """Provision VM, then auto-start setup."""
+        try:
+            result = sp.run(
+                [
+                    "/run/wrappers/bin/sudo",
+                    "/run/current-system/sw/bin/systemctl",
+                    "restart",
+                    "airtag-provision-vm",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            if result.returncode == 0:
+                emit("info", "vm", "Provisioning complete, auto-starting VM setup")
+                # Call vm_start_setup logic directly
+                with app.test_request_context():
+                    vm_start_setup()
+            else:
+                emit("error", "vm", f"Provisioning failed: {result.stderr.strip()}")
+        except Exception as e:
+            emit("error", "vm", f"Reinstall worker error: {e}")
+
+    threading.Thread(target=_reinstall_worker, daemon=True).start()
     threading.Thread(target=_tail_journal, args=("airtag-provision-vm", "vm"), daemon=True).start()
 
     return jsonify({"status": "reprovisioning"})

@@ -865,7 +865,9 @@
         if (data.error) { alert(data.error); return; }
         const sp = document.getElementById('settings-panel');
         if (sp) sp.style.display = 'none';
-        checkSetup();
+        // Show install progress view immediately — the backend will
+        // auto-start the VM after provisioning completes
+        showAutoInstallProgress();
       } catch(e) { alert('Reinstall failed: ' + e.message); }
     }
 
