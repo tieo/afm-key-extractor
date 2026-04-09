@@ -1274,11 +1274,11 @@ def _skip_migration() -> None:
         full_text = _ocr_region(img, 50, 50, 1230, 750)
         emit("info", "vm", f"  → Migration OCR: {full_text[:300]!r}")
 
-        # If we're on the wrong screen (transfer info), go Back
+        # If we're on the wrong screen (transfer info), click Back button directly.
+        # Don't use _find_and_click("Back") — it finds "Back" in body text.
         if "transfer information to this mac" in full_text:
-            emit("info", "vm", "  → On transfer screen, clicking Back")
-            if not _find_and_click("Back"):
-                _mouse_click(897, 665, 0.3)
+            emit("info", "vm", "  → On transfer screen, clicking Back at (897, 665)")
+            _mouse_click(897, 665, 0.5)
             time.sleep(2)
             continue
 
