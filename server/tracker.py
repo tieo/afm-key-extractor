@@ -1406,18 +1406,23 @@ def _auto_install_worker():
             return
 
         if state == "boot_picker":
-            emit("info", "vm", "Boot picker detected, selecting macOS Base System...")
-            for _ in range(5):
-                _send_key("right", 0.3)
-            _send_key("ret", 1)
+            for attempt in range(3):
+                emit("info", "vm", f"Boot picker detected, selecting macOS Base System (attempt {attempt + 1})...")
+                for _ in range(5):
+                    _send_key("right", 0.3)
+                _send_key("ret", 1)
 
-            # Verify we left boot picker
-            state, _ = _wait_for_screen(
-                {"recovery", "apple_logo", "setup_wizard"},
-                timeout=120,
-                poll_interval=5,
-                msg="Waiting for boot to proceed",
-            )
+                # Verify we left boot picker
+                state, _ = _wait_for_screen(
+                    {"recovery", "apple_logo", "setup_wizard"},
+                    timeout=60,
+                    poll_interval=5,
+                    msg="Waiting for boot to proceed",
+                )
+                if state != "boot_picker":
+                    break
+                emit("warning", "vm", f"Still on boot picker after attempt {attempt + 1}, retrying...")
+
             if state == "setup_wizard":
                 _run_setup_wizard()
                 return
