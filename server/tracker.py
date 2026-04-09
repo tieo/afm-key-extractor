@@ -1172,19 +1172,20 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         WizardScreen("dictation", ["dictation"], "Continue"),
         WizardScreen("accessibility", ["accessibility", "features"], "Not Now"),
         WizardScreen("privacy", ["data", "privacy"], "Continue"),
-        # Select "Don't transfer any information now" — migration from the
-        # recovery partition breaks Macintosh HD boot.
+        # Migration from recovery partition breaks Macintosh HD boot.
+        # transfer_info MUST come before migration — both screens' OCR text
+        # contains "migration assistant", so the more specific match wins.
+        WizardScreen(
+            "transfer_info",
+            ["transfer information to this mac"],
+            "",
+            custom_action=lambda: _handle_transfer_info(),
+        ),
         WizardScreen(
             "migration",
             ["migration assistant"],
             "",
             custom_action=lambda: _skip_migration(),
-        ),
-        WizardScreen(
-            "transfer_info",
-            ["transfer information to this mac"],
-            "",
-            custom_action=lambda: _go_back_from_transfer(),
         ),
         WizardScreen(
             "apple_id", ["sign in with your apple id"], "Set Up Later", fallback_pos=(196, 670)
@@ -1288,46 +1289,50 @@ def _find_and_click(label: str) -> bool:
     return False
 
 
+def _try_dont_transfer(img) -> bool:
+    """Try to find and click 'Don't transfer' on the migration intro screen.
+
+    Returns True if found and clicked.
+    """
+    if not img:
+        return False
+
+    # OCR search across the full screen
+    for label in ["Don't transfer", "not transfer", "don't transfer"]:
+        pos = _find_button_pos(img, label, min_y=0)
+        if pos:
+            emit("info", "vm", f"  → Found '{label}' at {pos}, clicking")
+            _mouse_click(pos[0], pos[1], 0.5)
+            return True
+    return False
+
+
 def _skip_migration() -> None:
     """Select 'Don't transfer any information now' on the Migration Assistant screen.
 
-    Catalina's Setup Assistant Migration screen has three radio options:
-      1. From a Mac, Time Machine backup, or startup disk
-      2. From a Windows PC
-      3. Don't transfer any information now
-    We need option 3, then Continue.
+    The migration intro screen may auto-advance to transfer_info within ~1s,
+    so this must act fast. Saves full OCR for debugging if the radio isn't found.
     """
     _skip_migration.attempts = getattr(_skip_migration, "attempts", 0) + 1
     attempt = _skip_migration.attempts
 
-    # Save debug screenshot
     ppm = _take_screenshot()
-    if ppm:
-        try:
-            img = _ppm_to_image(ppm)
-            if img:
-                img.save(f"/tmp/airtag-vm-migration-{attempt}.png")
-                emit("info", "vm", f"  → Saved migration screenshot (attempt {attempt})")
-        except Exception:
-            pass
-
-    # Try OCR to find "don't transfer" anywhere on screen
     img = _ppm_to_image(ppm) if ppm else None
-    if img:
-        pos = _find_button_pos(img, "Don't transfer", min_y=0)
-        if not pos:
-            pos = _find_button_pos(img, "not transfer", min_y=0)
-        if pos:
-            emit("info", "vm", f"  → Found 'Don't transfer' at {pos}, clicking")
-            _mouse_click(pos[0], pos[1], 0.5)
-            time.sleep(0.5)
-            if not _find_and_click("Continue"):
-                _mouse_click(959, 665, 0.3)
-            time.sleep(2)
-            return
 
-    # Fallback: try different y positions for the radio buttons on each attempt
-    # Radio buttons are left-aligned around x=340-400
+    # Save screenshot + full OCR for debugging
+    if img:
+        img.save(f"/tmp/airtag-vm-migration-intro-{attempt}.png")
+        text = _ocr_region(img, 50, 50, 1230, 750)
+        emit("info", "vm", f"  → Migration intro OCR ({len(text)} chars): {text[:300]!r}")
+
+    if _try_dont_transfer(img):
+        time.sleep(0.5)
+        if not _find_and_click("Continue"):
+            _mouse_click(959, 665, 0.3)
+        time.sleep(2)
+        return
+
+    # Fallback: try different y positions for the 3rd radio button
     y_positions = [500, 480, 520, 460, 540]
     y = y_positions[(attempt - 1) % len(y_positions)]
     emit("info", "vm", f"  → OCR miss, trying radio position (380, {y}) [attempt {attempt}]")
@@ -1338,26 +1343,58 @@ def _skip_migration() -> None:
     time.sleep(2)
 
 
-def _go_back_from_transfer() -> None:
-    """Go back from 'Transfer Information' screen to the Migration Assistant screen.
+def _handle_transfer_info() -> None:
+    """Handle 'Transfer Information to This Mac' screen.
 
-    If we ended up here, it means the first radio option was selected instead of
-    'Don't transfer'. Go back so the wizard loop hits the migration screen again.
+    The migration intro screen auto-advances here in ~1s. Strategy:
+    1. Click Back to return to migration intro
+    2. Immediately (before auto-advance) find and click 'Don't transfer'
+    3. Then click Continue to skip migration entirely
     """
+    _handle_transfer_info.attempts = getattr(_handle_transfer_info, "attempts", 0) + 1
+    attempt = _handle_transfer_info.attempts
+
+    # Save debug screenshot of transfer_info
     ppm = _take_screenshot()
     if ppm:
         try:
             img = _ppm_to_image(ppm)
             if img:
-                img.save("/tmp/airtag-vm-transfer-info.png")
+                img.save(f"/tmp/airtag-vm-transfer-info-{attempt}.png")
         except Exception:
             pass
 
-    emit("info", "vm", "  → Going back from transfer_info screen")
-    # Try OCR for "Go Back" button (bottom-left area)
-    if not _find_and_click("Go Back"):
-        # Fallback: Back button is typically at bottom-left
-        _mouse_click(196, 665, 0.3)
+    # Step 1: Click Back to return to migration intro
+    emit("info", "vm", f"  → transfer_info: clicking Back (attempt {attempt})")
+    if not _find_and_click("Back"):
+        _mouse_click(196, 665, 0.3)  # Back button bottom-left
+    time.sleep(1.5)  # Wait for migration intro to appear
+
+    # Step 2: Immediately capture and interact with migration intro
+    ppm = _take_screenshot()
+    img = _ppm_to_image(ppm) if ppm else None
+
+    if img:
+        img.save(f"/tmp/airtag-vm-after-back-{attempt}.png")
+        text = _ocr_region(img, 50, 50, 1230, 750)
+        emit("info", "vm", f"  → After Back OCR ({len(text)} chars): {text[:300]!r}")
+
+    # Step 3: Try to find "Don't transfer" on migration intro
+    if _try_dont_transfer(img):
+        time.sleep(0.5)
+        if not _find_and_click("Continue"):
+            _mouse_click(959, 665, 0.3)
+        time.sleep(2)
+        return
+
+    # Step 4: Fallback — try radio button positions
+    y_positions = [500, 480, 520, 460, 540]
+    y = y_positions[(attempt - 1) % len(y_positions)]
+    emit("info", "vm", f"  → Fallback radio position (380, {y}) [attempt {attempt}]")
+    _mouse_click(380, y, 0.5)
+    time.sleep(0.5)
+    if not _find_and_click("Continue"):
+        _mouse_click(959, 665, 0.3)
     time.sleep(2)
 
 
