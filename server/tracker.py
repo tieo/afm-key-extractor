@@ -1419,8 +1419,9 @@ def _auto_install_worker():
 
         if state == "boot_picker":
             emit("info", "vm", "Boot picker detected, selecting macOS Base System...")
-            for _ in range(5):
-                _send_key("right", 0.3)
+            # OpenCore shows ~3 entries: EFI, macOS Base System, Macintosh HD.
+            # Default selection is leftmost (EFI). One right → Base System.
+            _send_key("right", 0.5)
             _send_key("ret", 1)
 
             # After pressing enter, OpenCore shows a loading screen (dark bg +
