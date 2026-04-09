@@ -1317,9 +1317,10 @@ def _skip_migration() -> None:
 
         if not found:
             # Fallback: click area where "Don't transfer" radio should be
-            # Based on Catalina layout: 3rd radio option at approximately y=490
-            emit("info", "vm", "  → fallback: clicking radio area at (200, 490)")
-            _mouse_click(200, 490, 0.5)
+            # Debug data shows: radio icon 'O' at (476,450), 2nd at y=476
+            # 3rd option ~26px below at y=502. Click the radio circle area.
+            emit("info", "vm", "  → fallback: clicking 3rd radio at (476, 502)")
+            _mouse_click(476, 502, 0.5)
 
         time.sleep(1.5)
         if not _find_and_click("Continue"):
