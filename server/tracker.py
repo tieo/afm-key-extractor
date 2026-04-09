@@ -967,10 +967,13 @@ def _detect_screen(ppm_data):
         img = _ppm_to_image(ppm_data)
         if img:
             text = _ocr_region(img, 200, 400, 1100, 700)
-            boot_words = ["boot", "opencore", "base system", "macintosh", "reset nvram"]
+            # OCR mangles boot picker text, so match partial/fuzzy:
+            # "Base System" → "basa system", "Macintosh" → "machiosh", etc.
+            boot_words = ["boot", "opencore", "bas", "system", "macin", "machi",
+                          "nvram", "efi", "efl"]
             if any(kw in text for kw in boot_words):
                 return "boot_picker"
-            emit("info", "vm", f"Dark+bright screen but no boot picker text: {text[:80]!r}")
+            emit("info", "vm", f"Dark+bright screen, not boot picker: {text[:80]!r}")
         return "unknown"
 
     # Screen has content — use OCR to identify it
