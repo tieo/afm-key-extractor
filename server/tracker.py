@@ -943,7 +943,8 @@ def _ocr_region(image, x1, y1, x2, y2):
 
 def _detect_screen(ppm_data):
     """Analyze screenshot via OCR to determine current VM screen state.
-    Returns: 'boot_picker', 'apple_logo', 'recovery', 'terminal', 'setup_wizard', or 'unknown'.
+    Returns: 'boot_picker', 'apple_logo', 'recovery', 'terminal', 'setup_wizard',
+             'desktop', 'login_screen', 'uefi_error', or 'unknown'.
     Screen is 1280x800.
     """
     if not ppm_data:
@@ -985,6 +986,16 @@ def _detect_screen(ppm_data):
     # OCR the full screen (excluding extreme edges)
     text = _ocr_region(img, 50, 0, 1230, 780)
     emit("info", "vm", f"Screen detect OCR ({len(text)} chars): {text[:120]!r}")
+
+    # macOS desktop — Finder menubar is visible
+    desktop_keywords = ["finder", "file  edit  view", "go  window  help"]
+    if sum(1 for kw in desktop_keywords if kw in text) >= 1:
+        return "desktop"
+
+    # macOS login screen
+    login_keywords = ["enter password", "log in", "other users"]
+    if sum(1 for kw in login_keywords if kw in text) >= 1:
+        return "login_screen"
 
     # Setup wizard keywords — distinctive phrases that only appear in the setup wizard
     setup_keywords = [
@@ -1113,7 +1124,7 @@ def _wait_for_screen(expected, timeout=300, poll_interval=5, msg=None):
 
 VM_USER = "airtag"
 VM_PASSWORD = "airtag"
-WIZARD_TIMEOUT = 600
+WIZARD_TIMEOUT = 1200  # 20 min — migration transfer + reboot can take 15+ min
 
 
 # ── Setup Wizard ─────────────────────────────────────────────────────────
@@ -1177,6 +1188,12 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
             ["migration assistant"],
             "Continue",
             fallback_pos=(959, 665),
+        ),
+        WizardScreen(
+            "transferring",
+            ["transferring your information"],
+            "",  # No button — just wait
+            custom_action=lambda: time.sleep(10),  # Wait patiently, don't click
         ),
         WizardScreen(
             "migration_complete",
@@ -1327,6 +1344,8 @@ def _run_setup_wizard():
     screens = WIZARD_SCREENS[MACOS_VERSION]
     emit("info", "vm", f"Using {MACOS_VERSION} definitions ({len(screens)} screens)")
 
+    saw_migration = False  # Track if migration transfer happened
+
     try:
         time.sleep(3)
         last_id = None
@@ -1337,31 +1356,58 @@ def _run_setup_wizard():
             ppm = _take_screenshot()
             screen_type = _detect_screen(ppm)
 
+            # Desktop or login screen = wizard is done (post-migration reboot
+            # skips remaining wizard screens and boots to desktop/login)
+            if screen_type == "desktop":
+                emit("info", "vm", "macOS desktop detected — wizard complete.")
+                break
+            if screen_type == "login_screen":
+                emit("info", "vm", "macOS login screen detected — wizard complete.")
+                break
+
             # Post-migration reboot lands at boot picker — select Macintosh HD
             if screen_type == "boot_picker":
                 emit("info", "vm", "Wizard: VM rebooted to boot picker, booting Macintosh HD...")
                 _send_key("ret", 1)
+                # After migration, macOS may need extra time to boot (UEFI → OpenCore → macOS)
+                boot_timeout = 300 if saw_migration else 120
                 state, ppm = _wait_for_screen(
-                    {"setup_wizard", "apple_logo"},
-                    timeout=120,
+                    {"setup_wizard", "apple_logo", "desktop", "login_screen"},
+                    timeout=boot_timeout,
                     poll_interval=5,
-                    msg="Waiting for setup wizard to resume",
+                    msg="Waiting for macOS to boot after reboot",
                 )
+                if state in ("desktop", "login_screen"):
+                    emit("info", "vm", f"macOS {state} detected after reboot — wizard complete.")
+                    break
                 if state == "setup_wizard":
                     continue
                 # apple_logo = still booting, fall through to wait below
 
-            if screen_type not in ("setup_wizard", "unknown", "apple_logo", "boot_picker"):
+            # UEFI error after migration reboot — press key and wait
+            if screen_type == "uefi_error":
+                img = _ppm_to_image(ppm)
+                full_text = _ocr_region(img, 0, 0, 1280, 800) if img else ""
+                if "press any key" in full_text or "no bootable" in full_text:
+                    emit("info", "vm", "UEFI error in wizard, pressing key...")
+                    _send_key("ret", 3)
+                    _send_key("ret", 1)
+                continue
+
+            if screen_type not in ("setup_wizard", "unknown", "apple_logo"):
                 emit("info", "vm", f"Left wizard (screen: {screen_type}).")
                 break
 
             if screen_type in ("unknown", "apple_logo"):
                 state, ppm = _wait_for_screen(
-                    {"setup_wizard", "boot_picker"},
-                    timeout=180,
+                    {"setup_wizard", "boot_picker", "desktop", "login_screen"},
+                    timeout=300 if saw_migration else 180,
                     poll_interval=5,
                     msg="Waiting for wizard screen",
                 )
+                if state in ("desktop", "login_screen"):
+                    emit("info", "vm", f"macOS {state} detected — wizard complete.")
+                    break
                 if state == "boot_picker":
                     continue  # handle boot picker at top of loop
                 if state != "setup_wizard":
@@ -1380,9 +1426,19 @@ def _run_setup_wizard():
                 time.sleep(1)
                 continue
 
+            # Track migration so we know to wait longer for reboot
+            if screen.id in ("transferring", "migration_complete"):
+                saw_migration = True
+
             if screen.id == last_id:
                 stuck += 1
                 if stuck >= 3:
+                    # For transferring screen, just keep waiting (don't click)
+                    if screen.id == "transferring":
+                        emit("info", "vm", "Migration transfer in progress, waiting...")
+                        stuck = 0  # reset so we don't spam
+                        time.sleep(10)
+                        continue
                     emit("info", "vm", f"Stuck on '{screen.id}', trying Tab+Enter")
                     _send_key("tab", 0.3)
                     _send_key("ret", 1)
