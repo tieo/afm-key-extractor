@@ -702,12 +702,14 @@ def _monitor_cmd(cmd):
 
 def _send_key(key, delay=0.15):
     """Send a single keystroke via QEMU monitor."""
+    log.info(f"[vm] Key: {key}")
     _monitor_cmd(f"sendkey {key}")
     time.sleep(delay)
 
 
 def _type_text(text):
     """Type a string character by character via QEMU monitor."""
+    log.info(f"[vm] Type: {text!r}")
     keymap = {
         " ": "spc",
         "\n": "ret",
@@ -826,6 +828,7 @@ def _qmp_cmd(cmd_dict):
 
 def _mouse_click(px, py, delay=0.5):
     """Click at pixel coordinates (1280x800 screen) via QMP absolute mouse input."""
+    log.info(f"[vm] Click: ({px}, {py})")
     qx = int((px / 1280) * 32767)
     qy = int((py / 800) * 32767)
     # Move to position and click
