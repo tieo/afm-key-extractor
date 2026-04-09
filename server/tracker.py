@@ -1140,20 +1140,27 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         WizardScreen("dictation", ["dictation"], "Continue"),
         WizardScreen("accessibility", ["accessibility", "features"], "Not Now"),
         WizardScreen("privacy", ["data", "privacy"], "Continue"),
-        # transfer_info MUST come before migration — the transfer screen's OCR
-        # text can contain "migration assistant", so more specific match first.
-        # If we land on transfer_info, click Back to return to migration screen.
+        # Catalina's Migration Assistant has no "Don't transfer" option —
+        # only "From a Mac" and "From a Windows PC". Let it transfer from the
+        # recovery partition (~10 min) and continue the wizard afterwards.
+        # transfer_info MUST come before migration (more specific match first).
         WizardScreen(
             "transfer_info",
             ["transfer information to this mac"],
-            "Back",
-            fallback_pos=(897, 665),
+            "Continue",
+            fallback_pos=(959, 665),
         ),
         WizardScreen(
             "migration",
             ["migration assistant"],
             "Continue",
-            custom_action=lambda: _skip_migration(),
+            fallback_pos=(959, 665),
+        ),
+        WizardScreen(
+            "migration_complete",
+            ["migration complete"],
+            "Continue",
+            fallback_pos=(959, 665),
         ),
         WizardScreen(
             "apple_id", ["sign in with your apple id"], "Set Up Later", fallback_pos=(196, 670)
@@ -1214,13 +1221,6 @@ def _find_button_pos(img: Image.Image, label: str, min_y: int = 600) -> tuple[in
         log.warning(f"OCR image_to_data failed: {e}")
         return None
 
-    all_words = [
-        (w.strip(), data["left"][i], data["top"][i])
-        for i, w in enumerate(data["text"])
-        if w.strip()
-    ]
-    log.info(f"Button search '{label}': {[(w, x, y) for w, x, y in all_words if y > 600]}")
-
     words = label.lower().split()
     for i, raw in enumerate(data["text"]):
         if not raw.strip():
@@ -1262,73 +1262,6 @@ def _find_and_click(label: str) -> bool:
             return True
     log.warning(f"Button '{label}' not found after 2 attempts")
     return False
-
-
-def _skip_migration() -> None:
-    """Skip Migration Assistant by selecting 'Don't transfer any information now'.
-
-    Race condition: the previous screen's Continue click at (986,670) can also
-    register as a Continue on the migration screen (same button position), so by
-    the time we screenshot, we may already be on 'Transfer Information to This Mac'.
-    If that happens, click Back to return to the migration screen and retry.
-    """
-    for attempt in range(3):
-        emit("info", "vm", f"  → Migration attempt {attempt + 1}")
-        ppm = _take_screenshot()
-        img = _ppm_to_image(ppm)
-        if not img:
-            time.sleep(1)
-            continue
-
-        full_text = _ocr_region(img, 50, 50, 1230, 750)
-        emit("info", "vm", f"  → Migration OCR: {full_text[:300]!r}")
-
-        # If we're on the wrong screen (transfer info), click Back button directly.
-        # Don't use _find_and_click("Back") — it finds "Back" in body text.
-        if "transfer information to this mac" in full_text:
-            emit("info", "vm", "  → On transfer screen, clicking Back at (897, 665)")
-            _mouse_click(897, 665, 0.5)
-            time.sleep(2)
-            continue
-
-        # On the correct migration assistant screen — select "Don't transfer"
-        # Log all word positions for debugging the radio option locations
-        processed = _preprocess_for_ocr(img)
-        try:
-            data = pytesseract.image_to_data(processed, output_type=pytesseract.Output.DICT)
-            all_words = [
-                (w.strip(), data["left"][i], data["top"][i])
-                for i, w in enumerate(data["text"])
-                if w.strip() and data["top"][i] > 300
-            ]
-            emit("info", "vm", f"  → Words y>300: {all_words}")
-        except Exception:
-            pass
-
-        # Search the full screen (min_y=0) since radio options are in the body
-        found = False
-        for label in ["Don't transfer", "transfer any information now", "Not Now"]:
-            pos = _find_button_pos(img, label, min_y=0)
-            if pos:
-                emit("info", "vm", f"  → Found '{label}' at ({pos[0]}, {pos[1]})")
-                _mouse_click(pos[0], pos[1], 0.5)
-                found = True
-                break
-
-        if not found:
-            # Fallback: click area where "Don't transfer" radio should be
-            # Debug data shows: radio icon 'O' at (476,450), 2nd at y=476
-            # 3rd option ~26px below at y=502. Click the radio circle area.
-            emit("info", "vm", "  → fallback: clicking 3rd radio at (476, 502)")
-            _mouse_click(476, 502, 0.5)
-
-        time.sleep(1.5)
-        if not _find_and_click("Continue"):
-            emit("info", "vm", "  → fallback Continue at (959, 665)")
-            _mouse_click(959, 665, 0.3)
-        return
-
-    emit("info", "vm", "  → Migration: exhausted retries")
 
 
 def _fill_account_form() -> None:
