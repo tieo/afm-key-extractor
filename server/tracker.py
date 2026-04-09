@@ -1140,17 +1140,19 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         WizardScreen("dictation", ["dictation"], "Continue"),
         WizardScreen("accessibility", ["accessibility", "features"], "Not Now"),
         WizardScreen("privacy", ["data", "privacy"], "Continue"),
-        WizardScreen(
-            "migration",
-            ["migration assistant"],
-            "Continue",
-            custom_action=lambda: _skip_migration(),
-        ),
+        # transfer_info MUST come before migration — the transfer screen's OCR
+        # text can contain "migration assistant", so more specific match first.
         WizardScreen(
             "transfer_info",
             ["transfer information to this mac"],
             "Not Now",
             fallback_pos=(196, 670),
+        ),
+        WizardScreen(
+            "migration",
+            ["migration assistant"],
+            "Continue",
+            custom_action=lambda: _skip_migration(),
         ),
         WizardScreen(
             "apple_id", ["sign in with your apple id"], "Set Up Later", fallback_pos=(196, 670)
@@ -1253,26 +1255,38 @@ def _find_and_click(label: str) -> bool:
 
 
 def _skip_migration() -> None:
-    """Skip Migration Assistant by selecting the 'Not now' radio option, then clicking Continue.
+    """Skip Migration Assistant by selecting 'Don't transfer any information now'.
 
-    In Catalina, the Migration Assistant screen has radio options in the body
-    (From a Mac, From a Windows PC, From Time Machine, Not now). 'Not now' is
-    NOT a button — it's a list/radio item that must be clicked first.
+    In Catalina, the Migration Assistant has radio options in the body:
+    - From a Mac, Time Machine backup, or startup disk
+    - From a Windows PC
+    - Don't transfer any information now
+    The last option must be clicked to select it, then Continue to advance.
     """
-    emit("info", "vm", "  → Selecting 'Not now' radio option")
+    emit("info", "vm", "  → Selecting 'Don't transfer' radio option")
     ppm = _take_screenshot()
     img = _ppm_to_image(ppm)
+    found = False
     if img:
-        # Try to find "Not" in the body text (part of "Not now" radio option)
-        pos = _find_button_pos(img, "Not now")
-        if pos:
-            emit("info", "vm", f"  → 'Not now' radio at ({pos[0]}, {pos[1]})")
-            _mouse_click(pos[0], pos[1], 0.5)
-        else:
-            # Fallback: the "Not now" radio is typically around (170, 480) in Catalina
-            emit("info", "vm", "  → fallback click for 'Not now' radio at (170, 480)")
-            _mouse_click(170, 480, 0.5)
-    time.sleep(1)
+        # Log full OCR for debugging the migration screen layout
+        full_text = _ocr_region(img, 50, 50, 1230, 750)
+        emit("info", "vm", f"  → Migration OCR: {full_text[:500]!r}")
+
+        # Try multiple search terms for the "don't transfer" radio option
+        for label in ["Don't transfer", "transfer any information now", "Not Now"]:
+            pos = _find_button_pos(img, label)
+            if pos:
+                emit("info", "vm", f"  → Found '{label}' at ({pos[0]}, {pos[1]})")
+                _mouse_click(pos[0], pos[1], 0.5)
+                found = True
+                break
+
+    if not found:
+        # Fallback: last radio option is near bottom of the list, around y=555
+        emit("info", "vm", "  → fallback click for 'Don't transfer' at (170, 555)")
+        _mouse_click(170, 555, 0.5)
+
+    time.sleep(1.5)
     if not _find_and_click("Continue"):
         emit("info", "vm", "  → fallback Continue at (959, 665)")
         _mouse_click(959, 665, 0.3)
