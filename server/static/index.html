@@ -613,7 +613,11 @@
     }
 
     // ========= APPLE ID LOGIN =========
-    function showLoginForm(error) {
+    async function showLoginForm(error) {
+      // Auto-start VM if not running so the VNC viewer has something to show
+      if (vmState && vmState.enabled && !vmState.vm_running) {
+        await fetch('/api/vm/start-setup', {method: 'POST'});
+      }
       const overlay = document.getElementById('setup-overlay');
       overlay.classList.remove('hidden');
       const vncUrl = `//${location.hostname.replace('airtag', 'airtag-vnc')}/vnc.html?autoconnect=true&resize=scale&view_only=true`;
