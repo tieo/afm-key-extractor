@@ -1358,8 +1358,9 @@ def _run_setup_wizard():
             if screen_type in ("unknown", "apple_logo"):
                 state, ppm = _wait_for_screen(
                     {"setup_wizard", "boot_picker"},
-                    timeout=60,
-                    poll_interval=3,
+                    timeout=180,
+                    poll_interval=5,
+                    msg="Waiting for wizard screen",
                 )
                 if state == "boot_picker":
                     continue  # handle boot picker at top of loop
