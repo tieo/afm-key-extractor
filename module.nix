@@ -85,6 +85,11 @@ in {
           StateDirectory = "airtag-tracker";
           Restart = "on-failure";
           RestartSec = 10;
+          # QEMU runs as a child process — deprioritize so it doesn't starve
+          # other services (especially dnsmasq) when doing heavy VM work.
+          Nice = 10;
+          IOSchedulingClass = "best-effort";
+          IOSchedulingPriority = 7;
         };
       };
     }
