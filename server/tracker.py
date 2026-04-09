@@ -961,19 +961,20 @@ def _detect_screen(ppm_data):
         return "unknown"
 
     # Boot picker: dark background but bright icons in center area.
-    # Must verify with OCR — the OpenCore loading screen has the same
-    # brightness pattern but no boot entry text.
+    # Distinguish from UEFI error (also dark+bright but has lots of text).
     if menubar_brightness < 50 and icon_area_brightness > 100:
         img = _ppm_to_image(ppm_data)
         if img:
             text = _ocr_region(img, 200, 400, 1100, 700)
-            # OCR mangles boot picker text, so match partial/fuzzy:
-            # "Base System" → "basa system", "Macintosh" → "machiosh", etc.
+            # UEFI error screens have 300+ chars of "failed to load" text.
+            # Boot picker has short labels or OCR noise (< 50 chars).
+            # Loading spinner has nearly no text.
+            if len(text) < 50:
+                return "boot_picker"
             boot_words = ["boot", "opencore", "bas", "system", "macin", "machi",
                           "nvram", "efi", "efl"]
             if any(kw in text for kw in boot_words):
                 return "boot_picker"
-            emit("info", "vm", f"Dark+bright screen, not boot picker: {text[:80]!r}")
         return "unknown"
 
     # Screen has content — use OCR to identify it
