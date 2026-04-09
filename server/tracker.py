@@ -1142,11 +1142,12 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         WizardScreen("privacy", ["data", "privacy"], "Continue"),
         # transfer_info MUST come before migration — the transfer screen's OCR
         # text can contain "migration assistant", so more specific match first.
+        # If we land on transfer_info, click Back to return to migration screen.
         WizardScreen(
             "transfer_info",
             ["transfer information to this mac"],
-            "Not Now",
-            fallback_pos=(196, 670),
+            "Back",
+            fallback_pos=(897, 665),
         ),
         WizardScreen(
             "migration",
@@ -1257,22 +1258,32 @@ def _find_and_click(label: str) -> bool:
 def _skip_migration() -> None:
     """Skip Migration Assistant by selecting 'Don't transfer any information now'.
 
-    In Catalina, the Migration Assistant has radio options in the body:
-    - From a Mac, Time Machine backup, or startup disk
-    - From a Windows PC
-    - Don't transfer any information now
-    The last option must be clicked to select it, then Continue to advance.
+    Race condition: the previous screen's Continue click at (986,670) can also
+    register as a Continue on the migration screen (same button position), so by
+    the time we screenshot, we may already be on 'Transfer Information to This Mac'.
+    If that happens, click Back to return to the migration screen and retry.
     """
-    emit("info", "vm", "  → Selecting 'Don't transfer' radio option")
-    ppm = _take_screenshot()
-    img = _ppm_to_image(ppm)
-    found = False
-    if img:
-        # Log full OCR for debugging the migration screen layout
-        full_text = _ocr_region(img, 50, 50, 1230, 750)
-        emit("info", "vm", f"  → Migration OCR: {full_text[:500]!r}")
+    for attempt in range(3):
+        emit("info", "vm", f"  → Migration attempt {attempt + 1}")
+        ppm = _take_screenshot()
+        img = _ppm_to_image(ppm)
+        if not img:
+            time.sleep(1)
+            continue
 
-        # Try multiple search terms for the "don't transfer" radio option
+        full_text = _ocr_region(img, 50, 50, 1230, 750)
+        emit("info", "vm", f"  → Migration OCR: {full_text[:300]!r}")
+
+        # If we're on the wrong screen (transfer info), go Back
+        if "transfer information to this mac" in full_text:
+            emit("info", "vm", "  → On transfer screen, clicking Back")
+            if not _find_and_click("Back"):
+                _mouse_click(897, 665, 0.3)
+            time.sleep(2)
+            continue
+
+        # On the correct migration assistant screen — select "Don't transfer"
+        found = False
         for label in ["Don't transfer", "transfer any information now", "Not Now"]:
             pos = _find_button_pos(img, label)
             if pos:
@@ -1281,15 +1292,18 @@ def _skip_migration() -> None:
                 found = True
                 break
 
-    if not found:
-        # Fallback: last radio option is near bottom of the list, around y=555
-        emit("info", "vm", "  → fallback click for 'Don't transfer' at (170, 555)")
-        _mouse_click(170, 555, 0.5)
+        if not found:
+            # Fallback: last radio option is near bottom of the list
+            emit("info", "vm", "  → fallback click for 'Don't transfer' at (170, 555)")
+            _mouse_click(170, 555, 0.5)
 
-    time.sleep(1.5)
-    if not _find_and_click("Continue"):
-        emit("info", "vm", "  → fallback Continue at (959, 665)")
-        _mouse_click(959, 665, 0.3)
+        time.sleep(1.5)
+        if not _find_and_click("Continue"):
+            emit("info", "vm", "  → fallback Continue at (959, 665)")
+            _mouse_click(959, 665, 0.3)
+        return
+
+    emit("info", "vm", "  → Migration: exhausted retries")
 
 
 def _fill_account_form() -> None:
