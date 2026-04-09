@@ -1041,6 +1041,12 @@ def _detect_screen(ppm_data):
     if terminal_matches >= 1:
         return "terminal"
 
+    # UEFI firmware error — all boot entries failed
+    uefi_keywords = ["failed to load", "no bootable option", "press any key", "tianocore",
+                      "pciroot", "bdsdxe"]
+    if sum(1 for kw in uefi_keywords if kw in text) >= 2:
+        return "uefi_error"
+
     # Boot picker text (OpenCore) — require 2+ matches to avoid false positives
     # ("base system" can appear in migration transfer screen text)
     boot_keywords = ["boot", "opencore", "base system"]
@@ -1669,6 +1675,15 @@ def _auto_install_worker():
             elif screen == "setup_wizard":
                 _run_setup_wizard()
                 return
+
+            elif screen == "uefi_error":
+                # UEFI firmware exhausted all boot entries. Press a key to enter
+                # Boot Manager, then select OpenCore to continue installation.
+                emit("info", "vm", f"UEFI boot failed, pressing key for Boot Manager... ({elapsed_min} min)")
+                _send_key("ret", 2)
+                # Boot Manager shows a list — first entry is usually the OpenCore disk.
+                # Press Enter to select it.
+                _send_key("ret", 1)
 
             elif screen == "unknown":
                 # Black screen during reboot — normal
