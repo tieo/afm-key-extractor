@@ -1777,16 +1777,10 @@ def vm_reinstall():
     # Stop VM if running
     vm_stop()
 
-    # Remove disk image, password, and installer media
-    import shutil
-
-    for f in ["mac_hdd_ng.img", "BaseSystem.img", "BaseSystem.dmg"]:
-        p = VM_DIR / f
-        if p.exists():
-            p.unlink()
-    recovery = VM_DIR / "com.apple.recovery.boot"
-    if recovery.exists():
-        shutil.rmtree(recovery, ignore_errors=True)
+    # Remove disk image and password — keep installer media (BaseSystem) for reuse
+    p = VM_DIR / "mac_hdd_ng.img"
+    if p.exists():
+        p.unlink()
     pw_path = DATA_DIR / "vm-password"
     if pw_path.exists():
         pw_path.unlink()
