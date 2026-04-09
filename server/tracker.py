@@ -1292,6 +1292,19 @@ def _skip_migration() -> None:
             continue
 
         # On the correct migration assistant screen — select "Don't transfer"
+        # Log all word positions for debugging the radio option locations
+        processed = _preprocess_for_ocr(img)
+        try:
+            data = pytesseract.image_to_data(processed, output_type=pytesseract.Output.DICT)
+            all_words = [
+                (w.strip(), data["left"][i], data["top"][i])
+                for i, w in enumerate(data["text"])
+                if w.strip() and data["top"][i] > 300
+            ]
+            emit("info", "vm", f"  → Words y>300: {all_words}")
+        except Exception:
+            pass
+
         # Search the full screen (min_y=0) since radio options are in the body
         found = False
         for label in ["Don't transfer", "transfer any information now", "Not Now"]:
@@ -1303,12 +1316,10 @@ def _skip_migration() -> None:
                 break
 
         if not found:
-            # Fallback: use keyboard to navigate to last radio option
-            # Down arrow 3x selects the third option (Don't transfer)
-            emit("info", "vm", "  → Using keyboard: Down×3 to select 'Don't transfer'")
-            for _ in range(3):
-                _send_key("down", 0.3)
-            time.sleep(0.3)
+            # Fallback: click area where "Don't transfer" radio should be
+            # Based on Catalina layout: 3rd radio option at approximately y=490
+            emit("info", "vm", "  → fallback: clicking radio area at (200, 490)")
+            _mouse_click(200, 490, 0.5)
 
         time.sleep(1.5)
         if not _find_and_click("Continue"):
