@@ -960,9 +960,18 @@ def _detect_screen(ppm_data):
             return "apple_logo"
         return "unknown"
 
-    # Boot picker: dark background but bright icons in center area
+    # Boot picker: dark background but bright icons in center area.
+    # Must verify with OCR — the OpenCore loading screen has the same
+    # brightness pattern but no boot entry text.
     if menubar_brightness < 50 and icon_area_brightness > 100:
-        return "boot_picker"
+        img = _ppm_to_image(ppm_data)
+        if img:
+            text = _ocr_region(img, 200, 400, 1100, 700)
+            boot_words = ["boot", "opencore", "base system", "macintosh", "reset nvram"]
+            if any(kw in text for kw in boot_words):
+                return "boot_picker"
+            emit("info", "vm", f"Dark+bright screen but no boot picker text: {text[:80]!r}")
+        return "unknown"
 
     # Screen has content — use OCR to identify it
     img = _ppm_to_image(ppm_data)
@@ -1406,23 +1415,21 @@ def _auto_install_worker():
             return
 
         if state == "boot_picker":
-            for attempt in range(3):
-                emit("info", "vm", f"Boot picker detected, selecting macOS Base System (attempt {attempt + 1})...")
-                for _ in range(5):
-                    _send_key("right", 0.3)
-                _send_key("ret", 1)
+            emit("info", "vm", "Boot picker detected, selecting macOS Base System...")
+            for _ in range(5):
+                _send_key("right", 0.3)
+            _send_key("ret", 1)
 
-                # Verify we left boot picker
-                state, _ = _wait_for_screen(
-                    {"recovery", "apple_logo", "setup_wizard"},
-                    timeout=60,
-                    poll_interval=5,
-                    msg="Waiting for boot to proceed",
-                )
-                if state != "boot_picker":
-                    break
-                emit("warning", "vm", f"Still on boot picker after attempt {attempt + 1}, retrying...")
-
+            # After pressing enter, OpenCore shows a loading screen (dark bg +
+            # bright spinner) that the brightness heuristic misclassifies as
+            # boot_picker. Accept boot_picker too and just wait long enough for
+            # recovery/apple_logo to eventually appear.
+            state, _ = _wait_for_screen(
+                {"recovery", "apple_logo", "setup_wizard"},
+                timeout=180,
+                poll_interval=5,
+                msg="Waiting for boot to proceed",
+            )
             if state == "setup_wizard":
                 _run_setup_wizard()
                 return
