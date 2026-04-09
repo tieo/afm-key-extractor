@@ -1367,16 +1367,29 @@ def _run_setup_wizard():
 
             # Post-migration reboot lands at boot picker — select Macintosh HD
             if screen_type == "boot_picker":
-                emit("info", "vm", "Wizard: VM rebooted to boot picker, booting Macintosh HD...")
-                _send_key("ret", 1)
-                # After migration, macOS may need extra time to boot (UEFI → OpenCore → macOS)
+                emit("info", "vm", "Wizard: boot picker detected, selecting Macintosh HD...")
+                # After install, boot picker entries: EFI (left), Base System, Macintosh HD (right).
+                # Navigate to rightmost entry (Macintosh HD) and boot it.
+                _send_key("right", 0.3)
+                _send_key("right", 0.3)
+                _send_key("right", 0.3)  # extra right in case of additional entries
+                _send_key("ret", 2)
+                # Wait for macOS to boot — retry boot picker if it comes back
                 boot_timeout = 300 if saw_migration else 120
-                state, ppm = _wait_for_screen(
-                    {"setup_wizard", "apple_logo", "desktop", "login_screen"},
-                    timeout=boot_timeout,
-                    poll_interval=5,
-                    msg="Waiting for macOS to boot after reboot",
-                )
+                for _boot_attempt in range(3):
+                    state, ppm = _wait_for_screen(
+                        {"setup_wizard", "apple_logo", "desktop", "login_screen", "boot_picker"},
+                        timeout=boot_timeout,
+                        poll_interval=5,
+                        msg="Waiting for macOS to boot after reboot",
+                    )
+                    if state == "boot_picker":
+                        emit("info", "vm", "Still at boot picker, retrying...")
+                        _send_key("right", 0.3)
+                        _send_key("right", 0.3)
+                        _send_key("ret", 2)
+                        continue
+                    break
                 if state in ("desktop", "login_screen"):
                     emit("info", "vm", f"macOS {state} detected after reboot — wizard complete.")
                     break
