@@ -1054,10 +1054,10 @@ def _detect_screen(ppm_data):
     if boot_matches >= 2:
         return "boot_picker"
 
-    # Bright screen with menubar but no recognized text — likely transitional
+    # Bright screen with menubar but no recognized text
     if menubar_brightness > 100:
         if center_brightness > 400:
-            return "setup_wizard"  # bright white = likely setup wizard loading
+            return "unknown"  # could be setup wizard loading or OpenCore settings
         return "recovery"  # menubar visible, dark center = likely recovery
 
     return "unknown"

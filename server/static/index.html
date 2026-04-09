@@ -264,20 +264,20 @@
       vmState = await vmRes.json();
 
       // Determine what needs setup
+      // Always check for active install first — takes priority over everything
+      if (vmState.enabled && vmState.vm_running) {
+        try {
+          const installRes = await fetch('/api/vm/install-status');
+          const installData = await installRes.json();
+          if (installData.phase && installData.phase !== 'idle' && installData.phase !== 'done') {
+            showAutoInstallProgress();
+            return;
+          }
+        } catch(e) { /* fall through */ }
+      }
       if (vmState.enabled && !vmState.provisioned) {
         showProvisioningWait();
       } else if (vmState.enabled && !vmState.setup_complete) {
-        // If VM is already running with install in progress, show progress view
-        if (vmState.vm_running) {
-          try {
-            const installRes = await fetch('/api/vm/install-status');
-            const installData = await installRes.json();
-            if (installData.phase && installData.phase !== 'idle') {
-              showAutoInstallProgress();
-              return;
-            }
-          } catch(e) { /* fall through to wizard */ }
-        }
         showVmSetupWizard();
       } else if (!accData.configured) {
         showLoginForm();
