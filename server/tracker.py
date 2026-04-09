@@ -670,7 +670,7 @@ def _monitor_connect():
         _monitor_sock = s
         return s
     except Exception as e:
-        log.error(f"Monitor connect failed: {e}")
+        emit("error", "vm", f"Monitor connect failed: {e}")
         _monitor_sock = None
         return None
 
@@ -695,7 +695,7 @@ def _monitor_cmd(cmd):
             resp = sock.recv(4096).decode(errors="replace")
             return resp
         except Exception as e:
-            log.error(f"Monitor command failed: {e}")
+            emit("error", "vm", f"Monitor command failed: {e}")
             _monitor_disconnect()
             return None
 
@@ -769,7 +769,7 @@ def _type_text(text):
             else:
                 _send_key(ch, 0.05)
         else:
-            log.warning(f"Unmapped character: {ch!r}")
+            emit("warning", "vm", f"Unmapped character: {ch!r}")
 
 
 QMP_SOCK = "/tmp/airtag-vm-qmp.sock"
@@ -795,7 +795,7 @@ def _qmp_connect():
         _qmp_initialized = True
         return s
     except Exception as e:
-        log.error(f"QMP connect failed: {e}")
+        emit("error", "vm", f"QMP connect failed: {e}")
         _qmp_sock = None
         _qmp_initialized = False
         return None
@@ -821,7 +821,7 @@ def _qmp_cmd(cmd_dict):
             resp = s.recv(4096).decode(errors="replace")
             return json.loads(resp)
         except Exception as e:
-            log.error(f"QMP command failed: {e}")
+            emit("error", "vm", f"QMP command failed: {e}")
             _qmp_disconnect()
             return None
 
@@ -937,7 +937,7 @@ def _ocr_region(image, x1, y1, x2, y2):
         text = pytesseract.image_to_string(region, config="--psm 6")
         return text.lower().strip()
     except Exception as e:
-        log.warning(f"OCR failed: {e}")
+        emit("warning", "vm", f"OCR failed: {e}")
         return ""
 
 
@@ -971,7 +971,7 @@ def _detect_screen(ppm_data):
 
     # OCR the full screen (excluding extreme edges)
     text = _ocr_region(img, 50, 0, 1230, 780)
-    log.info(f"Screen detect OCR ({len(text)} chars): {text[:120]!r}")
+    emit("info", "vm", f"Screen detect OCR ({len(text)} chars): {text[:120]!r}")
 
     # Setup wizard keywords — distinctive phrases that only appear in the setup wizard
     setup_keywords = [
@@ -1059,7 +1059,7 @@ def _set_phase(phase, msg=None):
     _auto_install_step_times[phase] = time.time()
     if msg:
         emit("info", "vm", msg)
-    log.info(f"Auto-install phase: {phase}")
+    emit("info", "vm", f"Auto-install phase: {phase}")
 
 
 def _wait_for_screen(expected, timeout=300, poll_interval=5, msg=None):
@@ -1221,7 +1221,7 @@ def _find_button_pos(img: Image.Image, label: str, min_y: int = 600) -> tuple[in
     try:
         data = pytesseract.image_to_data(processed, output_type=pytesseract.Output.DICT)
     except Exception as e:
-        log.warning(f"OCR image_to_data failed: {e}")
+        emit("warning", "vm", f"OCR image_to_data failed: {e}")
         return None
 
     words = label.lower().split()
@@ -1263,7 +1263,7 @@ def _find_and_click(label: str) -> bool:
             emit("info", "vm", f"  → '{label}' at ({pos[0]}, {pos[1]})")
             _mouse_click(pos[0], pos[1], 0.3)
             return True
-    log.warning(f"Button '{label}' not found after 2 attempts")
+    emit("warning", "vm", f"Button '{label}' not found after 2 attempts")
     return False
 
 
@@ -1549,8 +1549,9 @@ def _auto_install_worker():
                 _run_setup_wizard()
                 return
             if state != "terminal":
-                log.warning(
-                    f"Terminal detection returned '{state}' — proceeding anyway (detection may be imprecise)"
+                emit(
+                    "warning", "vm",
+                    f"Terminal detection returned '{state}' — proceeding anyway (detection may be imprecise)",
                 )
 
         emit("info", "vm", "Terminal is open.")
@@ -1569,7 +1570,7 @@ def _auto_install_worker():
             s = _detect_screen(ppm)
             elapsed_fmt = int(time.time() - format_start)
             if s not in ("terminal", "recovery"):
-                log.warning(f"Unexpected screen during format: {s}")
+                emit("warning", "vm", f"Unexpected screen during format: {s}")
                 break
             if elapsed_fmt >= 30:
                 break
@@ -1596,7 +1597,7 @@ def _auto_install_worker():
             ppm = _take_screenshot()
             s = _detect_screen(ppm)
             if s not in ("terminal", "recovery"):
-                log.warning(f"Unexpected screen during find: {s}")
+                emit("warning", "vm", f"Unexpected screen during find: {s}")
                 break
             if time.time() - find_start >= 10:
                 break
