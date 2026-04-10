@@ -1521,21 +1521,36 @@ def _auto_install_worker():
 
         if state == "boot_picker":
             emit("info", "vm", "Boot picker detected, selecting macOS Base System...")
-            # OpenCore shows ~3 entries: EFI, macOS Base System, Macintosh HD.
-            # Default selection is leftmost (EFI). One right → Base System.
-            _send_key("right", 0.5)
-            _send_key("ret", 1)
+            # OpenCore shows 2 entries: EFI (default, left), macOS Base System (right).
+            # Give OpenCore time to settle before accepting input.
+            time.sleep(5)
+            _send_key("right", 1)
+            time.sleep(1)
+            _send_key("ret", 2)
 
             # After pressing enter, OpenCore shows a loading screen (dark bg +
             # bright spinner) that the brightness heuristic misclassifies as
-            # boot_picker. Accept boot_picker too and just wait long enough for
-            # recovery/apple_logo to eventually appear.
+            # boot_picker. Wait long enough for recovery to appear.
             state, _ = _wait_for_screen(
                 {"recovery", "apple_logo", "setup_wizard"},
                 timeout=180,
                 poll_interval=5,
                 msg="Waiting for boot to proceed",
             )
+
+            # If still stuck at boot_picker, the keys didn't register — retry
+            if state == "boot_picker":
+                emit("info", "vm", "Boot picker still showing, retrying key sequence...")
+                time.sleep(3)
+                _send_key("right", 1)
+                time.sleep(1)
+                _send_key("ret", 2)
+                state, _ = _wait_for_screen(
+                    {"recovery", "apple_logo", "setup_wizard"},
+                    timeout=180,
+                    poll_interval=5,
+                    msg="Waiting for boot to proceed (retry)",
+                )
             if state == "setup_wizard":
                 _run_setup_wizard()
                 return
