@@ -1322,42 +1322,64 @@ def _find_and_click(label: str) -> bool:
 def _escape_transfer_info() -> None:
     """Escape the Transfer Info screen when no sources are available.
 
-    Without installer media, there are no migration sources. Continue is greyed out.
-    Click Back to return to the migration intro screen where Cmd+Q can quit.
+    This screen triggers network scanning which can cause kernel panics in
+    QEMU VMs. Act gently — no Tab+Enter spam. Wait for the search to
+    finish (Continue may become enabled), or try Cmd+Q to trigger the
+    shutdown dialog.
     """
     _escape_transfer_info.attempts = getattr(_escape_transfer_info, "attempts", 0) + 1
     attempt = _escape_transfer_info.attempts
     emit("info", "vm", f"  → transfer_info escape attempt {attempt}")
 
     if attempt <= 2:
-        # Try clicking Back button
-        if not _find_and_click("Back"):
-            _mouse_click(196, 665, 0.3)  # Back button position
-        time.sleep(2)
+        # Wait for source search to finish (may enable Continue)
+        emit("info", "vm", "  → Waiting for source search to finish...")
+        time.sleep(15)
     elif attempt <= 4:
-        # Try Cmd+Q directly on this screen
-        emit("info", "vm", "  → Trying Cmd+Q to quit Setup Assistant")
-        _send_key("meta_l-q", 2)
+        # Try clicking Continue (might be enabled now)
+        if not _find_and_click("Continue"):
+            _mouse_click(959, 665, 0.3)
+        time.sleep(5)
+    elif attempt <= 6:
+        # Try Cmd+Q to trigger shutdown dialog
+        emit("info", "vm", "  → Trying Cmd+Q")
+        _send_key("meta_l-q")
         time.sleep(3)
     else:
-        # Wait and retry — maybe the search will finish
-        time.sleep(5)
+        # Wait longer — avoid aggressive interaction
+        time.sleep(10)
 
 
 def _escape_migration() -> None:
     """Escape the Migration Assistant intro screen.
 
-    Without installer media, there's nothing to migrate. Try Cmd+Q to quit
-    Setup Assistant and skip to account creation or desktop.
+    Without installer media, there's nothing to migrate. Cmd+Q is unreliable —
+    it sometimes quits Migration Assistant (advancing to transfer_info which
+    causes kernel panics from network scanning) instead of quitting Setup
+    Assistant (which shows the shutdown dialog). Click the Setup Assistant
+    window background first to ensure it's focused before Cmd+Q.
     """
     _escape_migration.attempts = getattr(_escape_migration, "attempts", 0) + 1
     attempt = _escape_migration.attempts
     emit("info", "vm", f"  → migration escape attempt {attempt}")
 
-    if attempt <= 3:
-        # Try Cmd+Q to quit Migration Assistant / Setup Assistant
-        emit("info", "vm", "  → Trying Cmd+Q to quit Setup Assistant")
-        _send_key("meta_l-q", 2)
+    if attempt == 1:
+        # First: click on the Setup Assistant background to focus it (not MA)
+        # The title bar area of Setup Assistant should be safe
+        emit("info", "vm", "  → Clicking SA window background, then Cmd+Q")
+        _mouse_click(640, 10, 0.3)  # Click near the top center (menu bar area)
+        time.sleep(0.5)
+        _send_key("meta_l-q")
+        time.sleep(3)
+    elif attempt == 2:
+        # Try Escape key to dismiss Migration Assistant
+        emit("info", "vm", "  → Trying Escape key")
+        _send_key("escape")
+        time.sleep(2)
+    elif attempt <= 4:
+        # Cmd+Q with a different timing
+        emit("info", "vm", "  → Trying Cmd+Q")
+        _send_key("meta_l-q")
         time.sleep(3)
     elif attempt <= 6:
         # Try clicking Continue (maybe it works without sources)
@@ -1531,8 +1553,48 @@ def _create_account_from_recovery():
             pass
 
     if not sudo_works:
-        # sudo requires a password — close Terminal and fall back to the wizard
-        emit("warning", "vm", "sudo not available for _mbsetupuser — falling back to wizard")
+        # sudo requires a password. Try direct file write to /var/db/ instead.
+        emit("warning", "vm", "sudo not available — testing direct /var/db/ write access...")
+        _type_text("touch /var/db/.AppleSetupDone 2>/dev/null; echo WR$?")
+        _send_key("ret")
+        time.sleep(3)
+
+        ppm = _take_screenshot()
+        can_write = False
+        if ppm:
+            try:
+                img = _ppm_to_image(ppm)
+                if img:
+                    text = _ocr_region(img, 50, 50, 1230, 750)
+                    emit("info", "vm", f"Write test result: {text[:300]!r}")
+                    if "WR0" in text:
+                        can_write = True
+            except Exception:
+                pass
+
+        if can_write:
+            # We can write to /var/db/! .AppleSetupDone is created.
+            # Kill Setup Assistant — should work without sudo since same user
+            emit("info", "vm", ".AppleSetupDone created! Killing Setup Assistant...")
+            _type_text("killall 'Setup Assistant' 2>/dev/null; echo KL$?")
+            _send_key("ret")
+            time.sleep(5)
+
+            ppm = _take_screenshot()
+            state = _detect_screen(ppm)
+            if state in ("desktop", "login_screen"):
+                pw_path = DATA_DIR / "vm-password"
+                pw_path.write_text(VM_PASSWORD)
+                pw_path.chmod(0o600)
+                _set_phase("done", "macOS setup complete (no user account — using login screen)!")
+                return
+
+            # killall might not have worked, or need dscl for user account.
+            # Close Terminal and fall back to wizard
+            emit("warning", "vm", "Setup Assistant still running after killall — falling back to wizard")
+
+        # Close Terminal and fall back to the wizard
+        emit("warning", "vm", "Falling back to wizard automation")
         _send_key("meta_l-q")  # Cmd+Q to close Terminal
         time.sleep(3)
         _run_setup_wizard()
