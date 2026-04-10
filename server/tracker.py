@@ -900,6 +900,8 @@ def _ppm_pixel(data, x, y):
     if x < 0 or x >= w or y < 0 or y >= h:
         return (0, 0, 0)
     offset = header_end + (y * w + x) * 3
+    if offset + 2 >= len(data):
+        return (0, 0, 0)
     return (data[offset], data[offset + 1], data[offset + 2])
 
 
