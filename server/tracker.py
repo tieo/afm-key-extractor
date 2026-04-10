@@ -1069,11 +1069,11 @@ def _detect_screen(ppm_data):
     if boot_matches >= 2:
         return "boot_picker"
 
-    # Bright screen with menubar but no recognized text
+    # Bright screen with menubar but no recognized text — could be recovery,
+    # setup wizard loading, or transient boot animation. Return unknown since
+    # we can't positively identify without OCR confirmation.
     if menubar_brightness > 100:
-        if center_brightness > 400:
-            return "unknown"  # could be setup wizard loading or OpenCore settings
-        return "recovery"  # menubar visible, dark center = likely recovery
+        return "unknown"
 
     return "unknown"
 
@@ -1428,66 +1428,53 @@ def _kill_vm():
 def _reboot_to_recovery():
     """Reboot VM via QEMU and navigate boot picker to recovery (macOS Base System).
 
-    OpenCore auto-boots the default entry after a ~5s countdown. We must
-    catch the boot picker before auto-boot, press right (to select recovery),
-    and Enter. Poll aggressively (every 2s) to catch it in time.
+    OpenCore auto-boots the default entry after a ~5s countdown. Strategy:
+    1. Send system_reset
+    2. Spam right-arrow every second starting at +3s to catch the boot picker
+       (right-arrow interrupts countdown AND selects recovery entry)
+    3. Once boot_picker is confirmed, send Enter
+    4. If we miss the boot picker, detect what booted and return that state
 
     Returns the detected screen state after boot ('recovery', 'setup_wizard', etc).
     """
     _monitor_cmd("system_reset")
     time.sleep(3)  # Brief wait for QEMU reset
 
-    # Poll aggressively for boot picker — it appears ~8-15s after reset
-    # and auto-boots after ~5s. We need to catch it fast.
-    emit("info", "vm", "Waiting for boot picker...")
-    for attempt in range(30):  # 30 × 2s = 60s max
+    # Phase 1: Spam right-arrow to intercept boot picker countdown.
+    # Boot picker appears ~4-8s after reset, auto-boots ~5s later.
+    # Send right-arrow every second for 15s to ensure we catch it.
+    emit("info", "vm", "Intercepting boot picker with right-arrow spam...")
+    boot_picker_seen = False
+    for i in range(15):
+        _send_key("right", 0.1)
+        time.sleep(0.5)
         ppm = _take_screenshot()
         state = _detect_screen(ppm)
-
         if state == "boot_picker":
-            emit("info", "vm", "Boot picker detected! Selecting recovery...")
-            # OpenCore needs a moment to accept input after appearing
-            time.sleep(2)
-            _send_key("right", 1)
-            time.sleep(1)
+            boot_picker_seen = True
+            emit("info", "vm", f"Boot picker confirmed at +{i}s, sending Enter...")
+            time.sleep(1)  # Brief pause to ensure selection registered
             _send_key("ret", 2)
             break
         elif state == "recovery":
             emit("info", "vm", "Already in recovery mode.")
             return "recovery"
-        elif state == "setup_wizard":
-            # Auto-boot already happened, went to Macintosh HD
-            emit("info", "vm", "Auto-boot went to setup wizard.")
-            return "setup_wizard"
-        time.sleep(2)
-    else:
-        # Never saw boot_picker in 60s
-        ppm = _take_screenshot()
-        state = _detect_screen(ppm)
-        emit("warning", "vm", f"Boot picker not detected in 60s (screen: {state})")
-        return state
+        time.sleep(0.4)
 
-    # Wait for recovery to load after selecting it
+    if not boot_picker_seen:
+        # The right-arrow spam may have selected recovery even though we
+        # never visually confirmed boot_picker (screen detection missed it).
+        # Send Enter anyway in case we're at the boot picker with recovery selected.
+        emit("info", "vm", "Boot picker not visually confirmed, sending Enter anyway...")
+        _send_key("ret", 2)
+
+    # Phase 2: Wait for recovery to load (or detect what actually booted)
     state, _ = _wait_for_screen(
-        {"recovery", "setup_wizard", "boot_picker"},
+        {"recovery", "setup_wizard", "desktop", "login_screen"},
         timeout=180,
         poll_interval=5,
-        msg="Waiting for recovery to load",
+        msg="Waiting for recovery after boot picker",
     )
-
-    # If still at boot picker (key didn't register), retry
-    if state == "boot_picker":
-        emit("info", "vm", "Still at boot picker, retrying...")
-        time.sleep(3)
-        _send_key("right", 1)
-        time.sleep(1)
-        _send_key("ret", 2)
-        state, _ = _wait_for_screen(
-            {"recovery", "setup_wizard"},
-            timeout=180,
-            poll_interval=5,
-            msg="Waiting for recovery (retry)",
-        )
 
     return state
 
