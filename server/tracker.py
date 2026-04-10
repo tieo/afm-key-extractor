@@ -602,7 +602,7 @@ def vm_start_setup():
                 "-drive",
                 f"id=InstallMedia,if=none,file={VM_DIR}/BaseSystem.img,format=raw",
                 "-device",
-                "ide-hd,bus=sata.3,drive=InstallMedia",
+                "ide-hd,bus=sata.3,drive=InstallMedia,id=install-media",
             ]
         )
 
@@ -1349,9 +1349,27 @@ def _wizard_identify(text: str) -> WizardScreen | None:
     return None
 
 
+def _eject_installer_media():
+    """Hot-remove the BaseSystem installer disk from the VM.
+
+    Without the recovery partition visible, Migration Assistant has no source
+    and either skips or offers a skip option. This prevents the post-migration
+    kernel panic caused by incompatible files transferred from the recovery image.
+    """
+    try:
+        resp = _monitor_cmd("device_del install-media")
+        emit("info", "vm", f"Ejected installer media: {resp!r}")
+    except Exception as e:
+        emit("warning", "vm", f"Failed to eject installer media: {e}")
+
+
 def _run_setup_wizard():
     """Walk through macOS setup wizard using version-specific screen definitions."""
     _set_phase("setup_wizard", "Automating setup wizard...")
+
+    # Eject the installer/recovery disk so Migration Assistant has no source.
+    _eject_installer_media()
+
     screens = WIZARD_SCREENS[MACOS_VERSION]
     emit("info", "vm", f"Using {MACOS_VERSION} definitions ({len(screens)} screens)")
 
