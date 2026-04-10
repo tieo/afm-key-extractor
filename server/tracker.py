@@ -1727,9 +1727,27 @@ def _auto_install_worker():
         emit("info", "vm", "Terminal is open.")
 
         # === STEP 4: Format disk ===
+        # First, list all disks so we can see the layout and find the 80GB disk.
+        emit("info", "vm", "Listing disks...")
+        _type_text("diskutil list")
+        _send_key("ret")
+        time.sleep(5)
+
+        # Save screenshot of disk list for debugging
+        ppm = _take_screenshot()
+        if ppm:
+            try:
+                img = _ppm_to_image(ppm)
+                if img:
+                    img.save("/tmp/airtag-vm-disklist.png")
+                    text = _ocr_region(img, 50, 50, 1230, 750)
+                    emit("info", "vm", f"Disk list OCR: {text[:500]!r}")
+            except Exception:
+                pass
+
         # QEMU attaches: sata.2=OpenCore, sata.3=BaseSystem, sata.4=MacHDD(80GB).
-        # macOS enumerates: disk0=OpenCore, disk1=BaseSystem, disk2=MacHDD.
-        # We must format disk2 (the 80GB main disk), NOT disk0.
+        # macOS enumerates: disk0=sata.2, disk1=sata.3, disk2=sata.4.
+        # Format the 80GB disk (disk2 when BaseSystem present, disk1 without).
         emit("info", "vm", "Formatting disk2 (80GB main disk, GUID + APFS)...")
         _type_text('diskutil eraseDisk APFS "Macintosh HD" GPT disk2')
         _send_key("ret")
@@ -1778,6 +1796,19 @@ def _auto_install_worker():
         emit("info", "vm", "Running startosinstall --agreetolicense...")
         _type_text('"$INST" --agreetolicense --volume "/Volumes/Macintosh HD"')
         _send_key("ret")
+
+        # Wait for startosinstall to show output, then save debug screenshot
+        time.sleep(15)
+        ppm = _take_screenshot()
+        if ppm:
+            try:
+                img = _ppm_to_image(ppm)
+                if img:
+                    img.save("/tmp/airtag-vm-startosinstall.png")
+                    text = _ocr_region(img, 50, 50, 1230, 750)
+                    emit("info", "vm", f"startosinstall screen: {text[:500]!r}")
+            except Exception:
+                pass
 
         _set_phase("installing", "macOS installation in progress. This takes 30-60 minutes...")
         emit(
