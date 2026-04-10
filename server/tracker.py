@@ -1177,22 +1177,30 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         WizardScreen("accessibility", ["accessibility", "features"], "Not Now"),
         WizardScreen("privacy", ["data", "privacy"], "Continue"),
         # Migration from recovery partition is unavoidable on Catalina —
+        # the transfer_info screen has NO "Don't transfer" option.
+        # Strategy: disable VM network (prevents kernel panic from network
+        # scanning), let migration run from macOS Base System, re-enable
+        # network after migration_complete.
         # transfer_info MUST come before migration — both screens' OCR text
         # contains "migration assistant", so the more specific match wins.
-        # The transfer_info screen has a "Don't transfer any information now"
-        # radio button — select it and click Continue to skip migration entirely.
         WizardScreen(
             "transfer_info",
             ["transfer information to this mac"],
             "",
-            custom_action=lambda: _skip_transfer(),
+            custom_action=lambda: _handle_transfer_info(),
+        ),
+        WizardScreen(
+            "select_transfer",
+            ["select the information to transfer"],
+            "",
+            custom_action=lambda: _uncheck_and_continue_transfer(),
         ),
         WizardScreen(
             "migration",
             ["migration assistant"],
-            "Continue",
+            "",
+            custom_action=lambda: _handle_migration(),
         ),
-        # Safety nets in case migration runs despite skip attempt:
         WizardScreen(
             "shutdown_dialog",
             ["want to shut"],
@@ -1315,35 +1323,74 @@ def _find_and_click(label: str) -> bool:
     return False
 
 
-def _skip_transfer() -> None:
-    """Select 'Don't transfer any information now' and click Continue.
+def _uncheck_and_continue_transfer() -> None:
+    """Uncheck all items on 'select the information to transfer' screen.
 
-    The transfer_info screen has radio buttons:
-      1. From a Mac, Time Machine backup, or startup disk (default)
-      2. From a Windows PC
-      3. Don't transfer any information now
-    Select the last radio button to skip migration entirely.
+    If items are checked, the migration will copy files from macOS Base System
+    to Macintosh HD, potentially corrupting the boot. Uncheck everything so
+    migration transfers nothing, then click Continue.
     """
-    emit("info", "vm", "  → Selecting 'Don't transfer any information now'")
+    emit("info", "vm", "  → Unchecking all transfer items to prevent file corruption")
 
-    # Try to find the radio button text via OCR (search full screen, not just buttons)
+    # Save debug screenshot
     ppm = _take_screenshot()
     img = _ppm_to_image(ppm)
     if img:
-        pos = _find_button_pos(img, "Don't transfer", min_y=0)
-        if not pos:
-            pos = _find_button_pos(img, "don't transfer", min_y=0)
-        if pos:
-            emit("info", "vm", f"  → Found 'Don't transfer' at ({pos[0]}, {pos[1]})")
-            _mouse_click(pos[0], pos[1], 0.5)
-        else:
-            # Fallback: the radio button is typically near bottom of the list,
-            # around y=530 on 1280x800, left-aligned around x=370
-            emit("info", "vm", "  → 'Don't transfer' not found by OCR, using fallback position")
-            _mouse_click(370, 530, 0.5)
+        img.save("/tmp/airtag-vm-select-transfer.png")
+
+    # The checkboxes are in the middle of the screen, left-aligned.
+    # Click each checkbox area to toggle it off. Typical positions for
+    # Catalina's transfer selection on 1280x800:
+    #   Applications ~y=310, Other files ~y=370, Computer settings ~y=430
+    # The checkboxes are around x=310
+    checkbox_positions = [
+        (310, 310),  # Applications
+        (310, 370),  # Other Files & Folders
+        (310, 430),  # Computer & Network Settings
+    ]
+    for x, y in checkbox_positions:
+        _mouse_click(x, y, 0.3)
+        time.sleep(0.5)
 
     time.sleep(1)
-    # Now click Continue
+    if not _find_and_click("Continue"):
+        _mouse_click(959, 665, 0.3)
+    time.sleep(2)
+
+
+def _handle_transfer_info() -> None:
+    """Wait on transfer_info screen then click Continue.
+
+    Network is already disabled (by _handle_migration). The source search
+    finds macOS Base System quickly. Click Continue to proceed to the
+    'select the information to transfer' screen, then migration runs.
+    """
+    _handle_transfer_info.attempts = getattr(_handle_transfer_info, "attempts", 0) + 1
+    attempt = _handle_transfer_info.attempts
+    emit("info", "vm", f"  → transfer_info attempt {attempt}")
+
+    # Wait for source search to settle, then click Continue
+    time.sleep(5)
+    if not _find_and_click("Continue"):
+        _mouse_click(959, 665, 0.3)
+    time.sleep(2)
+
+
+def _handle_migration() -> None:
+    """Disable network and click Continue on migration assistant intro.
+
+    Network must be disabled BEFORE proceeding to transfer_info to prevent
+    kernel panics from Migration Assistant's network scanning.
+    """
+    _handle_migration.attempts = getattr(_handle_migration, "attempts", 0) + 1
+    attempt = _handle_migration.attempts
+    emit("info", "vm", f"  → migration attempt {attempt}")
+
+    if attempt == 1:
+        emit("info", "vm", "  → Disabling VM network to prevent migration crash")
+        _monitor_cmd("set_link net0 off")
+        time.sleep(1)
+
     if not _find_and_click("Continue"):
         _mouse_click(959, 665, 0.3)
     time.sleep(2)
@@ -1727,11 +1774,13 @@ def _run_setup_wizard():
                     _send_key(direction, 1)
 
                 _send_key("ret", 2)
-                boot_timeout = 180 if boot_attempt >= 3 else 120
+                # First attempt (default = Macintosh HD) gets extra time —
+                # post-migration first boot in QEMU can take 5+ minutes
+                boot_timeout = 300 if boot_attempt == 0 else 120
                 state, ppm = _wait_for_screen(
                     {"setup_wizard", "apple_logo", "desktop", "login_screen"},
                     timeout=boot_timeout,
-                    poll_interval=5,
+                    poll_interval=10,
                     msg="Waiting for macOS to boot after boot picker",
                 )
                 if state in ("desktop", "login_screen"):
