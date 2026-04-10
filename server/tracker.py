@@ -1743,17 +1743,27 @@ def _run_setup_wizard():
                 except Exception:
                     pass
 
-                # Cycle through entries: first try default, then arrow-right
-                if boot_attempt > 0:
+                # Cycle: default (Macintosh HD), left (macOS Base System),
+                # right (EFI / wrap), then repeat with longer timeout
+                if boot_attempt == 0:
+                    emit("info", "vm", "Boot picker: pressing Enter on default entry...")
+                elif boot_attempt == 1:
+                    emit("info", "vm", f"Boot picker attempt {boot_attempt}: arrow left + Enter")
+                    _send_key("left", 1)
+                elif boot_attempt == 2:
                     emit("info", "vm", f"Boot picker attempt {boot_attempt}: arrow right + Enter")
                     _send_key("right", 1)
                 else:
-                    emit("info", "vm", "Boot picker: pressing Enter on default entry...")
+                    # After trying all entries, alternate left/right with longer wait
+                    direction = "left" if boot_attempt % 2 == 1 else "right"
+                    emit("info", "vm", f"Boot picker attempt {boot_attempt}: {direction} + Enter")
+                    _send_key(direction, 1)
 
                 _send_key("ret", 2)
+                boot_timeout = 180 if boot_attempt >= 3 else 120
                 state, ppm = _wait_for_screen(
                     {"setup_wizard", "apple_logo", "desktop", "login_screen"},
-                    timeout=90,
+                    timeout=boot_timeout,
                     poll_interval=5,
                     msg="Waiting for macOS to boot after boot picker",
                 )
