@@ -1197,6 +1197,15 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
             "",
             custom_action=lambda: _escape_migration(),
         ),
+        # Cmd+Q on Migration Assistant triggers a "Do you want to shut down?" dialog.
+        # OCR may capture it as "shut down" or just "shut". The dialog has
+        # [Restart] and [Shut Down] buttons. Click Restart to continue setup.
+        # Match on just "shut" since OCR truncation may cut off "down".
+        WizardScreen(
+            "shutdown_dialog",
+            ["want to shut"],
+            "Restart",
+        ),
         WizardScreen(
             "transferring",
             ["transferring your information"],
@@ -1502,17 +1511,17 @@ def _create_account_from_recovery():
     user = VM_USER
     pw = VM_PASSWORD
 
-    # We're running Terminal on the installed macOS (not recovery).
-    # The directory service is running, so use `dscl .` for the local directory.
+    # Terminal opens as _mbsetupuser, not root. Use sudo for privileged commands.
+    # On Catalina, _mbsetupuser has passwordless sudo during Setup Assistant.
     dscl_cmds = [
-        f"dscl . -create /Users/{user}",
-        f"dscl . -create /Users/{user} UserShell /bin/bash",
-        f'dscl . -create /Users/{user} RealName "{user}"',
-        f"dscl . -create /Users/{user} UniqueID 501",
-        f"dscl . -create /Users/{user} PrimaryGroupID 20",
-        f"dscl . -create /Users/{user} NFSHomeDirectory /Users/{user}",
-        f"dscl . -passwd /Users/{user} {pw}",
-        f"dscl . -append /Groups/admin GroupMembership {user}",
+        f"sudo dscl . -create /Users/{user}",
+        f"sudo dscl . -create /Users/{user} UserShell /bin/bash",
+        f'sudo dscl . -create /Users/{user} RealName "{user}"',
+        f"sudo dscl . -create /Users/{user} UniqueID 501",
+        f"sudo dscl . -create /Users/{user} PrimaryGroupID 20",
+        f"sudo dscl . -create /Users/{user} NFSHomeDirectory /Users/{user}",
+        f"sudo dscl . -passwd /Users/{user} {pw}",
+        f"sudo dscl . -append /Groups/admin GroupMembership {user}",
     ]
 
     for cmd in dscl_cmds:
@@ -1521,10 +1530,10 @@ def _create_account_from_recovery():
         time.sleep(2)
 
     # Create home directory and skip Setup Assistant
-    _type_text(f"createhomedir -c -u {user}")
+    _type_text(f"sudo createhomedir -c -u {user}")
     _send_key("ret")
     time.sleep(2)
-    _type_text("touch /var/db/.AppleSetupDone")
+    _type_text("sudo touch /var/db/.AppleSetupDone")
     _send_key("ret")
     time.sleep(1)
 
