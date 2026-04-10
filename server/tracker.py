@@ -1775,11 +1775,13 @@ def _auto_install_worker():
             except Exception:
                 pass
 
-        # Format disk0 — this is the disk that worked in the first successful install.
-        # With QEMU snapshot=on on OpenCore, disk0 writes go to a COW overlay
-        # backed by host disk space, giving effectively unlimited capacity.
-        emit("info", "vm", "Formatting disk0 (GUID Partition Map + APFS)...")
-        _type_text('diskutil eraseDisk APFS "Macintosh HD" GPT disk0')
+        # Find the 80GB MacHDD — disk numbering varies between boots.
+        # Match the exact byte count of an 80GiB qcow2 image (80*1024^3).
+        emit("info", "vm", "Finding and formatting 80GB MacHDD disk...")
+        _type_text(
+            'for d in disk0 disk1 disk2 disk3;do diskutil info $d 2>/dev/null|'
+            'grep -q 85899345920&&diskutil eraseDisk APFS "Macintosh HD" GPT $d&&break;done'
+        )
         _send_key("ret")
 
         # Poll until format completes — we can't read terminal text, but format takes ~15-30s.
