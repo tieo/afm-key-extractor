@@ -1181,15 +1181,21 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         # picker handler deals with the post-migration reboot.
         # transfer_info MUST come before migration — both screens' OCR text
         # contains "migration assistant", so the more specific match wins.
+        # Without installer media, Migration Assistant has no source.
+        # transfer_info shows "Looking for other sources..." with greyed-out Continue.
+        # Strategy: on transfer_info, click Back to return to migration intro,
+        # then on migration intro, use Cmd+Q to quit Setup Assistant.
         WizardScreen(
             "transfer_info",
             ["transfer information to this mac"],
-            "Continue",
+            "",
+            custom_action=lambda: _escape_transfer_info(),
         ),
         WizardScreen(
             "migration",
             ["migration assistant"],
-            "Continue",
+            "",
+            custom_action=lambda: _escape_migration(),
         ),
         WizardScreen(
             "transferring",
@@ -1302,6 +1308,55 @@ def _find_and_click(label: str) -> bool:
             return True
     emit("warning", "vm", f"Button '{label}' not found after 2 attempts")
     return False
+
+
+def _escape_transfer_info() -> None:
+    """Escape the Transfer Info screen when no sources are available.
+
+    Without installer media, there are no migration sources. Continue is greyed out.
+    Click Back to return to the migration intro screen where Cmd+Q can quit.
+    """
+    _escape_transfer_info.attempts = getattr(_escape_transfer_info, "attempts", 0) + 1
+    attempt = _escape_transfer_info.attempts
+    emit("info", "vm", f"  → transfer_info escape attempt {attempt}")
+
+    if attempt <= 2:
+        # Try clicking Back button
+        if not _find_and_click("Back"):
+            _mouse_click(196, 665, 0.3)  # Back button position
+        time.sleep(2)
+    elif attempt <= 4:
+        # Try Cmd+Q directly on this screen
+        emit("info", "vm", "  → Trying Cmd+Q to quit Setup Assistant")
+        _send_key("meta_l-q", 2)
+        time.sleep(3)
+    else:
+        # Wait and retry — maybe the search will finish
+        time.sleep(5)
+
+
+def _escape_migration() -> None:
+    """Escape the Migration Assistant intro screen.
+
+    Without installer media, there's nothing to migrate. Try Cmd+Q to quit
+    Setup Assistant and skip to account creation or desktop.
+    """
+    _escape_migration.attempts = getattr(_escape_migration, "attempts", 0) + 1
+    attempt = _escape_migration.attempts
+    emit("info", "vm", f"  → migration escape attempt {attempt}")
+
+    if attempt <= 3:
+        # Try Cmd+Q to quit Migration Assistant / Setup Assistant
+        emit("info", "vm", "  → Trying Cmd+Q to quit Setup Assistant")
+        _send_key("meta_l-q", 2)
+        time.sleep(3)
+    elif attempt <= 6:
+        # Try clicking Continue (maybe it works without sources)
+        if not _find_and_click("Continue"):
+            _mouse_click(959, 665, 0.3)
+        time.sleep(2)
+    else:
+        time.sleep(5)
 
 
 def _wait_for_transfer() -> None:
