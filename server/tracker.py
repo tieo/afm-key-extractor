@@ -1506,9 +1506,11 @@ def _create_account_from_recovery():
         _set_phase("error", "Could not open Terminal from Setup Assistant")
         return
 
-    # Test if sudo works (non-interactive — fails immediately if password required)
+    # Test if sudo works (non-interactive — fails immediately if password required).
+    # Print exit code with "RC" prefix. The command text has "RC$?" which won't
+    # match "RC0" or "RC1" in OCR, avoiding false positives.
     emit("info", "vm", "Testing sudo access...")
-    _type_text("sudo -n true 2>&1 && echo SUDO_OK || echo SUDO_FAIL")
+    _type_text("sudo -n true 2>/dev/null; echo RC$?")
     _send_key("ret")
     time.sleep(3)
 
@@ -1520,9 +1522,10 @@ def _create_account_from_recovery():
             if img:
                 text = _ocr_region(img, 50, 50, 1230, 750)
                 emit("info", "vm", f"Sudo test result: {text[:300]!r}")
-                if "SUDO_OK" in text.upper():
+                if "RC0" in text:
                     sudo_works = True
-                elif "SUDO_FAIL" in text.upper() or "password" in text.lower():
+                # RC1 = sudo failed, or password prompt visible
+                elif "RC1" in text or "password" in text.lower():
                     sudo_works = False
         except Exception:
             pass
