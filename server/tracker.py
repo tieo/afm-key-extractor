@@ -1176,24 +1176,25 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         WizardScreen("dictation", ["dictation"], "Continue"),
         WizardScreen("accessibility", ["accessibility", "features"], "Not Now"),
         WizardScreen("privacy", ["data", "privacy"], "Continue"),
-        # Migration from recovery partition is unavoidable on Catalina —
-        # the transfer_info screen has NO "Don't transfer" option.
-        # Strategy: disable VM network (prevents kernel panic from network
-        # scanning), let migration run from macOS Base System, re-enable
-        # network after migration_complete.
+        # Migration from recovery partition CANNOT be allowed — it copies
+        # files from macOS Base System to Macintosh HD, corrupting the boot.
+        # The transfer_info screen has NO "Don't transfer" option in Catalina.
+        # Strategy: Cmd+Q on migration intro to quit Setup Assistant, which
+        # triggers a "Do you want to shut down?" dialog. Click Restart —
+        # after reboot, Setup Assistant resumes and may skip past migration.
         # transfer_info MUST come before migration — both screens' OCR text
         # contains "migration assistant", so the more specific match wins.
         WizardScreen(
             "transfer_info",
             ["transfer information to this mac"],
             "",
-            custom_action=lambda: _handle_transfer_info(),
+            custom_action=lambda: _escape_transfer_info(),
         ),
         WizardScreen(
             "select_transfer",
             ["select the information to transfer"],
             "",
-            custom_action=lambda: _uncheck_and_continue_transfer(),
+            custom_action=lambda: _escape_transfer_info(),
         ),
         WizardScreen(
             "migration",
@@ -1206,6 +1207,7 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
             ["want to shut"],
             "Restart",
         ),
+        # Safety nets in case migration runs:
         WizardScreen(
             "transferring",
             ["transferring your information"],
@@ -1323,77 +1325,43 @@ def _find_and_click(label: str) -> bool:
     return False
 
 
-def _uncheck_and_continue_transfer() -> None:
-    """Uncheck all items on 'select the information to transfer' screen.
-
-    If items are checked, the migration will copy files from macOS Base System
-    to Macintosh HD, potentially corrupting the boot. Uncheck everything so
-    migration transfers nothing, then click Continue.
-    """
-    emit("info", "vm", "  → Unchecking all transfer items to prevent file corruption")
-
-    # Save debug screenshot
-    ppm = _take_screenshot()
-    img = _ppm_to_image(ppm)
-    if img:
-        img.save("/tmp/airtag-vm-select-transfer.png")
-
-    # The checkboxes are in the middle of the screen, left-aligned.
-    # Click each checkbox area to toggle it off. Typical positions for
-    # Catalina's transfer selection on 1280x800:
-    #   Applications ~y=310, Other files ~y=370, Computer settings ~y=430
-    # The checkboxes are around x=310
-    checkbox_positions = [
-        (310, 310),  # Applications
-        (310, 370),  # Other Files & Folders
-        (310, 430),  # Computer & Network Settings
-    ]
-    for x, y in checkbox_positions:
-        _mouse_click(x, y, 0.3)
-        time.sleep(0.5)
-
-    time.sleep(1)
-    if not _find_and_click("Continue"):
-        _mouse_click(959, 665, 0.3)
-    time.sleep(2)
-
-
-def _handle_transfer_info() -> None:
-    """Wait on transfer_info screen then click Continue.
-
-    Network is already disabled (by _handle_migration). The source search
-    finds macOS Base System quickly. Click Continue to proceed to the
-    'select the information to transfer' screen, then migration runs.
-    """
-    _handle_transfer_info.attempts = getattr(_handle_transfer_info, "attempts", 0) + 1
-    attempt = _handle_transfer_info.attempts
-    emit("info", "vm", f"  → transfer_info attempt {attempt}")
-
-    # Wait for source search to settle, then click Continue
-    time.sleep(5)
-    if not _find_and_click("Continue"):
-        _mouse_click(959, 665, 0.3)
-    time.sleep(2)
+def _escape_transfer_info() -> None:
+    """Escape from transfer_info or select_transfer screens via Cmd+Q."""
+    emit("info", "vm", "  → On transfer/select screen, pressing Cmd+Q to quit")
+    _send_key("meta_l-q")
+    time.sleep(3)
 
 
 def _handle_migration() -> None:
-    """Disable network and click Continue on migration assistant intro.
+    """Try to skip Migration Assistant via Cmd+Q.
 
-    Network must be disabled BEFORE proceeding to transfer_info to prevent
-    kernel panics from Migration Assistant's network scanning.
+    Cmd+Q on the migration screen quits Setup Assistant, which shows a
+    'Do you want to shut down?' dialog. The shutdown_dialog handler clicks
+    Restart. After reboot, Setup Assistant resumes — it may skip past
+    migration on subsequent launches.
+
+    If Cmd+Q fails or migration keeps reappearing, fall back to letting
+    migration proceed (with network disabled to prevent kernel panic).
     """
     _handle_migration.attempts = getattr(_handle_migration, "attempts", 0) + 1
     attempt = _handle_migration.attempts
     emit("info", "vm", f"  → migration attempt {attempt}")
 
-    if attempt == 1:
-        emit("info", "vm", "  → Disabling VM network to prevent migration crash")
-        _monitor_cmd("set_link net0 off")
-        time.sleep(1)
-
-    if not _find_and_click("Continue"):
-        _mouse_click(959, 665, 0.3)
-    time.sleep(2)
+    if attempt <= 2:
+        # Try Cmd+Q to quit Setup Assistant and skip migration
+        emit("info", "vm", "  → Pressing Cmd+Q to skip migration")
+        _send_key("meta_l-q")
+        time.sleep(3)
+    else:
+        # Cmd+Q didn't work — fall back to letting migration proceed
+        # with network disabled to prevent kernel panic
+        if attempt == 3:
+            emit("info", "vm", "  → Cmd+Q failed, falling back to migration with network off")
+            _monitor_cmd("set_link net0 off")
+            time.sleep(1)
+        if not _find_and_click("Continue"):
+            _mouse_click(959, 665, 0.3)
+        time.sleep(2)
 
 
 def _on_migration_complete() -> None:
