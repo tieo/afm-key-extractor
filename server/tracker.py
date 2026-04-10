@@ -1727,29 +1727,33 @@ def _auto_install_worker():
         emit("info", "vm", "Terminal is open.")
 
         # === STEP 4: Format disk ===
-        # First, list all disks so we can see the layout and find the 80GB disk.
-        emit("info", "vm", "Listing disks...")
-        _type_text("diskutil list")
+        # Show physical disk sizes for debugging, then format.
+        emit("info", "vm", "Checking disk sizes...")
+        _type_text(
+            'for d in disk0 disk1 disk2 disk3; do'
+            ' echo "==$d=="; diskutil info $d 2>/dev/null | grep "Disk Size";'
+            " done"
+        )
         _send_key("ret")
         time.sleep(5)
 
-        # Save screenshot of disk list for debugging
+        # Save screenshot of disk sizes
         ppm = _take_screenshot()
         if ppm:
             try:
                 img = _ppm_to_image(ppm)
                 if img:
-                    img.save("/tmp/airtag-vm-disklist.png")
+                    img.save("/tmp/airtag-vm-disksizes.png")
                     text = _ocr_region(img, 50, 50, 1230, 750)
-                    emit("info", "vm", f"Disk list OCR: {text[:500]!r}")
+                    emit("info", "vm", f"Disk sizes: {text[:400]!r}")
             except Exception:
                 pass
 
-        # QEMU attaches: sata.2=OpenCore, sata.3=BaseSystem, sata.4=MacHDD(80GB).
-        # macOS enumerates: disk0=sata.2, disk1=sata.3, disk2=sata.4.
-        # Format the 80GB disk (disk2 when BaseSystem present, disk1 without).
-        emit("info", "vm", "Formatting disk2 (80GB main disk, GUID + APFS)...")
-        _type_text('diskutil eraseDisk APFS "Macintosh HD" GPT disk2')
+        # Format disk0 — this is the disk that worked in the first successful install.
+        # With QEMU snapshot=on on OpenCore, disk0 writes go to a COW overlay
+        # backed by host disk space, giving effectively unlimited capacity.
+        emit("info", "vm", "Formatting disk0 (GUID Partition Map + APFS)...")
+        _type_text('diskutil eraseDisk APFS "Macintosh HD" GPT disk0')
         _send_key("ret")
 
         # Poll until format completes — we can't read terminal text, but format takes ~15-30s.
