@@ -1425,45 +1425,206 @@ def _kill_vm():
     _systemctl("stop", "airtag-novnc")
 
 
-def _launch_vm_no_installer():
-    """Launch QEMU without the installer media (BaseSystem.img).
+def _create_account_from_recovery():
+    """Bypass Setup Assistant by creating user account from recovery Terminal.
 
-    Uses the same args as vm_start_setup() but skips the InstallMedia drive.
-    BaseSystem.img must be hidden/removed before calling this.
+    Catalina's Migration Assistant cannot be skipped and causes kernel panics
+    when migrating from the recovery partition. Instead, we:
+    1. Reboot into recovery (macOS Base System) via boot picker
+    2. Open Terminal via Utilities menu
+    3. Mount Macintosh HD Data volume and create user account via dscl
+    4. Touch .AppleSetupDone to skip Setup Assistant
+    5. Reboot into Macintosh HD → boots straight to login/desktop
     """
-    qemu_args = [
-        "qemu-system-x86_64",
-        "-enable-kvm", "-m", "8192",
-        "-cpu", "Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check",
-        "-machine", "q35",
-        "-device", "qemu-xhci,id=xhci",
-        "-device", "usb-kbd,bus=xhci.0",
-        "-device", "usb-tablet,bus=xhci.0",
-        "-smp", "4,cores=2",
-        "-global", "ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off",
-        "-device", "isa-applesmc,osk=ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc",
-        "-drive", f"if=pflash,format=raw,readonly=on,file={VM_DIR}/OVMF_CODE_4M.fd",
-        "-drive", f"if=pflash,format=raw,file={VM_DIR}/OVMF_VARS-1920x1080.fd",
-        "-smbios", "type=2",
-        "-device", "ich9-ahci,id=sata",
-        "-drive", f"id=OpenCoreBoot,if=none,snapshot=on,format=qcow2,file={VM_DIR}/OpenCore/OpenCore.qcow2",
-        "-device", "ide-hd,bus=sata.2,drive=OpenCoreBoot",
-        "-drive", f"id=MacHDD,if=none,file={VM_DIR}/mac_hdd_ng.img,format=qcow2",
-        "-device", "ide-hd,bus=sata.4,drive=MacHDD",
-        "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
-        "-device", "vmxnet3,netdev=net0,id=net0,mac=52:54:00:c9:18:27",
-        "-device", "vmware-svga",
-        "-vnc", "127.0.0.1:1",
-        "-monitor", "unix:/tmp/airtag-vm-monitor.sock,server,nowait",
-        "-qmp", "unix:/tmp/airtag-vm-qmp.sock,server,nowait",
-        "-daemonize",
-        "-pidfile", "/tmp/airtag-vm-setup.pid",
+    _set_phase("setup_wizard", "Bypassing Setup Assistant via recovery Terminal...")
+
+    # Reboot the VM
+    emit("info", "vm", "Rebooting VM to enter recovery mode...")
+    _monitor_cmd("system_reset")
+    time.sleep(10)
+
+    # Wait for boot picker
+    state, _ = _wait_for_screen(
+        {"boot_picker", "recovery"},
+        timeout=180,
+        poll_interval=5,
+        msg="Waiting for boot picker after reboot",
+    )
+
+    if state == "boot_picker":
+        # Select macOS Base System (recovery) — it's the right entry
+        emit("info", "vm", "Boot picker: selecting macOS Base System (recovery)...")
+        time.sleep(5)  # OpenCore needs time before accepting input
+        _send_key("right", 1)
+        time.sleep(1)
+        _send_key("ret", 2)
+
+        # Wait for recovery
+        state, _ = _wait_for_screen(
+            {"recovery", "setup_wizard"},
+            timeout=180,
+            poll_interval=5,
+            msg="Waiting for recovery to load",
+        )
+
+        if state == "setup_wizard":
+            # If setup wizard shows again, the reboot went to Macintosh HD.
+            # Try one more time — reboot and explicitly navigate to recovery.
+            emit("info", "vm", "Got setup wizard again, rebooting to try recovery...")
+            _monitor_cmd("system_reset")
+            time.sleep(10)
+            state, _ = _wait_for_screen(
+                "boot_picker", timeout=180, poll_interval=5,
+                msg="Waiting for boot picker (retry)",
+            )
+            if state == "boot_picker":
+                time.sleep(5)
+                _send_key("right", 1)
+                time.sleep(1)
+                _send_key("ret", 2)
+                state, _ = _wait_for_screen(
+                    "recovery", timeout=180, poll_interval=5,
+                    msg="Waiting for recovery (retry)",
+                )
+
+    if state != "recovery":
+        _set_phase("error", f"Could not reach recovery mode (screen: {state})")
+        return
+
+    # Let recovery GUI fully render
+    emit("info", "vm", "Recovery loaded. Waiting for GUI to settle...")
+    time.sleep(5)
+
+    # Open Terminal via Utilities menu
+    # Menu bar: [Apple x=20] [Recovery x=83] [File x=144] [Edit x=187] [Utilities x=242] [Window x=309]
+    emit("info", "vm", "Opening Terminal via Utilities menu...")
+    _mouse_click(242, 10, 1.5)
+    _mouse_click(242, 55, 4)
+    time.sleep(1)
+    _mouse_click(400, 300, 1)  # Focus Terminal window
+
+    state, _ = _wait_for_screen("terminal", timeout=15, poll_interval=2)
+    if state != "terminal":
+        emit("info", "vm", f"Terminal check: got '{state}', retrying...")
+        _send_key("escape", 0.5)
+        time.sleep(1)
+        _mouse_click(242, 10, 1.5)
+        _mouse_click(242, 55, 4)
+        time.sleep(2)
+        _mouse_click(400, 300, 1)
+        state, _ = _wait_for_screen("terminal", timeout=10, poll_interval=2)
+        if state != "terminal":
+            emit(
+                "warning", "vm",
+                f"Terminal detection returned '{state}' — proceeding anyway",
+            )
+
+    emit("info", "vm", "Terminal is open. Creating user account...")
+
+    # Mount the Data volume (Catalina uses separate System + Data volumes)
+    _type_text('diskutil mount "Macintosh HD - Data"')
+    _send_key("ret")
+    time.sleep(5)
+
+    # Take debug screenshot to see mount result
+    ppm = _take_screenshot()
+    if ppm:
+        try:
+            img = _ppm_to_image(ppm)
+            if img:
+                img.save("/tmp/airtag-vm-recovery-mount.png")
+                text = _ocr_region(img, 50, 50, 1230, 750)
+                emit("info", "vm", f"Mount result: {text[:300]!r}")
+        except Exception:
+            pass
+
+    # Build the dscl database path — use a variable to keep commands shorter
+    # On Catalina, user records live in the Data volume's dslocal database
+    db = "/Volumes/Macintosh HD - Data/var/db/dslocal/nodes/Default"
+    user = VM_USER
+    pw = VM_PASSWORD
+
+    # Create user account via dscl against the mounted directory
+    dscl_cmds = [
+        f'D="{db}"',
+        f'dscl -f "$D" localonly -create /Local/Default/Users/{user}',
+        f'dscl -f "$D" localonly -create /Local/Default/Users/{user} UserShell /bin/bash',
+        f'dscl -f "$D" localonly -create /Local/Default/Users/{user} RealName "{user}"',
+        f'dscl -f "$D" localonly -create /Local/Default/Users/{user} UniqueID 501',
+        f'dscl -f "$D" localonly -create /Local/Default/Users/{user} PrimaryGroupID 20',
+        f'dscl -f "$D" localonly -create /Local/Default/Users/{user} NFSHomeDirectory /Users/{user}',
+        f'dscl -f "$D" localonly -passwd /Local/Default/Users/{user} {pw}',
+        f'dscl -f "$D" localonly -append /Local/Default/Groups/admin GroupMembership {user}',
     ]
-    result = sp.run(qemu_args, capture_output=True, text=True, timeout=30)
-    if result.returncode != 0:
-        raise RuntimeError(f"QEMU failed: {result.stderr}")
-    emit("info", "vm", "VM restarted without installer media")
-    _systemctl("start", "airtag-novnc")
+
+    for cmd in dscl_cmds:
+        _type_text(cmd)
+        _send_key("ret")
+        time.sleep(2)
+
+    # Create home directory and skip Setup Assistant
+    _type_text(f'mkdir -p "/Volumes/Macintosh HD - Data/Users/{user}"')
+    _send_key("ret")
+    time.sleep(1)
+    _type_text('touch "/Volumes/Macintosh HD - Data/var/db/.AppleSetupDone"')
+    _send_key("ret")
+    time.sleep(1)
+
+    # Verify .AppleSetupDone exists
+    _type_text('ls -la "/Volumes/Macintosh HD - Data/var/db/.AppleSetupDone"')
+    _send_key("ret")
+    time.sleep(3)
+
+    # Take debug screenshot
+    ppm = _take_screenshot()
+    if ppm:
+        try:
+            img = _ppm_to_image(ppm)
+            if img:
+                img.save("/tmp/airtag-vm-recovery-account.png")
+                text = _ocr_region(img, 50, 50, 1230, 750)
+                emit("info", "vm", f"Account creation result: {text[:500]!r}")
+        except Exception:
+            pass
+
+    # Reboot into Macintosh HD
+    emit("info", "vm", "Account created. Rebooting into Macintosh HD...")
+    _type_text("reboot")
+    _send_key("ret")
+    time.sleep(15)
+
+    # Wait for boot picker, then select Macintosh HD (default/first entry)
+    state, _ = _wait_for_screen(
+        {"boot_picker", "desktop", "login_screen"},
+        timeout=180,
+        poll_interval=5,
+        msg="Waiting for boot after account creation",
+    )
+
+    if state == "boot_picker":
+        emit("info", "vm", "Boot picker: selecting Macintosh HD (first entry)...")
+        time.sleep(5)
+        _send_key("ret", 2)  # Default entry = Macintosh HD
+
+        state, _ = _wait_for_screen(
+            {"desktop", "login_screen", "setup_wizard"},
+            timeout=300,
+            poll_interval=5,
+            msg="Waiting for macOS to boot after account creation",
+        )
+
+    if state in ("desktop", "login_screen"):
+        pw_path = DATA_DIR / "vm-password"
+        pw_path.write_text(VM_PASSWORD)
+        pw_path.chmod(0o600)
+        _set_phase("done", "macOS setup complete!")
+        emit("info", "vm", f"Account: {VM_USER} / {VM_PASSWORD}")
+    elif state == "setup_wizard":
+        # .AppleSetupDone didn't work or path was wrong — fall back to wizard
+        emit("warning", "vm", "Setup wizard appeared despite .AppleSetupDone — running wizard...")
+        _run_setup_wizard()
+    else:
+        _set_phase("error", f"Unexpected screen after account creation: {state}")
 
 
 def _run_setup_wizard():
@@ -1634,7 +1795,7 @@ def _auto_install_worker():
 
         # macOS already installed — setup wizard is showing
         if state == "setup_wizard":
-            _run_setup_wizard()
+            _create_account_from_recovery()
             return
 
         if state == "boot_picker":
@@ -1670,7 +1831,7 @@ def _auto_install_worker():
                     msg="Waiting for boot to proceed (retry)",
                 )
             if state == "setup_wizard":
-                _run_setup_wizard()
+                _create_account_from_recovery()
                 return
         elif state != "recovery":
             _set_phase("error", f"Expected boot picker or recovery, got: {state}")
@@ -1718,10 +1879,7 @@ def _auto_install_worker():
                             )
                             _send_key("ret", 1)
                         elif screen == "setup_wizard":
-                            _set_phase(
-                                "done",
-                                "macOS is installed! Setup wizard is ready in VNC.",
-                            )
+                            _create_account_from_recovery()
                             return
                         elif screen == "apple_logo":
                             if poll % 6 == 0:
@@ -1761,7 +1919,7 @@ def _auto_install_worker():
             time.sleep(2)
             s, _ = _wait_for_screen({"recovery", "setup_wizard"}, timeout=5, poll_interval=1)
             if s == "setup_wizard":
-                _run_setup_wizard()
+                _create_account_from_recovery()
                 return
             if s == "recovery":
                 break
@@ -1797,7 +1955,7 @@ def _auto_install_worker():
                     "vm",
                     "Setup wizard detected instead of recovery Terminal — macOS is already installed.",
                 )
-                _run_setup_wizard()
+                _create_account_from_recovery()
                 return
             if state != "terminal":
                 emit(
@@ -1942,42 +2100,10 @@ def _auto_install_worker():
                     emit("info", "vm", f"macOS installing... ({elapsed_min} min)")
 
             elif screen == "setup_wizard":
-                # Restart VM without installer media so Migration Assistant
-                # has no source. SATA bus doesn't support hot-unplug, so we
-                # kill QEMU and restart without BaseSystem.img.
-                base_img = VM_DIR / "BaseSystem.img"
-                base_img_hidden = VM_DIR / ".BaseSystem.img.hidden"
-                if base_img.exists():
-                    emit("info", "vm", "Restarting VM without installer media to prevent migration...")
-                    _kill_vm()
-                    time.sleep(3)
-                    base_img.rename(base_img_hidden)
-                    try:
-                        _launch_vm_no_installer()
-                    finally:
-                        # Restore BaseSystem.img for future reinstalls
-                        if base_img_hidden.exists():
-                            base_img_hidden.rename(base_img)
-                    time.sleep(10)
-                    # Wait for boot picker or wizard
-                    state, _ = _wait_for_screen(
-                        {"setup_wizard", "boot_picker", "desktop", "login_screen"},
-                        timeout=180,
-                        poll_interval=5,
-                        msg="Waiting for wizard after VM restart",
-                    )
-                    if state == "boot_picker":
-                        time.sleep(5)
-                        _send_key("right", 1)
-                        time.sleep(1)
-                        _send_key("ret", 2)
-                        state, _ = _wait_for_screen(
-                            {"setup_wizard", "desktop", "login_screen"},
-                            timeout=180,
-                            poll_interval=5,
-                            msg="Waiting for macOS to boot",
-                        )
-                _run_setup_wizard()
+                # Catalina's Migration Assistant cannot be skipped and causes
+                # kernel panics. Instead, reboot into recovery and create the
+                # user account from Terminal, bypassing Setup Assistant entirely.
+                _create_account_from_recovery()
                 return
 
             elif screen == "uefi_error":
