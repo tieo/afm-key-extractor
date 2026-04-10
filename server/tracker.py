@@ -1436,7 +1436,11 @@ def _reboot_to_recovery():
     Returns the detected screen state after boot.
     """
     _monitor_cmd("system_reset")
-    time.sleep(3)  # Brief wait for QEMU reset
+
+    # OpenCore takes 8-15s to show the boot picker after reset.
+    # Wait long enough for the UEFI to initialize and OpenCore to render.
+    # Too short = we detect a stale/pre-boot screen as boot_picker.
+    time.sleep(10)
 
     # Wait for boot picker to appear
     emit("info", "vm", "Waiting for boot picker after reset...")
@@ -1460,10 +1464,11 @@ def _reboot_to_recovery():
     # Boot picker is showing. After install, entries are:
     # [EFI] [macOS Base System] [Macintosh HD*]  (* = auto-selected)
     # Press left once to select macOS Base System (recovery).
+    # Wait 5s for OpenCore to accept input (same as initial boot logic).
     emit("info", "vm", "Selecting macOS Base System (left from Macintosh HD)...")
-    time.sleep(2)  # Let boot picker fully settle
+    time.sleep(5)
     _send_key("left", 1)
-    time.sleep(1)
+    time.sleep(2)
 
     # Save debug screenshot to verify selection
     ppm = _take_screenshot()
