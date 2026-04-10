@@ -1009,6 +1009,8 @@ def _detect_screen(ppm_data):
         "data and privacy",
         "migration assistant",
         "transfer information",
+        "transferring your information",
+        "migration complete",
         "apple id",
         "terms and conditions",
         "create a computer account",
@@ -1174,20 +1176,31 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         WizardScreen("dictation", ["dictation"], "Continue"),
         WizardScreen("accessibility", ["accessibility", "features"], "Not Now"),
         WizardScreen("privacy", ["data", "privacy"], "Continue"),
-        # Migration from recovery partition breaks Macintosh HD boot.
+        # Migration from recovery partition is unavoidable on Catalina —
+        # there is no "Don't transfer" option. Let it proceed; the boot
+        # picker handler deals with the post-migration reboot.
         # transfer_info MUST come before migration — both screens' OCR text
         # contains "migration assistant", so the more specific match wins.
         WizardScreen(
             "transfer_info",
             ["transfer information to this mac"],
-            "",
-            custom_action=lambda: _handle_transfer_info(),
+            "Continue",
         ),
         WizardScreen(
             "migration",
             ["migration assistant"],
+            "Continue",
+        ),
+        WizardScreen(
+            "transferring",
+            ["transferring your information"],
             "",
-            custom_action=lambda: _skip_migration(),
+            custom_action=lambda: _wait_for_transfer(),
+        ),
+        WizardScreen(
+            "migration_complete",
+            ["migration complete"],
+            "Continue",
         ),
         WizardScreen(
             "apple_id", ["sign in with your apple id"], "Set Up Later", fallback_pos=(196, 670)
@@ -1291,100 +1304,14 @@ def _find_and_click(label: str) -> bool:
     return False
 
 
-def _skip_migration() -> None:
-    """Handle the Migration Assistant intro screen.
+def _wait_for_transfer() -> None:
+    """Wait while Migration Assistant transfers data.
 
-    This screen auto-advances to transfer_info in ~1 second as macOS detects
-    the recovery partition source. We have a tiny window to act. Try to find
-    and click 'Don't transfer any information now' if it exists, but NEVER
-    click Continue (which would start the migration).
+    The 'transferring your information' screen has no buttons — just a progress
+    indicator. Poll until the screen changes (migration_complete, reboot, etc.).
     """
-    _skip_migration.attempts = getattr(_skip_migration, "attempts", 0) + 1
-    attempt = _skip_migration.attempts
-
-    ppm = _take_screenshot()
-    img = _ppm_to_image(ppm) if ppm else None
-
-    if img:
-        img.save(f"/tmp/airtag-vm-migration-intro-{attempt}.png")
-        text = _ocr_region(img, 50, 50, 1230, 750)
-        emit("info", "vm", f"  → Migration OCR ({len(text)} chars): {text[:300]!r}")
-
-    # Try to find "Don't transfer" via OCR (full screen search)
-    if img:
-        for label in ["Don't transfer", "not transfer", "don't transfer"]:
-            pos = _find_button_pos(img, label, min_y=0)
-            if pos:
-                emit("info", "vm", f"  → Found '{label}' at {pos}, clicking + Continue")
-                _mouse_click(pos[0], pos[1], 0.5)
-                time.sleep(0.5)
-                if not _find_and_click("Continue"):
-                    _mouse_click(959, 665, 0.3)
-                time.sleep(2)
-                return
-
-    # Check if we're already on transfer_info (auto-advanced)
-    if img:
-        text_lower = text.lower() if text else ""
-        if "transfer information" in text_lower:
-            emit("info", "vm", "  → Already on transfer_info, not clicking anything")
-            return
-
-    # Fallback: try radio positions (only if we're on the actual migration intro)
-    y_positions = [500, 480, 520, 460, 540]
-    y = y_positions[(attempt - 1) % len(y_positions)]
-    emit("info", "vm", f"  → Trying radio position (380, {y}) [attempt {attempt}]")
-    _mouse_click(380, y, 0.5)
-    time.sleep(1)
-    # DON'T click Continue here — let the wizard loop retry and verify the screen
-
-
-def _handle_transfer_info() -> None:
-    """Handle 'Transfer Information to This Mac' — NEVER click Continue.
-
-    Migration from the recovery partition breaks Macintosh HD boot.
-    Strategy: try to go Back, try Escape, try deselecting the source.
-    Never click Continue under any circumstances.
-    """
-    _handle_transfer_info.attempts = getattr(_handle_transfer_info, "attempts", 0) + 1
-    attempt = _handle_transfer_info.attempts
-
-    ppm = _take_screenshot()
-    if ppm:
-        try:
-            img = _ppm_to_image(ppm)
-            if img:
-                img.save(f"/tmp/airtag-vm-transfer-info-{attempt}.png")
-        except Exception:
-            pass
-
-    emit("info", "vm", f"  → transfer_info attempt {attempt} — trying to escape")
-
-    if attempt <= 3:
-        # First attempts: try Back button with different positions
-        back_positions = [(196, 665), (150, 670), (200, 690)]
-        bx, by = back_positions[(attempt - 1) % len(back_positions)]
-        emit("info", "vm", f"  → Trying Back at ({bx}, {by})")
-        if not _find_and_click("Back"):
-            _mouse_click(bx, by, 0.3)
-        time.sleep(2)
-    elif attempt <= 6:
-        # Next attempts: try Escape key (may dismiss or go back)
-        emit("info", "vm", "  → Pressing Escape")
-        _send_key("esc", 1)
-        time.sleep(2)
-    elif attempt <= 9:
-        # Try deselecting the source by clicking on it, then check if
-        # we can proceed with nothing selected
-        emit("info", "vm", "  → Clicking source to deselect")
-        _mouse_click(640, 300, 0.5)  # Click on source area
-        time.sleep(1)
-        _mouse_click(640, 300, 0.5)  # Double-click to toggle
-        time.sleep(2)
-    else:
-        # Last resort: just wait — maybe the screen will time out
-        emit("info", "vm", f"  → Waiting (attempt {attempt})")
-        time.sleep(5)
+    emit("info", "vm", "  → Migration transfer in progress, waiting...")
+    time.sleep(30)  # transfers take several minutes; avoid spamming screenshots
 
 
 def _fill_account_form() -> None:
@@ -1446,22 +1373,41 @@ def _run_setup_wizard():
                 emit("info", "vm", "macOS login screen detected — wizard complete.")
                 break
 
-            # Boot picker — press Enter on default entry (Macintosh HD)
+            # Boot picker — try each entry until one boots macOS
             if screen_type == "boot_picker":
-                emit("info", "vm", "Wizard: boot picker detected, pressing Enter...")
+                boot_attempt = getattr(_run_setup_wizard, "_boot_attempt", 0)
+                _run_setup_wizard._boot_attempt = boot_attempt + 1
+
+                # Save debug screenshot
+                try:
+                    img = _ppm_to_image(ppm)
+                    if img:
+                        img.save(f"/tmp/airtag-vm-bootpicker-{boot_attempt}.png")
+                        bp_text = _ocr_region(img, 200, 400, 1100, 700)
+                        emit("info", "vm", f"Boot picker OCR: {bp_text[:200]!r}")
+                except Exception:
+                    pass
+
+                # Cycle through entries: first try default, then arrow-right
+                if boot_attempt > 0:
+                    emit("info", "vm", f"Boot picker attempt {boot_attempt}: arrow right + Enter")
+                    _send_key("right", 1)
+                else:
+                    emit("info", "vm", "Boot picker: pressing Enter on default entry...")
+
                 _send_key("ret", 2)
                 state, ppm = _wait_for_screen(
                     {"setup_wizard", "apple_logo", "desktop", "login_screen"},
-                    timeout=120,
+                    timeout=90,
                     poll_interval=5,
-                    msg="Waiting for macOS to boot",
+                    msg="Waiting for macOS to boot after boot picker",
                 )
                 if state in ("desktop", "login_screen"):
                     emit("info", "vm", f"macOS {state} detected — wizard complete.")
                     break
                 if state == "setup_wizard":
                     continue
-                # apple_logo or timeout — fall through
+                # Still boot_picker or timeout — loop will try next entry
 
             if screen_type not in ("setup_wizard", "unknown", "apple_logo", "boot_picker"):
                 emit("info", "vm", f"Left wizard (screen: {screen_type}).")
@@ -1511,11 +1457,24 @@ def _run_setup_wizard():
             screen.execute()
             time.sleep(1)
 
-        pw_path = DATA_DIR / "vm-password"
-        pw_path.write_text(VM_PASSWORD)
-        pw_path.chmod(0o600)
-        _set_phase("done", "macOS setup complete!")
-        emit("info", "vm", f"Account: {VM_USER} / {VM_PASSWORD}")
+        # Verify we actually exited the wizard successfully
+        final_ppm = _take_screenshot()
+        final_screen = _detect_screen(final_ppm)
+        if final_screen in ("desktop", "login_screen", "setup_wizard"):
+            pw_path = DATA_DIR / "vm-password"
+            pw_path.write_text(VM_PASSWORD)
+            pw_path.chmod(0o600)
+            _set_phase("done", "macOS setup complete!")
+            emit("info", "vm", f"Account: {VM_USER} / {VM_PASSWORD}")
+        else:
+            _set_phase("error", f"Wizard timed out (screen: {final_screen})")
+            emit("warning", "vm", f"Wizard did not complete — stuck on {final_screen}")
+            try:
+                img = _ppm_to_image(final_ppm)
+                if img:
+                    img.save("/tmp/airtag-vm-wizard-timeout.png")
+            except Exception:
+                pass
 
     except Exception as e:
         _set_phase("error", f"Setup wizard failed: {e}")
