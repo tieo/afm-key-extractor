@@ -1349,26 +1349,71 @@ def _wizard_identify(text: str) -> WizardScreen | None:
     return None
 
 
-def _eject_installer_media():
-    """Hot-remove the BaseSystem installer disk from the VM.
+def _kill_vm():
+    """Kill the QEMU process and clean up sockets."""
+    pid_file = Path("/tmp/airtag-vm-setup.pid")
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 15)
+            for _ in range(30):
+                try:
+                    os.kill(pid, 0)
+                    time.sleep(0.5)
+                except ProcessLookupError:
+                    break
+        except (ValueError, ProcessLookupError):
+            pass
+        pid_file.unlink(missing_ok=True)
+    _monitor_disconnect()
+    _qmp_disconnect()
+    _systemctl("stop", "airtag-novnc")
 
-    Without the recovery partition visible, Migration Assistant has no source
-    and either skips or offers a skip option. This prevents the post-migration
-    kernel panic caused by incompatible files transferred from the recovery image.
+
+def _launch_vm_no_installer():
+    """Launch QEMU without the installer media (BaseSystem.img).
+
+    Uses the same args as vm_start_setup() but skips the InstallMedia drive.
+    BaseSystem.img must be hidden/removed before calling this.
     """
-    try:
-        resp = _monitor_cmd("device_del install-media")
-        emit("info", "vm", f"Ejected installer media: {resp!r}")
-    except Exception as e:
-        emit("warning", "vm", f"Failed to eject installer media: {e}")
+    qemu_args = [
+        "qemu-system-x86_64",
+        "-enable-kvm", "-m", "8192",
+        "-cpu", "Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check",
+        "-machine", "q35",
+        "-device", "qemu-xhci,id=xhci",
+        "-device", "usb-kbd,bus=xhci.0",
+        "-device", "usb-tablet,bus=xhci.0",
+        "-smp", "4,cores=2",
+        "-global", "ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off",
+        "-device", "isa-applesmc,osk=ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc",
+        "-drive", f"if=pflash,format=raw,readonly=on,file={VM_DIR}/OVMF_CODE_4M.fd",
+        "-drive", f"if=pflash,format=raw,file={VM_DIR}/OVMF_VARS-1920x1080.fd",
+        "-smbios", "type=2",
+        "-device", "ich9-ahci,id=sata",
+        "-drive", f"id=OpenCoreBoot,if=none,snapshot=on,format=qcow2,file={VM_DIR}/OpenCore/OpenCore.qcow2",
+        "-device", "ide-hd,bus=sata.2,drive=OpenCoreBoot",
+        "-drive", f"id=MacHDD,if=none,file={VM_DIR}/mac_hdd_ng.img,format=qcow2",
+        "-device", "ide-hd,bus=sata.4,drive=MacHDD",
+        "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
+        "-device", "vmxnet3,netdev=net0,id=net0,mac=52:54:00:c9:18:27",
+        "-device", "vmware-svga",
+        "-vnc", "127.0.0.1:1",
+        "-monitor", "unix:/tmp/airtag-vm-monitor.sock,server,nowait",
+        "-qmp", "unix:/tmp/airtag-vm-qmp.sock,server,nowait",
+        "-daemonize",
+        "-pidfile", "/tmp/airtag-vm-setup.pid",
+    ]
+    result = sp.run(qemu_args, capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        raise RuntimeError(f"QEMU failed: {result.stderr}")
+    emit("info", "vm", "VM restarted without installer media")
+    _systemctl("start", "airtag-novnc")
 
 
 def _run_setup_wizard():
     """Walk through macOS setup wizard using version-specific screen definitions."""
     _set_phase("setup_wizard", "Automating setup wizard...")
-
-    # Eject the installer/recovery disk so Migration Assistant has no source.
-    _eject_installer_media()
 
     screens = WIZARD_SCREENS[MACOS_VERSION]
     emit("info", "vm", f"Using {MACOS_VERSION} definitions ({len(screens)} screens)")
@@ -1840,6 +1885,41 @@ def _auto_install_worker():
                     emit("info", "vm", f"macOS installing... ({elapsed_min} min)")
 
             elif screen == "setup_wizard":
+                # Restart VM without installer media so Migration Assistant
+                # has no source. SATA bus doesn't support hot-unplug, so we
+                # kill QEMU and restart without BaseSystem.img.
+                base_img = VM_DIR / "BaseSystem.img"
+                base_img_hidden = VM_DIR / ".BaseSystem.img.hidden"
+                if base_img.exists():
+                    emit("info", "vm", "Restarting VM without installer media to prevent migration...")
+                    _kill_vm()
+                    time.sleep(3)
+                    base_img.rename(base_img_hidden)
+                    try:
+                        _launch_vm_no_installer()
+                    finally:
+                        # Restore BaseSystem.img for future reinstalls
+                        if base_img_hidden.exists():
+                            base_img_hidden.rename(base_img)
+                    time.sleep(10)
+                    # Wait for boot picker or wizard
+                    state, _ = _wait_for_screen(
+                        {"setup_wizard", "boot_picker", "desktop", "login_screen"},
+                        timeout=180,
+                        poll_interval=5,
+                        msg="Waiting for wizard after VM restart",
+                    )
+                    if state == "boot_picker":
+                        time.sleep(5)
+                        _send_key("right", 1)
+                        time.sleep(1)
+                        _send_key("ret", 2)
+                        state, _ = _wait_for_screen(
+                            {"setup_wizard", "desktop", "login_screen"},
+                            timeout=180,
+                            poll_interval=5,
+                            msg="Waiting for macOS to boot",
+                        )
                 _run_setup_wizard()
                 return
 
