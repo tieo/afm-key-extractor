@@ -1177,30 +1177,22 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         WizardScreen("accessibility", ["accessibility", "features"], "Not Now"),
         WizardScreen("privacy", ["data", "privacy"], "Continue"),
         # Migration from recovery partition is unavoidable on Catalina —
-        # there is no "Don't transfer" option. Let it proceed; the boot
-        # picker handler deals with the post-migration reboot.
         # transfer_info MUST come before migration — both screens' OCR text
         # contains "migration assistant", so the more specific match wins.
-        # Without installer media, Migration Assistant has no source.
-        # transfer_info shows "Looking for other sources..." with greyed-out Continue.
-        # Strategy: on transfer_info, click Back to return to migration intro,
-        # then on migration intro, use Cmd+Q to quit Setup Assistant.
+        # The transfer_info screen has a "Don't transfer any information now"
+        # radio button — select it and click Continue to skip migration entirely.
         WizardScreen(
             "transfer_info",
             ["transfer information to this mac"],
             "",
-            custom_action=lambda: _escape_transfer_info(),
+            custom_action=lambda: _skip_transfer(),
         ),
         WizardScreen(
             "migration",
             ["migration assistant"],
-            "",
-            custom_action=lambda: _escape_migration(),
+            "Continue",
         ),
-        # Cmd+Q on Migration Assistant triggers a "Do you want to shut down?" dialog.
-        # OCR may capture it as "shut down" or just "shut". The dialog has
-        # [Restart] and [Shut Down] buttons. Click Restart to continue setup.
-        # Match on just "shut" since OCR truncation may cut off "down".
+        # Safety nets in case migration runs despite skip attempt:
         WizardScreen(
             "shutdown_dialog",
             ["want to shut"],
@@ -1223,7 +1215,6 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
             ["sign in with your apple id"],
             "Set Up Later",
             fallback_pos=(196, 670),
-            custom_action=lambda: (_monitor_cmd("set_link net0 on"), _find_and_click("Set Up Later") or _mouse_click(196, 670, 0.3)),
         ),
         WizardScreen(
             "icloud_signin", ["sign in to icloud"], "Set Up Later", fallback_pos=(196, 670)
@@ -1324,67 +1315,43 @@ def _find_and_click(label: str) -> bool:
     return False
 
 
-def _escape_transfer_info() -> None:
-    """Navigate past the Transfer Info screen.
+def _skip_transfer() -> None:
+    """Select 'Don't transfer any information now' and click Continue.
 
-    With network disabled (done in _escape_migration), the source search
-    should find nothing quickly. Wait for Continue to become enabled, then
-    click it to proceed to migration_complete.
+    The transfer_info screen has radio buttons:
+      1. From a Mac, Time Machine backup, or startup disk (default)
+      2. From a Windows PC
+      3. Don't transfer any information now
+    Select the last radio button to skip migration entirely.
     """
-    _escape_transfer_info.attempts = getattr(_escape_transfer_info, "attempts", 0) + 1
-    attempt = _escape_transfer_info.attempts
-    emit("info", "vm", f"  → transfer_info escape attempt {attempt}")
+    emit("info", "vm", "  → Selecting 'Don't transfer any information now'")
 
-    if attempt <= 3:
-        # Wait for source search to finish (network is off, should be quick)
-        emit("info", "vm", "  → Waiting for source search (network disabled)...")
-        time.sleep(10)
-        # Try clicking Continue
-        if not _find_and_click("Continue"):
-            _mouse_click(959, 665, 0.3)
-        time.sleep(2)
-    else:
-        # Keep waiting and trying Continue
-        time.sleep(10)
-        if not _find_and_click("Continue"):
-            _mouse_click(959, 665, 0.3)
-        time.sleep(2)
+    # Try to find the radio button text via OCR (search full screen, not just buttons)
+    ppm = _take_screenshot()
+    img = _ppm_to_image(ppm)
+    if img:
+        pos = _find_button_pos(img, "Don't transfer", min_y=0)
+        if not pos:
+            pos = _find_button_pos(img, "don't transfer", min_y=0)
+        if pos:
+            emit("info", "vm", f"  → Found 'Don't transfer' at ({pos[0]}, {pos[1]})")
+            _mouse_click(pos[0], pos[1], 0.5)
+        else:
+            # Fallback: the radio button is typically near bottom of the list,
+            # around y=530 on 1280x800, left-aligned around x=370
+            emit("info", "vm", "  → 'Don't transfer' not found by OCR, using fallback position")
+            _mouse_click(370, 530, 0.5)
 
-
-def _escape_migration() -> None:
-    """Navigate past Migration Assistant safely.
-
-    Catalina's Migration Assistant cannot be skipped and causes kernel panics
-    from network scanning on the transfer_info screen. Fix: disable the VM's
-    network link via QEMU monitor before proceeding, click Continue to go
-    through transfer_info safely (no network = no crash), then re-enable
-    network after migration is complete.
-    """
-    _escape_migration.attempts = getattr(_escape_migration, "attempts", 0) + 1
-    attempt = _escape_migration.attempts
-    emit("info", "vm", f"  → migration escape attempt {attempt}")
-
-    if attempt == 1:
-        # Disable network to prevent kernel panic during migration
-        emit("info", "vm", "  → Disabling VM network to prevent migration crash")
-        _monitor_cmd("set_link net0 off")
-        time.sleep(1)
-        # Click Continue to proceed to transfer_info (safe now — no network)
-        if not _find_and_click("Continue"):
-            _mouse_click(959, 665, 0.3)
-        time.sleep(2)
-    elif attempt <= 3:
-        # Click Continue on migration
-        if not _find_and_click("Continue"):
-            _mouse_click(959, 665, 0.3)
-        time.sleep(2)
-    else:
-        time.sleep(5)
+    time.sleep(1)
+    # Now click Continue
+    if not _find_and_click("Continue"):
+        _mouse_click(959, 665, 0.3)
+    time.sleep(2)
 
 
 def _on_migration_complete() -> None:
-    """Re-enable network after migration and click Continue."""
-    emit("info", "vm", "  → Migration complete — re-enabling VM network")
+    """Safety net: re-enable network (in case migration ran) and click Continue."""
+    emit("info", "vm", "  → Migration complete — ensuring VM network is enabled")
     _monitor_cmd("set_link net0 on")
     time.sleep(1)
     if not _find_and_click("Continue"):
