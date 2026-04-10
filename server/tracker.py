@@ -1216,9 +1216,14 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
             "migration_complete",
             ["migration complete"],
             "Continue",
+            custom_action=lambda: _on_migration_complete(),
         ),
         WizardScreen(
-            "apple_id", ["sign in with your apple id"], "Set Up Later", fallback_pos=(196, 670)
+            "apple_id",
+            ["sign in with your apple id"],
+            "Set Up Later",
+            fallback_pos=(196, 670),
+            custom_action=lambda: (_monitor_cmd("set_link net0 on"), _find_and_click("Set Up Later") or _mouse_click(196, 670, 0.3)),
         ),
         WizardScreen(
             "icloud_signin", ["sign in to icloud"], "Set Up Later", fallback_pos=(196, 670)
@@ -1320,74 +1325,71 @@ def _find_and_click(label: str) -> bool:
 
 
 def _escape_transfer_info() -> None:
-    """Escape the Transfer Info screen when no sources are available.
+    """Navigate past the Transfer Info screen.
 
-    This screen triggers network scanning which can cause kernel panics in
-    QEMU VMs. Act gently — no Tab+Enter spam. Wait for the search to
-    finish (Continue may become enabled), or try Cmd+Q to trigger the
-    shutdown dialog.
+    With network disabled (done in _escape_migration), the source search
+    should find nothing quickly. Wait for Continue to become enabled, then
+    click it to proceed to migration_complete.
     """
     _escape_transfer_info.attempts = getattr(_escape_transfer_info, "attempts", 0) + 1
     attempt = _escape_transfer_info.attempts
     emit("info", "vm", f"  → transfer_info escape attempt {attempt}")
 
-    if attempt <= 2:
-        # Wait for source search to finish (may enable Continue)
-        emit("info", "vm", "  → Waiting for source search to finish...")
-        time.sleep(15)
-    elif attempt <= 4:
-        # Try clicking Continue (might be enabled now)
+    if attempt <= 3:
+        # Wait for source search to finish (network is off, should be quick)
+        emit("info", "vm", "  → Waiting for source search (network disabled)...")
+        time.sleep(10)
+        # Try clicking Continue
         if not _find_and_click("Continue"):
             _mouse_click(959, 665, 0.3)
-        time.sleep(5)
-    elif attempt <= 6:
-        # Try Cmd+Q to trigger shutdown dialog
-        emit("info", "vm", "  → Trying Cmd+Q")
-        _send_key("meta_l-q")
-        time.sleep(3)
+        time.sleep(2)
     else:
-        # Wait longer — avoid aggressive interaction
+        # Keep waiting and trying Continue
         time.sleep(10)
+        if not _find_and_click("Continue"):
+            _mouse_click(959, 665, 0.3)
+        time.sleep(2)
 
 
 def _escape_migration() -> None:
-    """Escape the Migration Assistant intro screen.
+    """Navigate past Migration Assistant safely.
 
-    Without installer media, there's nothing to migrate. Cmd+Q is unreliable —
-    it sometimes quits Migration Assistant (advancing to transfer_info which
-    causes kernel panics from network scanning) instead of quitting Setup
-    Assistant (which shows the shutdown dialog). Click the Setup Assistant
-    window background first to ensure it's focused before Cmd+Q.
+    Catalina's Migration Assistant cannot be skipped and causes kernel panics
+    from network scanning on the transfer_info screen. Fix: disable the VM's
+    network link via QEMU monitor before proceeding, click Continue to go
+    through transfer_info safely (no network = no crash), then re-enable
+    network after migration is complete.
     """
     _escape_migration.attempts = getattr(_escape_migration, "attempts", 0) + 1
     attempt = _escape_migration.attempts
     emit("info", "vm", f"  → migration escape attempt {attempt}")
 
     if attempt == 1:
-        # First: click on the Setup Assistant background to focus it (not MA)
-        # The title bar area of Setup Assistant should be safe
-        emit("info", "vm", "  → Clicking SA window background, then Cmd+Q")
-        _mouse_click(640, 10, 0.3)  # Click near the top center (menu bar area)
-        time.sleep(0.5)
-        _send_key("meta_l-q")
-        time.sleep(3)
-    elif attempt == 2:
-        # Try Escape key to dismiss Migration Assistant
-        emit("info", "vm", "  → Trying Escape key")
-        _send_key("escape")
+        # Disable network to prevent kernel panic during migration
+        emit("info", "vm", "  → Disabling VM network to prevent migration crash")
+        _monitor_cmd("set_link net0 off")
+        time.sleep(1)
+        # Click Continue to proceed to transfer_info (safe now — no network)
+        if not _find_and_click("Continue"):
+            _mouse_click(959, 665, 0.3)
         time.sleep(2)
-    elif attempt <= 4:
-        # Cmd+Q with a different timing
-        emit("info", "vm", "  → Trying Cmd+Q")
-        _send_key("meta_l-q")
-        time.sleep(3)
-    elif attempt <= 6:
-        # Try clicking Continue (maybe it works without sources)
+    elif attempt <= 3:
+        # Click Continue on migration
         if not _find_and_click("Continue"):
             _mouse_click(959, 665, 0.3)
         time.sleep(2)
     else:
         time.sleep(5)
+
+
+def _on_migration_complete() -> None:
+    """Re-enable network after migration and click Continue."""
+    emit("info", "vm", "  → Migration complete — re-enabling VM network")
+    _monitor_cmd("set_link net0 on")
+    time.sleep(1)
+    if not _find_and_click("Continue"):
+        _mouse_click(959, 665, 0.3)
+    time.sleep(2)
 
 
 def _wait_for_transfer() -> None:
