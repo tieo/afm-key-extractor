@@ -1425,6 +1425,73 @@ def _kill_vm():
     _systemctl("stop", "airtag-novnc")
 
 
+def _reboot_to_recovery():
+    """Reboot VM via QEMU and navigate boot picker to recovery (macOS Base System).
+
+    OpenCore auto-boots the default entry after a ~5s countdown. We must
+    catch the boot picker before auto-boot, press right (to select recovery),
+    and Enter. Poll aggressively (every 2s) to catch it in time.
+
+    Returns the detected screen state after boot ('recovery', 'setup_wizard', etc).
+    """
+    _monitor_cmd("system_reset")
+    time.sleep(3)  # Brief wait for QEMU reset
+
+    # Poll aggressively for boot picker — it appears ~8-15s after reset
+    # and auto-boots after ~5s. We need to catch it fast.
+    emit("info", "vm", "Waiting for boot picker...")
+    for attempt in range(30):  # 30 × 2s = 60s max
+        ppm = _take_screenshot()
+        state = _detect_screen(ppm)
+
+        if state == "boot_picker":
+            emit("info", "vm", "Boot picker detected! Selecting recovery...")
+            # OpenCore needs a moment to accept input after appearing
+            time.sleep(2)
+            _send_key("right", 1)
+            time.sleep(1)
+            _send_key("ret", 2)
+            break
+        elif state == "recovery":
+            emit("info", "vm", "Already in recovery mode.")
+            return "recovery"
+        elif state == "setup_wizard":
+            # Auto-boot already happened, went to Macintosh HD
+            emit("info", "vm", "Auto-boot went to setup wizard.")
+            return "setup_wizard"
+        time.sleep(2)
+    else:
+        # Never saw boot_picker in 60s
+        ppm = _take_screenshot()
+        state = _detect_screen(ppm)
+        emit("warning", "vm", f"Boot picker not detected in 60s (screen: {state})")
+        return state
+
+    # Wait for recovery to load after selecting it
+    state, _ = _wait_for_screen(
+        {"recovery", "setup_wizard", "boot_picker"},
+        timeout=180,
+        poll_interval=5,
+        msg="Waiting for recovery to load",
+    )
+
+    # If still at boot picker (key didn't register), retry
+    if state == "boot_picker":
+        emit("info", "vm", "Still at boot picker, retrying...")
+        time.sleep(3)
+        _send_key("right", 1)
+        time.sleep(1)
+        _send_key("ret", 2)
+        state, _ = _wait_for_screen(
+            {"recovery", "setup_wizard"},
+            timeout=180,
+            poll_interval=5,
+            msg="Waiting for recovery (retry)",
+        )
+
+    return state
+
+
 def _create_account_from_recovery():
     """Bypass Setup Assistant by creating user account from recovery Terminal.
 
@@ -1438,54 +1505,16 @@ def _create_account_from_recovery():
     """
     _set_phase("setup_wizard", "Bypassing Setup Assistant via recovery Terminal...")
 
-    # Reboot the VM
+    # Reboot the VM and intercept boot picker to select recovery.
+    # OpenCore auto-boots the default entry (Macintosh HD) after a countdown,
+    # so we must spam keys during boot to interrupt it, then navigate to recovery.
     emit("info", "vm", "Rebooting VM to enter recovery mode...")
-    _monitor_cmd("system_reset")
-    time.sleep(10)
+    state = _reboot_to_recovery()
 
-    # Wait for boot picker
-    state, _ = _wait_for_screen(
-        {"boot_picker", "recovery"},
-        timeout=180,
-        poll_interval=5,
-        msg="Waiting for boot picker after reboot",
-    )
-
-    if state == "boot_picker":
-        # Select macOS Base System (recovery) — it's the right entry
-        emit("info", "vm", "Boot picker: selecting macOS Base System (recovery)...")
-        time.sleep(5)  # OpenCore needs time before accepting input
-        _send_key("right", 1)
-        time.sleep(1)
-        _send_key("ret", 2)
-
-        # Wait for recovery
-        state, _ = _wait_for_screen(
-            {"recovery", "setup_wizard"},
-            timeout=180,
-            poll_interval=5,
-            msg="Waiting for recovery to load",
-        )
-
-        if state == "setup_wizard":
-            # If setup wizard shows again, the reboot went to Macintosh HD.
-            # Try one more time — reboot and explicitly navigate to recovery.
-            emit("info", "vm", "Got setup wizard again, rebooting to try recovery...")
-            _monitor_cmd("system_reset")
-            time.sleep(10)
-            state, _ = _wait_for_screen(
-                "boot_picker", timeout=180, poll_interval=5,
-                msg="Waiting for boot picker (retry)",
-            )
-            if state == "boot_picker":
-                time.sleep(5)
-                _send_key("right", 1)
-                time.sleep(1)
-                _send_key("ret", 2)
-                state, _ = _wait_for_screen(
-                    "recovery", timeout=180, poll_interval=5,
-                    msg="Waiting for recovery (retry)",
-                )
+    if state == "setup_wizard":
+        # First attempt auto-booted Macintosh HD. Try again.
+        emit("info", "vm", "Got setup wizard — retrying reboot to recovery...")
+        state = _reboot_to_recovery()
 
     if state != "recovery":
         _set_phase("error", f"Could not reach recovery mode (screen: {state})")
