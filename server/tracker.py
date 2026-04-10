@@ -1506,13 +1506,40 @@ def _create_account_from_recovery():
         _set_phase("error", "Could not open Terminal from Setup Assistant")
         return
 
-    emit("info", "vm", "Terminal is open. Creating user account...")
+    # Test if sudo works (non-interactive — fails immediately if password required)
+    emit("info", "vm", "Testing sudo access...")
+    _type_text("sudo -n true 2>&1 && echo SUDO_OK || echo SUDO_FAIL")
+    _send_key("ret")
+    time.sleep(3)
+
+    ppm = _take_screenshot()
+    sudo_works = False
+    if ppm:
+        try:
+            img = _ppm_to_image(ppm)
+            if img:
+                text = _ocr_region(img, 50, 50, 1230, 750)
+                emit("info", "vm", f"Sudo test result: {text[:300]!r}")
+                if "SUDO_OK" in text.upper():
+                    sudo_works = True
+                elif "SUDO_FAIL" in text.upper() or "password" in text.lower():
+                    sudo_works = False
+        except Exception:
+            pass
+
+    if not sudo_works:
+        # sudo requires a password — close Terminal and fall back to the wizard
+        emit("warning", "vm", "sudo not available for _mbsetupuser — falling back to wizard")
+        _send_key("meta_l-q")  # Cmd+Q to close Terminal
+        time.sleep(3)
+        _run_setup_wizard()
+        return
+
+    emit("info", "vm", "Terminal is open with sudo. Creating user account...")
 
     user = VM_USER
     pw = VM_PASSWORD
 
-    # Terminal opens as _mbsetupuser, not root. Use sudo for privileged commands.
-    # On Catalina, _mbsetupuser has passwordless sudo during Setup Assistant.
     dscl_cmds = [
         f"sudo dscl . -create /Users/{user}",
         f"sudo dscl . -create /Users/{user} UserShell /bin/bash",
@@ -1556,7 +1583,7 @@ def _create_account_from_recovery():
 
     # Kill the Setup Assistant and reboot to apply changes
     emit("info", "vm", "Killing Setup Assistant and rebooting...")
-    _type_text("killall 'Setup Assistant'")
+    _type_text("sudo killall 'Setup Assistant'")
     _send_key("ret")
     time.sleep(3)
 
@@ -1572,7 +1599,7 @@ def _create_account_from_recovery():
         return
 
     # If not on desktop, reboot to apply .AppleSetupDone
-    _type_text("reboot")
+    _type_text("sudo reboot")
     _send_key("ret")
     time.sleep(15)
 
