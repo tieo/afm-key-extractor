@@ -1428,47 +1428,59 @@ def _kill_vm():
 def _reboot_to_recovery():
     """Reboot VM via QEMU and navigate boot picker to recovery (macOS Base System).
 
-    OpenCore auto-boots the default entry after a ~5s countdown. Strategy:
-    1. Send system_reset
-    2. Spam right-arrow every second starting at +3s to catch the boot picker
-       (right-arrow interrupts countdown AND selects recovery entry)
-    3. Once boot_picker is confirmed, send Enter
-    4. If we miss the boot picker, detect what booted and return that state
+    After install, OpenCore shows 3 entries: [EFI] [macOS Base System] [Macintosh HD]
+    Macintosh HD (rightmost) is auto-selected and will auto-boot after countdown.
+    We need to select macOS Base System (middle entry = 1 left of Macintosh HD).
 
-    Returns the detected screen state after boot ('recovery', 'setup_wizard', etc).
+    Strategy: catch boot_picker, press left once to select recovery, press Enter.
+    Returns the detected screen state after boot.
     """
     _monitor_cmd("system_reset")
     time.sleep(3)  # Brief wait for QEMU reset
 
-    # Phase 1: Spam right-arrow to intercept boot picker countdown.
-    # Boot picker appears ~4-8s after reset, auto-boots ~5s later.
-    # Send right-arrow every second for 15s to ensure we catch it.
-    emit("info", "vm", "Intercepting boot picker with right-arrow spam...")
-    boot_picker_seen = False
-    for i in range(15):
-        _send_key("right", 0.1)
-        time.sleep(0.5)
-        ppm = _take_screenshot()
-        state = _detect_screen(ppm)
-        if state == "boot_picker":
-            boot_picker_seen = True
-            emit("info", "vm", f"Boot picker confirmed at +{i}s, sending Enter...")
-            time.sleep(1)  # Brief pause to ensure selection registered
-            _send_key("ret", 2)
-            break
-        elif state == "recovery":
-            emit("info", "vm", "Already in recovery mode.")
-            return "recovery"
-        time.sleep(0.4)
+    # Wait for boot picker to appear
+    emit("info", "vm", "Waiting for boot picker after reset...")
+    state, _ = _wait_for_screen(
+        {"boot_picker", "recovery", "setup_wizard"},
+        timeout=120,
+        poll_interval=3,
+        msg="Waiting for boot picker",
+    )
 
-    if not boot_picker_seen:
-        # The right-arrow spam may have selected recovery even though we
-        # never visually confirmed boot_picker (screen detection missed it).
-        # Send Enter anyway in case we're at the boot picker with recovery selected.
-        emit("info", "vm", "Boot picker not visually confirmed, sending Enter anyway...")
-        _send_key("ret", 2)
+    if state == "recovery":
+        emit("info", "vm", "Already in recovery mode.")
+        return "recovery"
+    if state == "setup_wizard":
+        emit("info", "vm", "Auto-boot went to setup wizard.")
+        return "setup_wizard"
+    if state != "boot_picker":
+        emit("warning", "vm", f"Boot picker not detected (screen: {state})")
+        return state
 
-    # Phase 2: Wait for recovery to load (or detect what actually booted)
+    # Boot picker is showing. After install, entries are:
+    # [EFI] [macOS Base System] [Macintosh HD*]  (* = auto-selected)
+    # Press left once to select macOS Base System (recovery).
+    emit("info", "vm", "Selecting macOS Base System (left from Macintosh HD)...")
+    time.sleep(2)  # Let boot picker fully settle
+    _send_key("left", 1)
+    time.sleep(1)
+
+    # Save debug screenshot to verify selection
+    ppm = _take_screenshot()
+    if ppm:
+        try:
+            img = _ppm_to_image(ppm)
+            if img:
+                img.save("/tmp/airtag-vm-bootpicker-recovery.png")
+                bp_text = _ocr_region(img, 200, 400, 1100, 700)
+                emit("info", "vm", f"Boot picker after left: {bp_text[:200]!r}")
+        except Exception:
+            pass
+
+    # Press Enter to boot the selected entry
+    _send_key("ret", 2)
+
+    # Wait for recovery to load
     state, _ = _wait_for_screen(
         {"recovery", "setup_wizard", "desktop", "login_screen"},
         timeout=180,
