@@ -1266,7 +1266,15 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         WizardScreen("accessibility", ["accessibility"], "Not Now"),
         WizardScreen("privacy", ["data", "privacy"], "Continue"),
         # Migration/transfer screen has no "Not Now" button in Ventura.
-        # Use Cmd+Q to quit Migration Assistant, then handle shutdown dialog.
+        # Cmd+Q quits Migration Assistant and produces a shutdown dialog.
+        # shutdown_dialog MUST be before transfer_info/migration because when
+        # the dialog overlays the transfer screen, OCR sees both texts —
+        # we need "want to shut" to match first.
+        WizardScreen(
+            "shutdown_dialog",
+            ["want to shut"],
+            "Restart",
+        ),
         WizardScreen(
             "transfer_info",
             ["transfer information to this mac"],
@@ -1278,11 +1286,6 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
             ["migration assistant"],
             "",
             custom_action=lambda: _handle_migration(),
-        ),
-        WizardScreen(
-            "shutdown_dialog",
-            ["want to shut"],
-            "Restart",
         ),
         WizardScreen(
             "apple_id",
@@ -1406,58 +1409,17 @@ def _escape_transfer_info() -> None:
 
 
 def _handle_migration() -> None:
-    """Try to skip Migration Assistant / Transfer information screen.
+    """Quit Migration Assistant with Cmd+Q.
 
-    This is called for both the "Migration Assistant" intro screen and the
-    "Transfer information to this Mac" source-selection screen.  We detect
-    which screen we're on via OCR and act accordingly.
-
-    Migration Assistant intro:  Try Cmd+Q → may produce a "shut down" dialog
-    (handled by the shutdown_dialog wizard screen) or skip forward.
-
-    Transfer information:  Look for "Not Now" link / option on screen.
-    If not found, try Cmd+Q.  Save a debug screenshot on first encounter.
+    Works on both the "Migration Assistant" intro and the "Transfer
+    information to this Mac" source-selection screen.  Cmd+Q produces a
+    "Do you want to shut down?" dialog, which the wizard loop handles via
+    the shutdown_dialog screen (clicks "Restart").  After restart the
+    wizard resumes past Migration Assistant.
     """
-    _handle_migration.attempts = getattr(_handle_migration, "attempts", 0) + 1
-    attempt = _handle_migration.attempts
-    emit("info", "vm", f"  → migration attempt {attempt}")
-
-    # Take a screenshot to detect which sub-screen we're on
-    ppm = _take_screenshot()
-    img = _ppm_to_image(ppm)
-    screen_text = ""
-    if img:
-        screen_text = _ocr_region(img, 0, 0, 1280, 800).lower()
-
-    on_transfer = "transfer information" in screen_text
-    emit("info", "vm", f"  → on_transfer={on_transfer}, attempt={attempt}")
-
-    if on_transfer:
-        # "Transfer information to this Mac" source-selection screen.
-        # Save debug screenshot on first encounter.
-        if attempt <= 2 and img:
-            img.save(f"/tmp/airtag-vm-transfer-{attempt}.png")
-            emit("info", "vm", f"  → Full OCR: {screen_text[:500]!r}")
-
-        # Strategy: look for "Not Now" or "don't transfer" clickable text
-        if _find_and_click("Not Now"):
-            emit("info", "vm", "  → Clicked 'Not Now'")
-            time.sleep(2)
-            return
-        if _find_and_click("not now"):
-            emit("info", "vm", "  → Clicked 'not now'")
-            time.sleep(2)
-            return
-
-        # Try Cmd+Q to quit Migration Assistant
-        emit("info", "vm", "  → Trying Cmd+Q on transfer screen")
-        _send_key("meta_l-q")
-        time.sleep(3)
-    else:
-        # "Migration Assistant" intro screen — Cmd+Q to skip
-        emit("info", "vm", "  → Pressing Cmd+Q on migration intro")
-        _send_key("meta_l-q")
-        time.sleep(3)
+    emit("info", "vm", "  → Pressing Cmd+Q to quit Migration Assistant")
+    _send_key("meta_l-q")
+    time.sleep(3)
 
 
 def _on_migration_complete() -> None:
