@@ -1265,7 +1265,25 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         WizardScreen("language", ["written and spoken"], "Continue"),
         WizardScreen("accessibility", ["accessibility"], "Not Now"),
         WizardScreen("privacy", ["data", "privacy"], "Continue"),
-        WizardScreen("migration", ["migration assistant"], "Not Now"),
+        # Migration/transfer screen has no "Not Now" button in Ventura.
+        # Use Cmd+Q to quit Migration Assistant, then handle shutdown dialog.
+        WizardScreen(
+            "transfer_info",
+            ["transfer information to this mac"],
+            "",
+            custom_action=lambda: _handle_migration(),
+        ),
+        WizardScreen(
+            "migration",
+            ["migration assistant"],
+            "",
+            custom_action=lambda: _handle_migration(),
+        ),
+        WizardScreen(
+            "shutdown_dialog",
+            ["want to shut"],
+            "Restart",
+        ),
         WizardScreen(
             "apple_id",
             ["sign in with your apple id"],
