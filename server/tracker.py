@@ -1618,27 +1618,36 @@ def _create_account_from_recovery():
             emit("warning", "vm", f"Could not confirm Terminal ({state}) — proceeding anyway")
 
     # === STEP 4: Mount volumes and create user account ===
-    emit("info", "vm", "Terminal open. Mounting Macintosh HD volumes...")
+    emit("info", "vm", "Terminal open. Mounting all APFS volumes...")
 
-    # Mount both APFS volumes (Catalina splits system/data)
-    _type_text('diskutil mount "Macintosh HD" 2>/dev/null')
-    _send_key("ret")
-    time.sleep(3)
-    _type_text('diskutil mount "Macintosh HD - Data" 2>/dev/null')
+    # Mount all APFS volumes — Ventura's data volume may not mount by name
+    _type_text('diskutil apfs list 2>/dev/null | grep -i "mount\\|name\\|role"')
     _send_key("ret")
     time.sleep(3)
 
-    # Determine data volume path (Catalina = split, older = single)
-    # Use short variable name to keep dscl commands manageable
-    _type_text('D="/Volumes/Macintosh HD - Data"')
+    # Try mounting by name first, then mount all unmounted volumes
+    _type_text('diskutil mount "Macintosh HD" 2>/dev/null; diskutil mount "Macintosh HD - Data" 2>/dev/null')
     _send_key("ret")
-    time.sleep(1)
-    _type_text('[ ! -d "$D" ] && D="/Volumes/Macintosh HD"')
+    time.sleep(3)
+    # Also try mounting all APFS volumes in case names differ
+    _type_text('diskutil apfs unlockVolume disk1s1 2>/dev/null; diskutil mountDisk disk1 2>/dev/null')
     _send_key("ret")
-    time.sleep(1)
+    time.sleep(3)
+
+    # Find the data volume — check multiple possible paths
+    # Ventura: /Volumes/Macintosh HD - Data or /Volumes/Data
+    # The dslocal database is on the data volume
+    _type_text('for P in "/Volumes/Macintosh HD - Data" "/Volumes/Data" "/Volumes/Macintosh HD"; do [ -d "$P/private/var/db/dslocal/nodes/Default/users" ] && D="$P" && break; done; echo "D=$D"')
+    _send_key("ret")
+    time.sleep(2)
     _type_text('DS="$D/private/var/db/dslocal/nodes/Default"')
     _send_key("ret")
     time.sleep(1)
+
+    # List all mounted volumes for debugging
+    _type_text('ls /Volumes/')
+    _send_key("ret")
+    time.sleep(2)
 
     # Verify the directory exists
     _type_text('ls "$DS/users" && echo DS_OK || echo DS_FAIL')
