@@ -1441,9 +1441,9 @@ def _click_restart_in_shutdown_dialog() -> None:
         if "want to shut" not in text:
             emit("info", "vm", "  → Dialog dismissed! Clicking Back on transfer screen")
             # Click "Back" button to return to migration intro
-            # Back is at bottom-right (~1020, 745), NOT bottom-left
+            # Back is at bottom-left of the white card (~265, 670)
             if not _find_and_click("Back"):
-                _mouse_click(1020, 745, 0.5)
+                _mouse_click(265, 670, 0.5)
             time.sleep(2)
             return
 
@@ -1498,7 +1498,7 @@ def _handle_migration() -> None:
                 time.sleep(1)
                 # Now click Continue
                 if not _find_and_click("Continue"):
-                    _mouse_click(1130, 745, 0.3)  # Continue button position
+                    _mouse_click(950, 670, 0.3)  # Continue button position (inside white card)
                 time.sleep(2)
                 return
         # Skip option not found, try Cmd+Q to trigger transfer screen cycle
@@ -1514,9 +1514,9 @@ def _handle_migration() -> None:
             time.sleep(3)
         else:
             # Direct: click Back button at correct position (bottom-right)
-            emit("info", "vm", "  → Clicking Back button at (1020, 745)")
+            emit("info", "vm", "  → Clicking Back button at (265, 670)")
             if not _find_and_click("Back"):
-                _mouse_click(1020, 745, 0.3)
+                _mouse_click(265, 670, 0.3)
             time.sleep(2)
     else:
         # Unknown sub-screen, try Escape
