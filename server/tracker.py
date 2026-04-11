@@ -1984,16 +1984,25 @@ def _auto_install_worker():
             return
 
         if state == "boot_picker":
-            # Boot picker layout depends on what's installed:
-            # - Fresh disk: EFI (left), macOS Base System (right) — need right+Enter
-            # - macOS installed: EFI (left), macOS Base System (middle),
-            #   Macintosh HD (right, default) — Enter boots to setup_wizard
-            #
-            # Strategy: try default entry first (Enter). If we get setup_wizard,
-            # macOS is already installed — bypass it. If we get recovery, proceed
-            # with install. If we stay at boot_picker, navigate right and retry.
-            emit("info", "vm", "Boot picker detected, trying default entry first...")
+            # Check if macOS is already installed by HDD image size.
+            # A fresh 80GB qcow2 is tiny (<1MB). After install it's >10GB.
+            # If installed, skip boot picker navigation and go straight to
+            # recovery bypass — navigating the boot picker to Macintosh HD
+            # is unreliable because OpenCore's 2s timeout keeps auto-booting EFI.
+            hdd_path = VM_DIR / "mac_hdd_ng.img"
+            hdd_size_gb = hdd_path.stat().st_size / (1024**3) if hdd_path.exists() else 0
+            emit("info", "vm", f"HDD image size: {hdd_size_gb:.1f} GB")
+
+            if hdd_size_gb > 10:
+                emit("info", "vm", "macOS appears installed (HDD > 10GB). Bypassing setup via recovery...")
+                _create_account_from_recovery()
+                return
+
+            # Fresh disk — navigate to macOS Base System for install.
+            # Boot picker: EFI (left, default), macOS Base System (right).
+            emit("info", "vm", "Boot picker detected, navigating right to macOS Base System...")
             time.sleep(5)
+            _send_key("right", 1)
             _send_key("ret", 2)
 
             state, _ = _wait_for_screen(
@@ -2007,9 +2016,9 @@ def _auto_install_worker():
                 _create_account_from_recovery()
                 return
 
-            # Default didn't reach recovery — try navigating to macOS Base System
+            # Keys didn't register — retry
             if state == "boot_picker":
-                emit("info", "vm", "Boot picker still showing, navigating right to macOS Base System...")
+                emit("info", "vm", "Boot picker still showing, retrying...")
                 time.sleep(3)
                 _send_key("right", 1)
                 _send_key("ret", 2)
