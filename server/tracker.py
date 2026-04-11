@@ -1453,35 +1453,80 @@ def _click_restart_in_shutdown_dialog() -> None:
 
 
 def _handle_migration() -> None:
-    """Try to skip Migration Assistant.
+    """Try to skip Migration Assistant / transfer info screen.
 
-    Strategy: On migration intro, press Cmd+Q which goes to the transfer
-    screen.  On the transfer screen, Cmd+Q produces a shutdown dialog
-    that we can't reliably dismiss.
+    The transfer_info screen ("Transfer information to this Mac") has a
+    disabled Continue button (no source selected) and OCR can't find buttons.
 
-    Instead, on the migration intro, try Escape first. If that doesn't
-    work, try Cmd+Q but then handle the shutdown dialog via Escape.
+    Strategy rotation:
+    1-2: Escape
+    3-4: Cmd+Q (triggers shutdown dialog, handled by Escape)
+    5: Debug screenshot + full OCR dump
+    6-7: Try "Not Now" with full-screen search
+    8+: Cycle through Cmd+Q → Escape dialog → Return
     """
     _handle_migration.attempts = getattr(_handle_migration, "attempts", 0) + 1
     attempt = _handle_migration.attempts
     emit("info", "vm", f"  → migration attempt {attempt}")
 
     if attempt <= 2:
-        # First tries: press Escape to skip migration
         emit("info", "vm", "  → Pressing Escape on migration screen")
         _send_key("esc", 1)
         time.sleep(2)
     elif attempt <= 4:
-        # Try Cmd+Q — goes to transfer screen, then shutdown dialog
         emit("info", "vm", "  → Pressing Cmd+Q on migration screen")
         _send_key("meta_l-q")
         time.sleep(3)
+    elif attempt == 5:
+        # Debug: full OCR of the screen to see what buttons/text exist
+        ppm = _take_screenshot()
+        img = _ppm_to_image(ppm)
+        if img:
+            img.save("/tmp/airtag-vm-migration-debug.png")
+            full_text = _ocr_region(img, 0, 0, 1280, 800)
+            emit("info", "vm", f"  → Full migration OCR: {full_text[:800]!r}")
+            # Try to find "Not Now" anywhere on screen (min_y=0)
+            pos = _find_button_pos(img, "Not Now", min_y=0)
+            if pos:
+                emit("info", "vm", f"  → Found 'Not Now' at {pos}")
+                _mouse_click(pos[0], pos[1], 0.3)
+            else:
+                emit("info", "vm", "  → No 'Not Now' found, trying Cmd+Q")
+                _send_key("meta_l-q")
+        time.sleep(3)
+    elif attempt <= 7:
+        # Try "Not Now" with full screen search, also try "not now" lowercase
+        emit("info", "vm", "  → Looking for 'Not Now' link")
+        ppm = _take_screenshot()
+        img = _ppm_to_image(ppm)
+        if img:
+            for label in ("Not Now", "not now", "Later"):
+                pos = _find_button_pos(img, label, min_y=0)
+                if pos:
+                    emit("info", "vm", f"  → Found '{label}' at {pos}")
+                    _mouse_click(pos[0], pos[1], 0.3)
+                    time.sleep(2)
+                    return
+        # Fallback: Cmd+Q cycle
+        emit("info", "vm", "  → Pressing Cmd+Q")
+        _send_key("meta_l-q")
+        time.sleep(3)
     else:
-        # Try clicking "Continue" on migration intro to advance to transfer,
-        # then we'll click Back from transfer → migration will eventually skip
-        emit("info", "vm", "  → Clicking Continue on migration intro")
-        _find_and_click("Continue")
-        time.sleep(2)
+        # Alternate: Cmd+Q → Escape dismisses dialog → Return on transfer
+        if attempt % 3 == 0:
+            emit("info", "vm", "  → Pressing Cmd+Q on migration screen")
+            _send_key("meta_l-q")
+            time.sleep(3)
+        elif attempt % 3 == 1:
+            # After shutdown dialog dismissed, try pressing Return
+            emit("info", "vm", "  → Pressing Return (maybe Continue is default)")
+            _send_key("ret", 1)
+            time.sleep(2)
+        else:
+            # Also try clicking at common Continue button position (bottom-right)
+            emit("info", "vm", "  → Clicking at Continue position (1050, 740)")
+            _mouse_click(1050, 740, 0.3)
+            time.sleep(2)
 
 
 def _on_migration_complete() -> None:
@@ -1782,6 +1827,27 @@ def _create_account_from_recovery():
     _send_key("ret")
     time.sleep(1)
     _type_text('touch "$D/private/var/db/.AppleSetupDone"')
+    _send_key("ret")
+    time.sleep(1)
+
+    # Write SetupAssistant plist to skip migration and other wizard screens.
+    # .AppleSetupDone alone doesn't work in Ventura — Setup Assistant still runs.
+    # Setting LastSeenBuddyBuildVersion to a high value + DidSee* keys tells
+    # Setup Assistant that all screens have already been completed.
+    _type_text(
+        'SA="$D/Library/Preferences/com.apple.SetupAssistant.plist";'
+        ' /usr/libexec/PlistBuddy -c "Add :LastSeenBuddyBuildVersion string 99Z99" "$SA" 2>/dev/null;'
+        ' for k in DidSeeCloudSetup DidSeeMigrationSetup DidSeePrivacy DidSeeSiriSetup DidSeeAccessibility;'
+        ' do /usr/libexec/PlistBuddy -c "Add :$k bool true" "$SA" 2>/dev/null; done'
+    )
+    _send_key("ret")
+    time.sleep(2)
+
+    # Also write user-level SetupAssistant plist
+    _type_text(
+        f'mkdir -p "$D/Users/{user}/Library/Preferences";'
+        f' cp "$SA" "$D/Users/{user}/Library/Preferences/com.apple.SetupAssistant.plist"'
+    )
     _send_key("ret")
     time.sleep(1)
 
