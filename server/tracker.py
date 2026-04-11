@@ -1326,37 +1326,60 @@ def _find_and_click(label: str) -> bool:
 
 
 def _escape_transfer_info() -> None:
-    """Escape from transfer_info or select_transfer screens via Cmd+Q."""
-    emit("info", "vm", "  → On transfer/select screen, pressing Cmd+Q to quit")
-    _send_key("meta_l-q")
-    time.sleep(3)
+    """Escape from transfer_info screen by clicking Back."""
+    _escape_transfer_info.attempts = getattr(_escape_transfer_info, "attempts", 0) + 1
+    attempt = _escape_transfer_info.attempts
+    emit("info", "vm", f"  → transfer_info escape attempt {attempt}")
+
+    # Save debug screenshot on first encounter
+    if attempt == 1:
+        ppm = _take_screenshot()
+        img = _ppm_to_image(ppm)
+        if img:
+            img.save(f"/tmp/airtag-vm-transfer-info-debug.png")
+            # Full OCR to see ALL text including any hidden options
+            full_text = _ocr_region(img, 0, 0, 1280, 800)
+            emit("info", "vm", f"  → Full transfer_info OCR: {full_text[:600]!r}")
+
+    # Click Back to return to migration intro
+    emit("info", "vm", "  → Clicking Back on transfer_info")
+    if not _find_and_click("Back"):
+        _mouse_click(260, 665, 0.3)  # Back button position
+    time.sleep(2)
 
 
 def _handle_migration() -> None:
-    """Try to skip Migration Assistant via Cmd+Q.
+    """Try to skip Migration Assistant.
 
-    Cmd+Q on the migration screen quits Setup Assistant, which shows a
-    'Do you want to shut down?' dialog. The shutdown_dialog handler clicks
-    Restart. After reboot, Setup Assistant resumes — it may skip past
-    migration on subsequent launches.
-
-    If Cmd+Q fails or migration keeps reappearing, fall back to letting
-    migration proceed (with network disabled to prevent kernel panic).
+    Strategy:
+      1. First time: click Continue (goes to transfer_info, which clicks Back)
+      2. Second time: Cmd+Q (may show shutdown dialog or skip forward)
+      3. Third time onwards: fall back to migration with network disabled
     """
     _handle_migration.attempts = getattr(_handle_migration, "attempts", 0) + 1
     attempt = _handle_migration.attempts
     emit("info", "vm", f"  → migration attempt {attempt}")
 
-    if attempt <= 2:
-        # Try Cmd+Q to quit Setup Assistant and skip migration
+    if attempt == 1:
+        # First try: click Continue to see transfer_info (it will click Back)
+        emit("info", "vm", "  → Clicking Continue to inspect transfer_info")
+        if not _find_and_click("Continue"):
+            _mouse_click(959, 665, 0.3)
+        time.sleep(2)
+    elif attempt == 2:
+        # Back from transfer_info brought us here again — try Cmd+Q
         emit("info", "vm", "  → Pressing Cmd+Q to skip migration")
         _send_key("meta_l-q")
         time.sleep(3)
+    elif attempt == 3:
+        # Try Escape key
+        emit("info", "vm", "  → Pressing Escape to skip migration")
+        _send_key("escape")
+        time.sleep(2)
     else:
-        # Cmd+Q didn't work — fall back to letting migration proceed
-        # with network disabled to prevent kernel panic
-        if attempt == 3:
-            emit("info", "vm", "  → Cmd+Q failed, falling back to migration with network off")
+        # Fall back to letting migration proceed with network disabled
+        if attempt == 4:
+            emit("info", "vm", "  → Fallback: migration with network off")
             _monitor_cmd("set_link net0 off")
             time.sleep(1)
         if not _find_and_click("Continue"):
