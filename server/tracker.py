@@ -1493,21 +1493,38 @@ def _create_account_from_recovery():
         _monitor_cmd("system_reset")
         emit("info", "vm", f"Reset attempt {reset_attempt + 1}: intercepting boot picker...")
 
-        # Poll rapidly for the boot picker. The instant it appears, navigate
-        # to macOS Base System and press Enter before auto-boot kicks in (~5s).
-        # Don't send keys blindly — just watch the screen.
-        # UEFI takes ~5-10s to load OpenCore, boot picker shows for ~5s.
-        time.sleep(3)
+        # Poll for the boot picker. UEFI takes ~8-12s to load OpenCore.
+        # Wait 8s to skip UEFI POST, then poll. When boot_picker is detected,
+        # confirm with a second screenshot (avoid false positives from
+        # transitional UEFI/OpenCore loading screens).
+        time.sleep(8)
         state = None
         # Boot picker: EFI (left), macOS Base System (middle), Macintosh HD (right/default).
         # Try different navigation on each reset attempt.
         nav_directions = ["left", "right", ""]  # attempt 0: left, 1: right, 2: default
         nav = nav_directions[reset_attempt % len(nav_directions)]
         for tick in range(30):  # Poll for up to 30s
+            time.sleep(1)
             ppm = _take_screenshot()
             screen = _detect_screen(ppm)
             if screen == "boot_picker":
-                emit("info", "vm", f"Boot picker caught! Trying '{nav or 'default'}' + Enter...")
+                # Confirm with a second screenshot to avoid false positives
+                time.sleep(0.5)
+                ppm2 = _take_screenshot()
+                screen2 = _detect_screen(ppm2)
+                if screen2 != "boot_picker":
+                    emit("info", "vm", f"Boot picker not confirmed (was {screen2}), continuing...")
+                    continue
+                # Save debug screenshot
+                try:
+                    img = _ppm_to_image(ppm2)
+                    if img:
+                        img.save(f"/tmp/airtag-vm-bootpicker-reset{reset_attempt}.png")
+                        bp_text = _ocr_region(img, 200, 400, 1100, 700)
+                        emit("info", "vm", f"Boot picker OCR: {bp_text[:200]!r}")
+                except Exception:
+                    pass
+                emit("info", "vm", f"Boot picker confirmed! Trying '{nav or 'default'}' + Enter...")
                 if nav:
                     _send_key(nav, 0.5)
                 _send_key("ret", 2)
