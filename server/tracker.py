@@ -1274,6 +1274,7 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
             "shutdown_dialog",
             ["want to shut"],
             "Restart",
+            fallback_pos=(540, 435),
         ),
         WizardScreen(
             "transfer_info",
