@@ -1419,9 +1419,30 @@ def _click_restart_in_shutdown_dialog() -> None:
     reliably find the small button text, so we click at the known position.
     The Restart button is on the left side of the centered dialog.
     """
-    emit("info", "vm", "  → Clicking 'Restart' in shutdown dialog at (590, 455)")
-    _mouse_click(590, 455, 0.5)
-    time.sleep(5)  # Wait for macOS to restart
+    _click_restart_in_shutdown_dialog.attempts = getattr(
+        _click_restart_in_shutdown_dialog, "attempts", 0
+    ) + 1
+    attempt = _click_restart_in_shutdown_dialog.attempts
+
+    # Save debug screenshot on first attempt to help calibrate coordinates
+    if attempt <= 2:
+        ppm = _take_screenshot()
+        img = _ppm_to_image(ppm)
+        if img:
+            img.save(f"/tmp/airtag-vm-shutdown-dialog-{attempt}.png")
+            emit("info", "vm", f"  → Saved shutdown dialog screenshot #{attempt}")
+
+    # Try multiple positions to find the Restart button.
+    # The dialog is centered at ~(640, 410), buttons at bottom.
+    positions = [
+        (590, 455),  # estimate 1
+        (580, 470),  # lower and slightly left
+        (600, 462),  # centered-left, middle height
+    ]
+    pos = positions[min(attempt - 1, len(positions) - 1)]
+    emit("info", "vm", f"  → Clicking 'Restart' at {pos} (attempt {attempt})")
+    _mouse_click(pos[0], pos[1], 0.5)
+    time.sleep(5)
 
 
 def _handle_migration() -> None:
@@ -1950,7 +1971,11 @@ def _run_setup_wizard():
 
             if screen.id == last_id:
                 stuck += 1
-                if stuck >= 3:
+                if stuck >= 3 and not screen.custom_action:
+                    # Tab+Enter fallback for screens without custom_action.
+                    # Skip for custom_action screens — they handle their own
+                    # retry logic (e.g. shutdown_dialog clicks Restart directly;
+                    # Tab+Enter would click "Shut Down" and kill the VM).
                     emit("info", "vm", f"Stuck on '{screen.id}', trying Tab+Enter")
                     _send_key("tab", 0.3)
                     _send_key("ret", 1)
