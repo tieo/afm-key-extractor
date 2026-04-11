@@ -1747,6 +1747,14 @@ def _create_account_from_recovery():
     _send_key("ret")
     time.sleep(1)
 
+    # Enable Full Keyboard Access so Tab cycles between buttons in dialogs.
+    # Without this, Tab does nothing and Enter/Space always click the default
+    # button — critical for the shutdown dialog where we need to click
+    # "Restart" (non-default) instead of "Shut Down" (default).
+    _type_text('GP="$D/Library/Preferences/.GlobalPreferences.plist"; /usr/libexec/PlistBuddy -c "Add :AppleKeyboardUIMode integer 3" "$GP" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :AppleKeyboardUIMode 3" "$GP"')
+    _send_key("ret")
+    time.sleep(1)
+
     # Verify
     _type_text(f'ls -la "$DS/users/{user}.plist" "$D/private/var/db/.AppleSetupDone" && echo SETUP_OK')
     _send_key("ret")
