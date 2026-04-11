@@ -1413,37 +1413,75 @@ def _escape_transfer_info() -> None:
 
 
 def _click_restart_in_shutdown_dialog() -> None:
-    """Press 'Restart' in the 'Do you want to shut down?' dialog.
+    """Dismiss the 'Do you want to shut down?' dialog without killing the VM.
 
     The dialog appears after Cmd+Q on Migration Assistant.  Mouse clicks
-    don't register on this dialog (likely a macOS window layering issue),
-    but keyboard input works.
+    don't register on it.  Enter/Space always click the default "Shut Down"
+    button which kills the VM.  Full Keyboard Access doesn't take effect
+    during initial setup.
 
-    In macOS dialogs:
-    - Return/Enter activates the DEFAULT (blue) button = "Shut Down" (kills VM!)
-    - Tab cycles focus between buttons
-    - Space activates the FOCUSED button
-
-    So we use Tab to move focus to "Restart", then Space to activate it.
+    Strategy: press Escape to dismiss the dialog (go back to transfer
+    screen), then click Back to return to migration intro.  From there
+    the wizard will try Cmd+Q again — eventually migration may time out
+    or we can try a different approach.
     """
-    emit("info", "vm", "  → Pressing Tab+Space to click 'Restart' in shutdown dialog")
-    _send_key("tab", 0.3)
-    _send_key("spc", 1)
-    time.sleep(5)  # Wait for macOS to restart
+    _click_restart_in_shutdown_dialog.attempts = getattr(
+        _click_restart_in_shutdown_dialog, "attempts", 0
+    ) + 1
+    attempt = _click_restart_in_shutdown_dialog.attempts
+    emit("info", "vm", f"  → Shutdown dialog attempt {attempt}: pressing Escape")
+    _send_key("esc", 1)
+    time.sleep(2)
+
+    # Check if we're back on transfer screen
+    ppm = _take_screenshot()
+    img = _ppm_to_image(ppm)
+    if img:
+        text = _ocr_region(img, 0, 0, 1280, 800).lower()
+        if "want to shut" not in text:
+            emit("info", "vm", "  → Dialog dismissed! Clicking Back on transfer screen")
+            # Click "Back" button to return to migration intro
+            if not _find_and_click("Back"):
+                _mouse_click(260, 665, 0.5)
+            time.sleep(2)
+            return
+
+    # Escape didn't work, try Cmd+. (another macOS cancel shortcut)
+    emit("info", "vm", "  → Trying Cmd+Period to dismiss dialog")
+    _send_key("meta_l-dot", 1)
+    time.sleep(2)
 
 
 def _handle_migration() -> None:
-    """Quit Migration Assistant with Cmd+Q.
+    """Try to skip Migration Assistant.
 
-    Works on both the "Migration Assistant" intro and the "Transfer
-    information to this Mac" source-selection screen.  Cmd+Q produces a
-    "Do you want to shut down?" dialog, which the wizard loop handles via
-    the shutdown_dialog screen (clicks "Restart").  After restart the
-    wizard resumes past Migration Assistant.
+    Strategy: On migration intro, press Cmd+Q which goes to the transfer
+    screen.  On the transfer screen, Cmd+Q produces a shutdown dialog
+    that we can't reliably dismiss.
+
+    Instead, on the migration intro, try Escape first. If that doesn't
+    work, try Cmd+Q but then handle the shutdown dialog via Escape.
     """
-    emit("info", "vm", "  → Pressing Cmd+Q to quit Migration Assistant")
-    _send_key("meta_l-q")
-    time.sleep(3)
+    _handle_migration.attempts = getattr(_handle_migration, "attempts", 0) + 1
+    attempt = _handle_migration.attempts
+    emit("info", "vm", f"  → migration attempt {attempt}")
+
+    if attempt <= 2:
+        # First tries: press Escape to skip migration
+        emit("info", "vm", "  → Pressing Escape on migration screen")
+        _send_key("esc", 1)
+        time.sleep(2)
+    elif attempt <= 4:
+        # Try Cmd+Q — goes to transfer screen, then shutdown dialog
+        emit("info", "vm", "  → Pressing Cmd+Q on migration screen")
+        _send_key("meta_l-q")
+        time.sleep(3)
+    else:
+        # Try clicking "Continue" on migration intro to advance to transfer,
+        # then we'll click Back from transfer → migration will eventually skip
+        emit("info", "vm", "  → Clicking Continue on migration intro")
+        _find_and_click("Continue")
+        time.sleep(2)
 
 
 def _on_migration_complete() -> None:
