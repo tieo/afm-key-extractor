@@ -2167,8 +2167,12 @@ def _auto_install_worker():
         _set_phase("installing", "Starting macOS installer from command line...")
         emit("info", "vm", "Finding macOS installer (startosinstall)...")
 
+        # Search for Catalina installer first (from BaseSystem), then fall back to any.
+        # Previous runs may leave a Ventura installer that fails without network.
         _type_text(
-            'INST=$(find / -name startosinstall -maxdepth 6 2>/dev/null | head -1); echo "FOUND:$INST"'
+            'INST=$(find / -path "*/Install macOS Catalina*" -name startosinstall -maxdepth 6 2>/dev/null | head -1);'
+            ' [ -z "$INST" ] && INST=$(find / -name startosinstall -maxdepth 6 2>/dev/null | head -1);'
+            ' echo "FOUND:$INST"'
         )
         _send_key("ret")
 
