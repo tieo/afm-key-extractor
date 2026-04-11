@@ -1406,42 +1406,58 @@ def _escape_transfer_info() -> None:
 
 
 def _handle_migration() -> None:
-    """Try to skip Migration Assistant.
+    """Try to skip Migration Assistant / Transfer information screen.
 
-    Strategy:
-      1. First time: click Continue (goes to transfer_info, which clicks Back)
-      2. Second time: Cmd+Q (may show shutdown dialog or skip forward)
-      3. Third time onwards: fall back to migration with network disabled
+    This is called for both the "Migration Assistant" intro screen and the
+    "Transfer information to this Mac" source-selection screen.  We detect
+    which screen we're on via OCR and act accordingly.
+
+    Migration Assistant intro:  Try Cmd+Q → may produce a "shut down" dialog
+    (handled by the shutdown_dialog wizard screen) or skip forward.
+
+    Transfer information:  Look for "Not Now" link / option on screen.
+    If not found, try Cmd+Q.  Save a debug screenshot on first encounter.
     """
     _handle_migration.attempts = getattr(_handle_migration, "attempts", 0) + 1
     attempt = _handle_migration.attempts
     emit("info", "vm", f"  → migration attempt {attempt}")
 
-    if attempt == 1:
-        # First try: click Continue to see transfer_info (it will click Back)
-        emit("info", "vm", "  → Clicking Continue to inspect transfer_info")
-        if not _find_and_click("Continue"):
-            _mouse_click(959, 665, 0.3)
-        time.sleep(2)
-    elif attempt == 2:
-        # Back from transfer_info brought us here again — try Cmd+Q
-        emit("info", "vm", "  → Pressing Cmd+Q to skip migration")
+    # Take a screenshot to detect which sub-screen we're on
+    ppm = _take_screenshot()
+    img = _ppm_to_image(ppm)
+    screen_text = ""
+    if img:
+        screen_text = _ocr_region(img, 0, 0, 1280, 800).lower()
+
+    on_transfer = "transfer information" in screen_text
+    emit("info", "vm", f"  → on_transfer={on_transfer}, attempt={attempt}")
+
+    if on_transfer:
+        # "Transfer information to this Mac" source-selection screen.
+        # Save debug screenshot on first encounter.
+        if attempt <= 2 and img:
+            img.save(f"/tmp/airtag-vm-transfer-{attempt}.png")
+            emit("info", "vm", f"  → Full OCR: {screen_text[:500]!r}")
+
+        # Strategy: look for "Not Now" or "don't transfer" clickable text
+        if _find_and_click("Not Now"):
+            emit("info", "vm", "  → Clicked 'Not Now'")
+            time.sleep(2)
+            return
+        if _find_and_click("not now"):
+            emit("info", "vm", "  → Clicked 'not now'")
+            time.sleep(2)
+            return
+
+        # Try Cmd+Q to quit Migration Assistant
+        emit("info", "vm", "  → Trying Cmd+Q on transfer screen")
         _send_key("meta_l-q")
         time.sleep(3)
-    elif attempt == 3:
-        # Try Escape key
-        emit("info", "vm", "  → Pressing Escape to skip migration")
-        _send_key("escape")
-        time.sleep(2)
     else:
-        # Fall back to letting migration proceed with network disabled
-        if attempt == 4:
-            emit("info", "vm", "  → Fallback: migration with network off")
-            _monitor_cmd("set_link net0 off")
-            time.sleep(1)
-        if not _find_and_click("Continue"):
-            _mouse_click(959, 665, 0.3)
-        time.sleep(2)
+        # "Migration Assistant" intro screen — Cmd+Q to skip
+        emit("info", "vm", "  → Pressing Cmd+Q on migration intro")
+        _send_key("meta_l-q")
+        time.sleep(3)
 
 
 def _on_migration_complete() -> None:
