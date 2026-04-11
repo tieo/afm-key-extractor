@@ -1493,52 +1493,55 @@ def _create_account_from_recovery():
         _monitor_cmd("system_reset")
         emit("info", "vm", f"Reset attempt {reset_attempt + 1}: intercepting boot picker...")
 
-        # Spam left-arrow during the boot picker window to:
-        # 1. Interrupt OpenCore's auto-boot timer
-        # 2. Navigate away from default (Macintosh HD) toward macOS Base System
+        # Poll rapidly for the boot picker. The instant it appears, navigate
+        # to macOS Base System and press Enter before auto-boot kicks in (~5s).
+        # Don't send keys blindly — just watch the screen.
         # UEFI takes ~5-10s to load OpenCore, boot picker shows for ~5s.
-        # Send keys from 3s to 20s to cover the window.
         time.sleep(3)
         state = None
-        for tick in range(18):  # 3s to ~21s after reset
-            _send_key("left", 0.3)
-            time.sleep(0.7)
-            # Check screen every 2 seconds
-            if tick % 2 == 1:
-                ppm = _take_screenshot()
-                screen = _detect_screen(ppm)
-                if screen == "boot_picker":
-                    emit("info", "vm", "Boot picker caught! Navigating to Recovery...")
-                    # We've been pressing left, so we should be on macOS Base System or EFI.
-                    # Press Enter to boot the current selection.
-                    _send_key("ret", 2)
+        # Boot picker: EFI (left), macOS Base System (middle), Macintosh HD (right/default).
+        # Try different navigation on each reset attempt.
+        nav_directions = ["left", "right", ""]  # attempt 0: left, 1: right, 2: default
+        nav = nav_directions[reset_attempt % len(nav_directions)]
+        for tick in range(30):  # Poll for up to 30s
+            ppm = _take_screenshot()
+            screen = _detect_screen(ppm)
+            if screen == "boot_picker":
+                emit("info", "vm", f"Boot picker caught! Trying '{nav or 'default'}' + Enter...")
+                if nav:
+                    _send_key(nav, 0.5)
+                _send_key("ret", 2)
+                boot_state, _ = _wait_for_screen(
+                    {"recovery", "setup_wizard", "apple_logo"},
+                    timeout=120, poll_interval=5,
+                    msg="Waiting for Recovery after boot picker",
+                )
+                if boot_state == "recovery":
+                    state = "recovery"
+                    break
+                elif boot_state == "setup_wizard":
+                    emit("info", "vm", "Hit Setup Assistant — wrong entry, will retry...")
+                    state = "setup_wizard"
+                    break
+                elif boot_state == "apple_logo":
                     boot_state, _ = _wait_for_screen(
-                        {"recovery", "setup_wizard", "apple_logo"},
-                        timeout=120, poll_interval=5,
-                        msg="Waiting for Recovery after boot picker",
+                        {"recovery", "setup_wizard"},
+                        timeout=180, poll_interval=5,
                     )
                     if boot_state == "recovery":
                         state = "recovery"
-                        break
-                    elif boot_state == "setup_wizard":
-                        emit("info", "vm", "Hit Setup Assistant — wrong entry, will retry...")
-                        state = "setup_wizard"
-                        break
-                    elif boot_state == "apple_logo":
-                        # Wait for it to resolve
-                        boot_state, _ = _wait_for_screen(
-                            {"recovery", "setup_wizard"},
-                            timeout=180, poll_interval=5,
-                        )
-                        if boot_state == "recovery":
-                            state = "recovery"
-                        else:
-                            state = boot_state
-                        break
-                elif screen == "recovery":
-                    emit("info", "vm", "Recovery detected directly!")
-                    state = "recovery"
+                    else:
+                        state = boot_state
                     break
+                # boot_picker still — continue polling
+            elif screen == "recovery":
+                emit("info", "vm", "Recovery detected directly!")
+                state = "recovery"
+                break
+            elif screen == "setup_wizard":
+                emit("info", "vm", "Setup Assistant appeared during polling — will reset...")
+                state = "setup_wizard"
+                break
 
         if state == "recovery":
             break
