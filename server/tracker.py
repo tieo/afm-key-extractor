@@ -1413,36 +1413,23 @@ def _escape_transfer_info() -> None:
 
 
 def _click_restart_in_shutdown_dialog() -> None:
-    """Click 'Restart' in the 'Do you want to shut down?' dialog.
+    """Press 'Restart' in the 'Do you want to shut down?' dialog.
 
-    The dialog appears after Cmd+Q on Migration Assistant.  OCR can't
-    reliably find the small button text, so we click at the known position.
-    The Restart button is on the left side of the centered dialog.
+    The dialog appears after Cmd+Q on Migration Assistant.  Mouse clicks
+    don't register on this dialog (likely a macOS window layering issue),
+    but keyboard input works.
+
+    In macOS dialogs:
+    - Return/Enter activates the DEFAULT (blue) button = "Shut Down" (kills VM!)
+    - Tab cycles focus between buttons
+    - Space activates the FOCUSED button
+
+    So we use Tab to move focus to "Restart", then Space to activate it.
     """
-    _click_restart_in_shutdown_dialog.attempts = getattr(
-        _click_restart_in_shutdown_dialog, "attempts", 0
-    ) + 1
-    attempt = _click_restart_in_shutdown_dialog.attempts
-
-    # Save debug screenshot on first attempt to help calibrate coordinates
-    if attempt <= 2:
-        ppm = _take_screenshot()
-        img = _ppm_to_image(ppm)
-        if img:
-            img.save(f"/tmp/airtag-vm-shutdown-dialog-{attempt}.png")
-            emit("info", "vm", f"  → Saved shutdown dialog screenshot #{attempt}")
-
-    # Try multiple positions to find the Restart button.
-    # The dialog is centered at ~(640, 410), buttons at bottom.
-    positions = [
-        (590, 455),  # estimate 1
-        (580, 470),  # lower and slightly left
-        (600, 462),  # centered-left, middle height
-    ]
-    pos = positions[min(attempt - 1, len(positions) - 1)]
-    emit("info", "vm", f"  → Clicking 'Restart' at {pos} (attempt {attempt})")
-    _mouse_click(pos[0], pos[1], 0.5)
-    time.sleep(5)
+    emit("info", "vm", "  → Pressing Tab+Space to click 'Restart' in shutdown dialog")
+    _send_key("tab", 0.3)
+    _send_key("spc", 1)
+    time.sleep(5)  # Wait for macOS to restart
 
 
 def _handle_migration() -> None:
