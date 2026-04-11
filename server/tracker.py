@@ -1483,123 +1483,79 @@ def _create_account_from_recovery():
     """
     _set_phase("setup_wizard", "Bypassing Setup Assistant via recovery Terminal...")
 
-    # === STEP 1: Reset VM and intercept boot picker ===
-    # OpenCore auto-boots Macintosh HD after a short timeout (~5s).
-    # We must send keystrokes during the boot picker window to prevent
-    # auto-boot, then navigate to macOS Base System (Recovery).
-    emit("info", "vm", "Resetting VM to boot into Recovery...")
+    # === STEP 1: Restart VM without MacHDD to force Recovery boot ===
+    # OpenCore's boot picker timeout is only 2 seconds — too fast to catch.
+    # Instead, kill the VM and restart it WITHOUT the MacHDD drive.
+    # OpenCore will only see macOS Base System → auto-boots into Recovery.
+    emit("info", "vm", "Killing VM and restarting without MacHDD to force Recovery...")
+    _kill_vm()
+    time.sleep(3)
 
-    for reset_attempt in range(3):
-        _monitor_cmd("system_reset")
-        emit("info", "vm", f"Reset attempt {reset_attempt + 1}: intercepting boot picker...")
+    # Start QEMU without MacHDD — only OpenCore + BaseSystem
+    qemu_args = [
+        "qemu-system-x86_64",
+        "-enable-kvm", "-m", "8192",
+        "-cpu", "Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,"
+                "+invtsc,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,"
+                "+avx,+aes,+xsave,+xsaveopt,check",
+        "-machine", "q35",
+        "-device", "qemu-xhci,id=xhci",
+        "-device", "usb-kbd,bus=xhci.0",
+        "-device", "usb-tablet,bus=xhci.0",
+        "-smp", "4,cores=2",
+        "-global", "ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off",
+        "-device", "isa-applesmc,osk="
+                   "ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc",
+        "-drive", f"if=pflash,format=raw,readonly=on,file={VM_DIR}/OVMF_CODE_4M.fd",
+        "-drive", f"if=pflash,format=raw,file={VM_DIR}/OVMF_VARS-1920x1080.fd",
+        "-smbios", "type=2",
+        "-device", "ich9-ahci,id=sata",
+        "-drive", f"id=OpenCoreBoot,if=none,snapshot=on,format=qcow2,"
+                  f"file={VM_DIR}/OpenCore/OpenCore.qcow2",
+        "-device", "ide-hd,bus=sata.2,drive=OpenCoreBoot",
+        # MacHDD intentionally omitted — forces Recovery boot
+        "-drive", f"id=InstallMedia,if=none,file={VM_DIR}/BaseSystem.img,format=raw",
+        "-device", "ide-hd,bus=sata.3,drive=InstallMedia",
+        "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
+        "-device", "vmxnet3,netdev=net0,id=net0,mac=52:54:00:c9:18:27",
+        "-device", "vmware-svga",
+        "-vnc", "127.0.0.1:1",
+        "-monitor", f"unix:{MONITOR_SOCK},server,nowait",
+        "-qmp", f"unix:{QMP_SOCK},server,nowait",
+        "-daemonize",
+        "-pidfile", "/tmp/airtag-vm-setup.pid",
+    ]
 
-        # Poll for the boot picker. UEFI takes ~8-12s to load OpenCore.
-        # Wait 8s to skip UEFI POST, then poll. When boot_picker is detected,
-        # confirm with a second screenshot (avoid false positives from
-        # transitional UEFI/OpenCore loading screens).
-        time.sleep(8)
-        state = None
-        # Boot picker: EFI (left), macOS Base System (middle), Macintosh HD (right/default).
-        # Try different navigation on each reset attempt.
-        nav_directions = ["left", "right", ""]  # attempt 0: left, 1: right, 2: default
-        nav = nav_directions[reset_attempt % len(nav_directions)]
-        for tick in range(30):  # Poll for up to 30s
-            time.sleep(1)
-            ppm = _take_screenshot()
-            screen = _detect_screen(ppm)
-            if screen == "boot_picker":
-                # Confirm with a second screenshot to avoid false positives
-                time.sleep(0.5)
-                ppm2 = _take_screenshot()
-                screen2 = _detect_screen(ppm2)
-                if screen2 != "boot_picker":
-                    emit("info", "vm", f"Boot picker not confirmed (was {screen2}), continuing...")
-                    continue
-                # Save debug screenshot
-                try:
-                    img = _ppm_to_image(ppm2)
-                    if img:
-                        img.save(f"/tmp/airtag-vm-bootpicker-reset{reset_attempt}.png")
-                        bp_text = _ocr_region(img, 200, 400, 1100, 700)
-                        emit("info", "vm", f"Boot picker OCR: {bp_text[:200]!r}")
-                except Exception:
-                    pass
-                emit("info", "vm", f"Boot picker confirmed! Trying '{nav or 'default'}' + Enter...")
-                if nav:
-                    _send_key(nav, 0.5)
-                _send_key("ret", 2)
-                boot_state, _ = _wait_for_screen(
-                    {"recovery", "setup_wizard", "apple_logo"},
-                    timeout=120, poll_interval=5,
-                    msg="Waiting for Recovery after boot picker",
-                )
-                if boot_state == "recovery":
-                    state = "recovery"
-                    break
-                elif boot_state == "setup_wizard":
-                    emit("info", "vm", "Hit Setup Assistant — wrong entry, will retry...")
-                    state = "setup_wizard"
-                    break
-                elif boot_state == "apple_logo":
-                    boot_state, _ = _wait_for_screen(
-                        {"recovery", "setup_wizard"},
-                        timeout=180, poll_interval=5,
-                    )
-                    if boot_state == "recovery":
-                        state = "recovery"
-                    else:
-                        state = boot_state
-                    break
-                # boot_picker still — continue polling
-            elif screen == "recovery":
-                emit("info", "vm", "Recovery detected directly!")
-                state = "recovery"
-                break
-            elif screen == "setup_wizard":
-                emit("info", "vm", "Setup Assistant appeared during polling — will reset...")
-                state = "setup_wizard"
-                break
-
-        if state == "recovery":
-            break
-
-        # If we didn't catch the boot picker, check where we ended up
-        if state is None:
-            ppm = _take_screenshot()
-            state = _detect_screen(ppm)
-            emit("info", "vm", f"After key spam: screen is {state}")
-
-        if state == "recovery":
-            break
-        elif state == "setup_wizard":
-            emit("info", "vm", "Setup Assistant appeared — resetting to try again...")
-            continue
-        elif state == "boot_picker":
-            # Still at boot picker — try pressing Enter
-            emit("info", "vm", "Still at boot picker, pressing Enter...")
-            _send_key("ret", 2)
-            state, _ = _wait_for_screen(
-                {"recovery", "setup_wizard"}, timeout=120, poll_interval=5,
-            )
-            if state == "recovery":
-                break
-            continue
-        else:
-            # Unknown/apple_logo — wait a bit
-            state, _ = _wait_for_screen(
-                {"recovery", "setup_wizard", "boot_picker"},
-                timeout=120, poll_interval=5,
-                msg="Waiting for screen to resolve",
-            )
-            if state == "recovery":
-                break
-            elif state in ("setup_wizard", "boot_picker"):
-                continue
-            _set_phase("error", f"Could not reach Recovery (state: {state})")
+    try:
+        result = sp.run(qemu_args, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            _set_phase("error", f"Failed to start Recovery VM: {result.stderr}")
             return
+    except Exception as e:
+        _set_phase("error", f"Failed to start Recovery VM: {e}")
+        return
+
+    emit("info", "vm", "Recovery VM started (no MacHDD). Waiting for Recovery...")
+
+    # Wait for recovery screen — OpenCore should auto-boot macOS Base System
+    state, _ = _wait_for_screen(
+        {"recovery", "boot_picker"},
+        timeout=180,
+        poll_interval=5,
+        msg="Waiting for Recovery to load",
+    )
+
+    if state == "boot_picker":
+        # Boot picker with only macOS Base System — just press Enter
+        emit("info", "vm", "Boot picker: pressing Enter for macOS Base System...")
+        _send_key("ret", 2)
+        state, _ = _wait_for_screen(
+            {"recovery"}, timeout=120, poll_interval=5,
+            msg="Waiting for Recovery after boot picker",
+        )
 
     if state != "recovery":
-        _set_phase("error", f"Could not reach Recovery after 3 resets (state: {state})")
+        _set_phase("error", f"Could not reach Recovery (state: {state})")
         return
 
     # === STEP 3: Open Terminal from Recovery ===
@@ -1712,42 +1668,77 @@ def _create_account_from_recovery():
         except Exception:
             pass
 
-    # === STEP 5: Reboot into Macintosh HD ===
-    emit("info", "vm", "Rebooting into Macintosh HD...")
-    _type_text("reboot")
-    _send_key("ret")
-    time.sleep(15)
+    # === STEP 5: Kill Recovery VM and restart with MacHDD ===
+    # The Recovery VM has no MacHDD, so we can't just reboot.
+    # Kill it and restart QEMU with the full drive list.
+    emit("info", "vm", "Killing Recovery VM and restarting with MacHDD...")
+    _kill_vm()
+    time.sleep(3)
 
+    # Restart with full QEMU args including MacHDD
+    qemu_args_full = [
+        "qemu-system-x86_64",
+        "-enable-kvm", "-m", "8192",
+        "-cpu", "Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,"
+                "+invtsc,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,"
+                "+avx,+aes,+xsave,+xsaveopt,check",
+        "-machine", "q35",
+        "-device", "qemu-xhci,id=xhci",
+        "-device", "usb-kbd,bus=xhci.0",
+        "-device", "usb-tablet,bus=xhci.0",
+        "-smp", "4,cores=2",
+        "-global", "ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off",
+        "-device", "isa-applesmc,osk="
+                   "ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc",
+        "-drive", f"if=pflash,format=raw,readonly=on,file={VM_DIR}/OVMF_CODE_4M.fd",
+        "-drive", f"if=pflash,format=raw,file={VM_DIR}/OVMF_VARS-1920x1080.fd",
+        "-smbios", "type=2",
+        "-device", "ich9-ahci,id=sata",
+        "-drive", f"id=OpenCoreBoot,if=none,snapshot=on,format=qcow2,"
+                  f"file={VM_DIR}/OpenCore/OpenCore.qcow2",
+        "-device", "ide-hd,bus=sata.2,drive=OpenCoreBoot",
+        "-drive", f"id=MacHDD,if=none,file={VM_DIR}/mac_hdd_ng.img,format=qcow2",
+        "-device", "ide-hd,bus=sata.4,drive=MacHDD",
+        "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
+        "-device", "vmxnet3,netdev=net0,id=net0,mac=52:54:00:c9:18:27",
+        "-device", "vmware-svga",
+        "-vnc", "127.0.0.1:1",
+        "-monitor", f"unix:{MONITOR_SOCK},server,nowait",
+        "-qmp", f"unix:{QMP_SOCK},server,nowait",
+        "-daemonize",
+        "-pidfile", "/tmp/airtag-vm-setup.pid",
+    ]
+
+    try:
+        result = sp.run(qemu_args_full, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            _set_phase("error", f"Failed to restart VM with MacHDD: {result.stderr}")
+            return
+    except Exception as e:
+        _set_phase("error", f"Failed to restart VM with MacHDD: {e}")
+        return
+
+    emit("info", "vm", "VM restarted with MacHDD. Waiting for Macintosh HD to boot...")
+
+    # OpenCore should auto-boot Macintosh HD (default, rightmost entry)
     state, _ = _wait_for_screen(
-        {"boot_picker", "desktop", "login_screen", "setup_wizard"},
+        {"desktop", "login_screen", "setup_wizard", "boot_picker"},
         timeout=300,
         poll_interval=5,
-        msg="Waiting for boot after account creation",
+        msg="Waiting for Macintosh HD to boot after account creation",
     )
 
     if state == "boot_picker":
-        # Try to select Macintosh HD — try default first, then alternatives
-        for hd_attempt in range(4):
-            if hd_attempt == 0:
-                emit("info", "vm", "Boot picker: pressing Enter for default (Macintosh HD)...")
-            elif hd_attempt == 1:
-                emit("info", "vm", "Boot picker: trying right...")
-                _send_key("right", 1)
-            elif hd_attempt == 2:
-                emit("info", "vm", "Boot picker: trying left...")
-                _send_key("left", 1)
-            else:
-                _send_key("left", 1)
-
-            _send_key("ret", 2)
-            state, _ = _wait_for_screen(
-                {"desktop", "login_screen", "setup_wizard"},
-                timeout=300,
-                poll_interval=5,
-                msg=f"Waiting for Macintosh HD to boot (attempt {hd_attempt})",
-            )
-            if state != "boot_picker":
-                break
+        # Macintosh HD is rightmost — press right then Enter
+        emit("info", "vm", "Boot picker detected, selecting Macintosh HD (right)...")
+        _send_key("right", 0.5)
+        _send_key("right", 0.5)
+        _send_key("ret", 2)
+        state, _ = _wait_for_screen(
+            {"desktop", "login_screen", "setup_wizard"},
+            timeout=300, poll_interval=5,
+            msg="Waiting for Macintosh HD after boot picker",
+        )
 
     if state in ("desktop", "login_screen"):
         pw_path = DATA_DIR / "vm-password"
