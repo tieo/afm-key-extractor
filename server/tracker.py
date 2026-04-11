@@ -1441,8 +1441,9 @@ def _click_restart_in_shutdown_dialog() -> None:
         if "want to shut" not in text:
             emit("info", "vm", "  → Dialog dismissed! Clicking Back on transfer screen")
             # Click "Back" button to return to migration intro
+            # Back is at bottom-right (~1020, 745), NOT bottom-left
             if not _find_and_click("Back"):
-                _mouse_click(260, 665, 0.5)
+                _mouse_click(1020, 745, 0.5)
             time.sleep(2)
             return
 
@@ -1453,80 +1454,75 @@ def _click_restart_in_shutdown_dialog() -> None:
 
 
 def _handle_migration() -> None:
-    """Try to skip Migration Assistant / transfer info screen.
+    """Try to skip Migration Assistant.
 
-    The transfer_info screen ("Transfer information to this Mac") has a
-    disabled Continue button (no source selected) and OCR can't find buttons.
+    Two screens share this handler:
+    - migration intro ("migration assistant"): has radio options including
+      "Don't transfer any information now" which we want to select.
+    - transfer_info ("transfer information to this mac"): has a disabled
+      Continue button (no source selected) and a Back button at ~(1020,745).
 
-    Strategy rotation:
-    1-2: Escape
-    3-4: Cmd+Q (triggers shutdown dialog, handled by Escape)
-    5: Debug screenshot + full OCR dump
-    6-7: Try "Not Now" with full-screen search
-    8+: Cycle through Cmd+Q → Escape dialog → Return
+    Strategy: identify which screen we're on, then act accordingly.
+    On migration intro: find and click "Don't transfer" option, then Continue.
+    On transfer_info: Cmd+Q → Escape dialog → click Back → return to intro.
     """
     _handle_migration.attempts = getattr(_handle_migration, "attempts", 0) + 1
     attempt = _handle_migration.attempts
     emit("info", "vm", f"  → migration attempt {attempt}")
 
-    if attempt <= 2:
-        emit("info", "vm", "  → Pressing Escape on migration screen")
-        _send_key("esc", 1)
+    # Take screenshot to identify which sub-screen we're on
+    ppm = _take_screenshot()
+    img = _ppm_to_image(ppm)
+    if not img:
         time.sleep(2)
-    elif attempt <= 4:
-        emit("info", "vm", "  → Pressing Cmd+Q on migration screen")
-        _send_key("meta_l-q")
-        time.sleep(3)
-    elif attempt == 5:
-        # Debug: full OCR of the screen to see what buttons/text exist
-        ppm = _take_screenshot()
-        img = _ppm_to_image(ppm)
-        if img:
-            img.save("/tmp/airtag-vm-migration-debug.png")
-            full_text = _ocr_region(img, 0, 0, 1280, 800)
-            emit("info", "vm", f"  → Full migration OCR: {full_text[:800]!r}")
-            # Try to find "Not Now" anywhere on screen (min_y=0)
-            pos = _find_button_pos(img, "Not Now", min_y=0)
+        return
+
+    text = _ocr_region(img, 0, 0, 1280, 800).lower()
+
+    if attempt == 1:
+        # Debug: save screenshot and full OCR on first encounter
+        img.save("/tmp/airtag-vm-migration-debug.png")
+        emit("info", "vm", f"  → Full migration OCR: {text[:800]!r}")
+
+    on_transfer = "transfer information" in text
+    on_intro = "migration assistant" in text and not on_transfer
+
+    if on_intro:
+        # Migration intro screen — look for "Don't transfer" radio option
+        emit("info", "vm", "  → On migration intro, looking for skip option")
+        for label in ("Don't transfer", "don't transfer", "Not Now", "not now"):
+            pos = _find_button_pos(img, label, min_y=0)
             if pos:
-                emit("info", "vm", f"  → Found 'Not Now' at {pos}")
+                emit("info", "vm", f"  → Found '{label}' at {pos}, clicking it")
                 _mouse_click(pos[0], pos[1], 0.3)
-            else:
-                emit("info", "vm", "  → No 'Not Now' found, trying Cmd+Q")
-                _send_key("meta_l-q")
-        time.sleep(3)
-    elif attempt <= 7:
-        # Try "Not Now" with full screen search, also try "not now" lowercase
-        emit("info", "vm", "  → Looking for 'Not Now' link")
-        ppm = _take_screenshot()
-        img = _ppm_to_image(ppm)
-        if img:
-            for label in ("Not Now", "not now", "Later"):
-                pos = _find_button_pos(img, label, min_y=0)
-                if pos:
-                    emit("info", "vm", f"  → Found '{label}' at {pos}")
-                    _mouse_click(pos[0], pos[1], 0.3)
-                    time.sleep(2)
-                    return
-        # Fallback: Cmd+Q cycle
-        emit("info", "vm", "  → Pressing Cmd+Q")
+                time.sleep(1)
+                # Now click Continue
+                if not _find_and_click("Continue"):
+                    _mouse_click(1130, 745, 0.3)  # Continue button position
+                time.sleep(2)
+                return
+        # Skip option not found, try Cmd+Q to trigger transfer screen cycle
+        emit("info", "vm", "  → Skip option not found on intro, pressing Cmd+Q")
         _send_key("meta_l-q")
         time.sleep(3)
-    else:
-        # Alternate: Cmd+Q → Escape dismisses dialog → Return on transfer
-        if attempt % 3 == 0:
-            emit("info", "vm", "  → Pressing Cmd+Q on migration screen")
+    elif on_transfer:
+        # Transfer info screen — need to go Back to migration intro
+        if attempt <= 3:
+            # First few tries: Cmd+Q → shutdown dialog → Escape → click Back
+            emit("info", "vm", "  → On transfer_info, pressing Cmd+Q to get shutdown dialog")
             _send_key("meta_l-q")
             time.sleep(3)
-        elif attempt % 3 == 1:
-            # After shutdown dialog dismissed, try pressing Return
-            emit("info", "vm", "  → Pressing Return (maybe Continue is default)")
-            _send_key("ret", 1)
-            time.sleep(2)
         else:
-            # Also try clicking at common Continue button position (bottom-right)
-            emit("info", "vm", "  → Clicking at Continue position (1050, 740)")
-            _mouse_click(1050, 740, 0.3)
+            # Direct: click Back button at correct position (bottom-right)
+            emit("info", "vm", "  → Clicking Back button at (1020, 745)")
+            if not _find_and_click("Back"):
+                _mouse_click(1020, 745, 0.3)
             time.sleep(2)
+    else:
+        # Unknown sub-screen, try Escape
+        emit("info", "vm", f"  → Unknown migration sub-screen, pressing Escape")
+        _send_key("esc", 1)
+        time.sleep(2)
 
 
 def _on_migration_complete() -> None:
