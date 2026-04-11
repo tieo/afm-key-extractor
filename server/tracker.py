@@ -1546,8 +1546,10 @@ def _create_account_from_recovery():
     )
 
     if state == "boot_picker":
-        # Boot picker with only macOS Base System — just press Enter
-        emit("info", "vm", "Boot picker: pressing Enter for macOS Base System...")
+        # Boot picker has EFI (left, default) and macOS Base System (right).
+        # Navigate right to select macOS Base System, then press Enter.
+        emit("info", "vm", "Boot picker: navigating right to macOS Base System...")
+        _send_key("right", 0.5)
         _send_key("ret", 2)
         state, _ = _wait_for_screen(
             {"recovery"}, timeout=120, poll_interval=5,
