@@ -1618,39 +1618,46 @@ def _create_account_from_recovery():
             emit("warning", "vm", f"Could not confirm Terminal ({state}) — proceeding anyway")
 
     # === STEP 4: Mount volumes and create user account ===
-    emit("info", "vm", "Terminal open. Mounting all APFS volumes...")
+    emit("info", "vm", "Terminal open. Mounting Macintosh HD volumes read-write...")
 
-    # Mount all APFS volumes — Ventura's data volume may not mount by name
-    _type_text('diskutil apfs list 2>/dev/null | grep -i "mount\\|name\\|role"')
+    # List available disks and volumes for debugging
+    _type_text('diskutil list')
     _send_key("ret")
     time.sleep(3)
 
-    # Try mounting by name first, then mount all unmounted volumes
-    _type_text('diskutil mount "Macintosh HD" 2>/dev/null; diskutil mount "Macintosh HD - Data" 2>/dev/null')
+    # Mount Macintosh HD — try multiple approaches
+    _type_text('diskutil mount "Macintosh HD" 2>&1')
     _send_key("ret")
     time.sleep(3)
-    # Also try mounting all APFS volumes in case names differ
-    _type_text('diskutil apfs unlockVolume disk1s1 2>/dev/null; diskutil mountDisk disk1 2>/dev/null')
+    _type_text('diskutil mount "Macintosh HD - Data" 2>&1')
     _send_key("ret")
     time.sleep(3)
 
-    # Find the data volume — check multiple possible paths
-    # Ventura: /Volumes/Macintosh HD - Data or /Volumes/Data
-    # The dslocal database is on the data volume
-    _type_text('for P in "/Volumes/Macintosh HD - Data" "/Volumes/Data" "/Volumes/Macintosh HD"; do [ -d "$P/private/var/db/dslocal/nodes/Default/users" ] && D="$P" && break; done; echo "D=$D"')
+    # List what's in /Volumes and find the data volume
+    _type_text('ls -la /Volumes/')
     _send_key("ret")
     time.sleep(2)
+
+    # Find the data volume with dslocal — check all /Volumes/* paths
+    _type_text('D=""; for P in /Volumes/*; do [ -d "$P/private/var/db/dslocal/nodes/Default/users" ] && D="$P" && break; done; echo "FOUND_D=$D"')
+    _send_key("ret")
+    time.sleep(2)
+
+    # If D is empty, the data volume may not have mounted. Try mounting by disk identifier.
+    _type_text('if [ -z "$D" ]; then for d in disk1s1 disk1s2 disk2s1 disk2s2 disk2s5; do diskutil mount $d 2>/dev/null; done; fi')
+    _send_key("ret")
+    time.sleep(3)
+
+    # Retry finding D after extra mounts
+    _type_text('if [ -z "$D" ]; then for P in /Volumes/*; do [ -d "$P/private/var/db/dslocal/nodes/Default/users" ] && D="$P" && break; done; echo "RETRY_D=$D"; fi')
+    _send_key("ret")
+    time.sleep(2)
+
+    # Set DS and verify — also try to remount read-write if needed
     _type_text('DS="$D/private/var/db/dslocal/nodes/Default"')
     _send_key("ret")
     time.sleep(1)
-
-    # List all mounted volumes for debugging
-    _type_text('ls /Volumes/')
-    _send_key("ret")
-    time.sleep(2)
-
-    # Verify the directory exists
-    _type_text('ls "$DS/users" && echo DS_OK || echo DS_FAIL')
+    _type_text('mount -uw "$D" 2>/dev/null; ls "$DS/users" && echo DS_OK || echo DS_FAIL')
     _send_key("ret")
     time.sleep(3)
 
