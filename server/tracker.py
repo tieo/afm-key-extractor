@@ -1669,24 +1669,48 @@ def _create_account_from_recovery():
     user = VM_USER
     pw = VM_PASSWORD
 
-    emit("info", "vm", f"Creating user '{user}' via dscl on mounted volume...")
+    emit("info", "vm", f"Creating user '{user}' via plist on mounted volume...")
 
-    # Create user record via dscl targeting the mounted volume's directory store
-    dscl_cmds = [
-        f'dscl -f "$DS" localonly -create /Local/Default/Users/{user}',
-        f'dscl -f "$DS" localonly -create /Local/Default/Users/{user} UserShell /bin/bash',
-        f'dscl -f "$DS" localonly -create /Local/Default/Users/{user} RealName "{user}"',
-        f'dscl -f "$DS" localonly -create /Local/Default/Users/{user} UniqueID 501',
-        f'dscl -f "$DS" localonly -create /Local/Default/Users/{user} PrimaryGroupID 20',
-        f'dscl -f "$DS" localonly -create /Local/Default/Users/{user} NFSHomeDirectory /Users/{user}',
-        f'dscl -f "$DS" localonly -passwd /Local/Default/Users/{user} {pw}',
-        f'dscl -f "$DS" localonly -append /Local/Default/Groups/admin GroupMembership {user}',
+    # dscl -f doesn't work on Ventura (eDSUnknownNodeName).
+    # Instead, write the user plist directly to the dslocal directory.
+    # Generate password hash using Python (available in recovery).
+    # Each user is a plist at $DS/users/<username>.plist
+
+    # First, generate the password hash via Python
+    _type_text(f'PH=$(python3 -c "import hashlib; print(hashlib.sha512(b\\"{pw}\\").hexdigest())")')
+    _send_key("ret")
+    time.sleep(2)
+
+    # Write user plist directly
+    plist_cmds = [
+        f'cat > "$DS/users/{user}.plist" << PEOF',
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<plist version="1.0">',
+        '<dict>',
+        '  <key>uid</key><array><string>501</string></array>',
+        '  <key>gid</key><array><string>20</string></array>',
+        f'  <key>name</key><array><string>{user}</string></array>',
+        f'  <key>realname</key><array><string>{user}</string></array>',
+        f'  <key>shell</key><array><string>/bin/zsh</string></array>',
+        f'  <key>home</key><array><string>/Users/{user}</string></array>',
+        '  <key>generateduid</key><array><string>FFFFEEEE-DDDD-CCCC-BBBB-AAAA00000001</string></array>',
+        f'  <key>passwd</key><array><string>{pw}</string></array>',
+        '</dict>',
+        '</plist>',
+        'PEOF',
     ]
 
-    for cmd in dscl_cmds:
-        _type_text(cmd)
+    for line in plist_cmds:
+        _type_text(line)
         _send_key("ret")
-        time.sleep(2)
+        time.sleep(0.3)
+    time.sleep(2)
+
+    # Add user to admin group
+    _type_text(f'G="$DS/groups/admin.plist"; /usr/libexec/PlistBuddy -c "Add :groupmembers: string {user}" "$G" 2>/dev/null; /usr/libexec/PlistBuddy -c "Add :users: string {user}" "$G" 2>/dev/null')
+    _send_key("ret")
+    time.sleep(2)
 
     # Create home directory and skip Setup Assistant
     _type_text(f'mkdir -p "$D/Users/{user}"')
@@ -1697,7 +1721,7 @@ def _create_account_from_recovery():
     time.sleep(1)
 
     # Verify
-    _type_text('ls -la "$D/private/var/db/.AppleSetupDone" && echo SETUP_OK')
+    _type_text(f'ls -la "$DS/users/{user}.plist" "$D/private/var/db/.AppleSetupDone" && echo SETUP_OK')
     _send_key("ret")
     time.sleep(3)
 
