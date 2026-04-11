@@ -1270,11 +1270,14 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         # shutdown_dialog MUST be before transfer_info/migration because when
         # the dialog overlays the transfer screen, OCR sees both texts —
         # we need "want to shut" to match first.
+        # Uses custom_action to click Restart directly — OCR can't find button
+        # text in the small dialog, and the stuck-detection Tab+Enter clicks
+        # "Shut Down" (the default) instead, killing the VM.
         WizardScreen(
             "shutdown_dialog",
             ["want to shut"],
-            "Restart",
-            fallback_pos=(540, 435),
+            "",
+            custom_action=lambda: _click_restart_in_shutdown_dialog(),
         ),
         WizardScreen(
             "transfer_info",
@@ -1407,6 +1410,18 @@ def _escape_transfer_info() -> None:
     if not _find_and_click("Back"):
         _mouse_click(260, 665, 0.3)  # Back button position
     time.sleep(2)
+
+
+def _click_restart_in_shutdown_dialog() -> None:
+    """Click 'Restart' in the 'Do you want to shut down?' dialog.
+
+    The dialog appears after Cmd+Q on Migration Assistant.  OCR can't
+    reliably find the small button text, so we click at the known position.
+    The Restart button is on the left side of the centered dialog.
+    """
+    emit("info", "vm", "  → Clicking 'Restart' in shutdown dialog at (590, 455)")
+    _mouse_click(590, 455, 0.5)
+    time.sleep(5)  # Wait for macOS to restart
 
 
 def _handle_migration() -> None:
