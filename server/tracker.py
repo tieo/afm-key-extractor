@@ -1483,95 +1483,103 @@ def _create_account_from_recovery():
     """
     _set_phase("setup_wizard", "Bypassing Setup Assistant via recovery Terminal...")
 
-    # === STEP 1: Reset VM to get back to boot picker ===
+    # === STEP 1: Reset VM and intercept boot picker ===
+    # OpenCore auto-boots Macintosh HD after a short timeout (~5s).
+    # We must send keystrokes during the boot picker window to prevent
+    # auto-boot, then navigate to macOS Base System (Recovery).
     emit("info", "vm", "Resetting VM to boot into Recovery...")
-    _monitor_cmd("system_reset")
-    time.sleep(10)
 
-    state, _ = _wait_for_screen(
-        {"boot_picker", "recovery"},
-        timeout=120,
-        poll_interval=5,
-        msg="Waiting for boot picker after reset",
-    )
+    for reset_attempt in range(3):
+        _monitor_cmd("system_reset")
+        emit("info", "vm", f"Reset attempt {reset_attempt + 1}: intercepting boot picker...")
 
-    # === STEP 2: Navigate boot picker to Recovery (macOS Base System) ===
-    if state == "boot_picker":
-        # Boot picker layout: EFI (left), macOS Base System (middle), Macintosh HD (right).
-        # Default selection is usually Macintosh HD (rightmost).
-        # We need macOS Base System (one left from default).
+        # Spam left-arrow during the boot picker window to:
+        # 1. Interrupt OpenCore's auto-boot timer
+        # 2. Navigate away from default (Macintosh HD) toward macOS Base System
+        # UEFI takes ~5-10s to load OpenCore, boot picker shows for ~5s.
+        # Send keys from 3s to 20s to cover the window.
         time.sleep(3)
-
-        for bp_attempt in range(6):
-            if bp_attempt == 0:
-                emit("info", "vm", "Boot picker: selecting macOS Base System (left from default)...")
-                _send_key("left", 1)
-            elif bp_attempt == 1:
-                emit("info", "vm", "Boot picker: trying left again...")
-                _send_key("left", 1)
-            elif bp_attempt == 2:
-                emit("info", "vm", "Boot picker: trying right...")
-                _send_key("right", 1)
-            elif bp_attempt == 3:
-                emit("info", "vm", "Boot picker: trying right again...")
-                _send_key("right", 1)
-            else:
-                emit("info", "vm", f"Boot picker attempt {bp_attempt}: Enter on current...")
-
-            _send_key("ret", 2)
-
-            boot_state, _ = _wait_for_screen(
-                {"recovery", "setup_wizard", "boot_picker", "apple_logo"},
-                timeout=120,
-                poll_interval=5,
-                msg=f"Waiting for Recovery (boot attempt {bp_attempt})",
-            )
-
-            if boot_state == "recovery":
-                state = "recovery"
-                break
-            elif boot_state == "setup_wizard":
-                # Booted into Macintosh HD Setup Assistant — reset and retry
-                emit("info", "vm", "Booted into Setup Assistant, resetting to try Recovery...")
-                _monitor_cmd("system_reset")
-                time.sleep(10)
-                state, _ = _wait_for_screen(
-                    {"boot_picker"}, timeout=120, poll_interval=5,
-                    msg="Waiting for boot picker after reset",
-                )
-                if state != "boot_picker":
-                    break
-                time.sleep(3)
-                continue
-            elif boot_state == "apple_logo":
-                # Might be booting into macOS — wait longer
-                boot_state, _ = _wait_for_screen(
-                    {"recovery", "setup_wizard", "boot_picker"},
-                    timeout=180, poll_interval=5,
-                    msg="Waiting for apple_logo to resolve",
-                )
-                if boot_state == "recovery":
+        state = None
+        for tick in range(18):  # 3s to ~21s after reset
+            _send_key("left", 0.3)
+            time.sleep(0.7)
+            # Check screen every 2 seconds
+            if tick % 2 == 1:
+                ppm = _take_screenshot()
+                screen = _detect_screen(ppm)
+                if screen == "boot_picker":
+                    emit("info", "vm", "Boot picker caught! Navigating to Recovery...")
+                    # We've been pressing left, so we should be on macOS Base System or EFI.
+                    # Press Enter to boot the current selection.
+                    _send_key("ret", 2)
+                    boot_state, _ = _wait_for_screen(
+                        {"recovery", "setup_wizard", "apple_logo"},
+                        timeout=120, poll_interval=5,
+                        msg="Waiting for Recovery after boot picker",
+                    )
+                    if boot_state == "recovery":
+                        state = "recovery"
+                        break
+                    elif boot_state == "setup_wizard":
+                        emit("info", "vm", "Hit Setup Assistant — wrong entry, will retry...")
+                        state = "setup_wizard"
+                        break
+                    elif boot_state == "apple_logo":
+                        # Wait for it to resolve
+                        boot_state, _ = _wait_for_screen(
+                            {"recovery", "setup_wizard"},
+                            timeout=180, poll_interval=5,
+                        )
+                        if boot_state == "recovery":
+                            state = "recovery"
+                        else:
+                            state = boot_state
+                        break
+                elif screen == "recovery":
+                    emit("info", "vm", "Recovery detected directly!")
                     state = "recovery"
                     break
-                elif boot_state == "setup_wizard":
-                    emit("info", "vm", "Booted into Setup Assistant, resetting...")
-                    _monitor_cmd("system_reset")
-                    time.sleep(10)
-                    state, _ = _wait_for_screen(
-                        {"boot_picker"}, timeout=120, poll_interval=5,
-                    )
-                    if state != "boot_picker":
-                        break
-                    time.sleep(3)
-                    continue
-            # boot_picker — try next entry
 
-        if state != "recovery":
-            _set_phase("error", f"Could not reach Recovery after 6 boot attempts (state: {state})")
+        if state == "recovery":
+            break
+
+        # If we didn't catch the boot picker, check where we ended up
+        if state is None:
+            ppm = _take_screenshot()
+            state = _detect_screen(ppm)
+            emit("info", "vm", f"After key spam: screen is {state}")
+
+        if state == "recovery":
+            break
+        elif state == "setup_wizard":
+            emit("info", "vm", "Setup Assistant appeared — resetting to try again...")
+            continue
+        elif state == "boot_picker":
+            # Still at boot picker — try pressing Enter
+            emit("info", "vm", "Still at boot picker, pressing Enter...")
+            _send_key("ret", 2)
+            state, _ = _wait_for_screen(
+                {"recovery", "setup_wizard"}, timeout=120, poll_interval=5,
+            )
+            if state == "recovery":
+                break
+            continue
+        else:
+            # Unknown/apple_logo — wait a bit
+            state, _ = _wait_for_screen(
+                {"recovery", "setup_wizard", "boot_picker"},
+                timeout=120, poll_interval=5,
+                msg="Waiting for screen to resolve",
+            )
+            if state == "recovery":
+                break
+            elif state in ("setup_wizard", "boot_picker"):
+                continue
+            _set_phase("error", f"Could not reach Recovery (state: {state})")
             return
 
-    elif state != "recovery":
-        _set_phase("error", f"Expected boot picker or recovery after reset, got: {state}")
+    if state != "recovery":
+        _set_phase("error", f"Could not reach Recovery after 3 resets (state: {state})")
         return
 
     # === STEP 3: Open Terminal from Recovery ===
