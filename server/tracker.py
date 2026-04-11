@@ -1140,7 +1140,7 @@ WIZARD_TIMEOUT = 1200  # 20 min — migration transfer + reboot can take 15+ min
 # Version-specific screen definitions. Each macOS version has different wizard
 # screens. To add a new version, add entries to WIZARD_SCREENS below.
 
-MACOS_VERSION = "catalina"
+MACOS_VERSION = "ventura"
 
 
 @dataclass
@@ -1257,6 +1257,40 @@ WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
         WizardScreen("appearance", ["choose your look"], "Continue"),
         WizardScreen("touch_id", ["touch id"], "Continue"),
         WizardScreen("apple_pay", ["apple pay"], "Set Up Later", fallback_pos=(196, 670)),
+    ],
+    # Ventura wizard screens — used as fallback if recovery bypass fails.
+    # Primary path bypasses Setup Assistant via _create_account_from_recovery().
+    "ventura": [
+        WizardScreen("country", ["country or region"], "Continue"),
+        WizardScreen("language", ["written and spoken"], "Continue"),
+        WizardScreen("accessibility", ["accessibility"], "Not Now"),
+        WizardScreen("privacy", ["data", "privacy"], "Continue"),
+        WizardScreen("migration", ["migration assistant"], "Not Now"),
+        WizardScreen(
+            "apple_id",
+            ["sign in with your apple id"],
+            "Set Up Later",
+            fallback_pos=(196, 670),
+        ),
+        WizardScreen("skip_confirm", ["skip"], "Skip", fallback_pos=(750, 455)),
+        WizardScreen(
+            "terms",
+            ["terms and conditions"],
+            "Agree",
+            confirm_button="Agree",
+            confirm_fallback=(750, 455),
+        ),
+        WizardScreen(
+            "create_account",
+            ["create a computer account"],
+            "Continue",
+            custom_action=lambda: _fill_account_form(),
+        ),
+        WizardScreen("location", ["enable location"], "Continue"),
+        WizardScreen("analytics", ["analytics"], "Continue"),
+        WizardScreen("siri", ["siri"], "Continue"),
+        WizardScreen("screen_time", ["screen time"], "Set Up Later", fallback_pos=(196, 670)),
+        WizardScreen("appearance", ["choose your look"], "Continue"),
     ],
 }
 
@@ -2163,16 +2197,35 @@ def _auto_install_worker():
         state, _ = _wait_for_screen({"terminal", "recovery"}, timeout=10, poll_interval=2)
         emit("info", "vm", f"Format complete (screen: {state}).")
 
-        # === STEP 5: Find and run startosinstall ===
+        # === STEP 5: Configure network and run startosinstall ===
+        # macOS Recovery may not have DNS configured. QEMU SLIRP provides
+        # DNS at 10.0.2.3 and gateway at 10.0.2.2. Set up DNS and verify.
+        emit("info", "vm", "Configuring DNS for installer downloads...")
+        _type_text('echo "nameserver 10.0.2.3" > /etc/resolv.conf')
+        _send_key("ret")
+        time.sleep(1)
+        # Test connectivity — curl Apple's CDN with a short timeout
+        _type_text('curl -sI --connect-timeout 10 https://swcdn.apple.com/ && echo NET_OK || echo NET_FAIL')
+        _send_key("ret")
+        time.sleep(12)
+
+        # Debug screenshot of network test
+        ppm = _take_screenshot()
+        if ppm:
+            try:
+                img = _ppm_to_image(ppm)
+                if img:
+                    img.save("/tmp/airtag-vm-network-test.png")
+                    text = _ocr_region(img, 50, 50, 1230, 750)
+                    emit("info", "vm", f"Network test: {text[-300:]!r}")
+            except Exception:
+                pass
+
         _set_phase("installing", "Starting macOS installer from command line...")
         emit("info", "vm", "Finding macOS installer (startosinstall)...")
 
-        # Search for Catalina installer first (from BaseSystem), then fall back to any.
-        # Previous runs may leave a Ventura installer that fails without network.
         _type_text(
-            'INST=$(find / -path "*/Install macOS Catalina*" -name startosinstall -maxdepth 6 2>/dev/null | head -1);'
-            ' [ -z "$INST" ] && INST=$(find / -name startosinstall -maxdepth 6 2>/dev/null | head -1);'
-            ' echo "FOUND:$INST"'
+            'INST=$(find / -name startosinstall -maxdepth 6 2>/dev/null | head -1); echo "FOUND:$INST"'
         )
         _send_key("ret")
 
