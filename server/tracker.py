@@ -1774,9 +1774,9 @@ def _create_account_from_recovery():
     )
 
     if state == "boot_picker":
-        # Macintosh HD is rightmost — press right then Enter
+        # Boot picker has 2 entries: EFI (left, default) and Macintosh HD (right).
+        # Press right once to select Macintosh HD, then Enter.
         emit("info", "vm", "Boot picker detected, selecting Macintosh HD (right)...")
-        _send_key("right", 0.5)
         _send_key("right", 0.5)
         _send_key("ret", 2)
         state, _ = _wait_for_screen(
