@@ -1941,30 +1941,34 @@ def _auto_install_worker():
             return
 
         if state == "boot_picker":
-            emit("info", "vm", "Boot picker detected, selecting macOS Base System...")
-            # OpenCore shows 2 entries: EFI (default, left), macOS Base System (right).
-            # Give OpenCore time to settle before accepting input.
+            # Boot picker layout depends on what's installed:
+            # - Fresh disk: EFI (left), macOS Base System (right) — need right+Enter
+            # - macOS installed: EFI (left), macOS Base System (middle),
+            #   Macintosh HD (right, default) — Enter boots to setup_wizard
+            #
+            # Strategy: try default entry first (Enter). If we get setup_wizard,
+            # macOS is already installed — bypass it. If we get recovery, proceed
+            # with install. If we stay at boot_picker, navigate right and retry.
+            emit("info", "vm", "Boot picker detected, trying default entry first...")
             time.sleep(5)
-            _send_key("right", 1)
-            time.sleep(1)
             _send_key("ret", 2)
 
-            # After pressing enter, OpenCore shows a loading screen (dark bg +
-            # bright spinner) that the brightness heuristic misclassifies as
-            # boot_picker. Wait long enough for recovery to appear.
             state, _ = _wait_for_screen(
-                {"recovery", "apple_logo", "setup_wizard"},
-                timeout=180,
+                {"recovery", "apple_logo", "setup_wizard", "boot_picker"},
+                timeout=120,
                 poll_interval=5,
                 msg="Waiting for boot to proceed",
             )
 
-            # If still stuck at boot_picker, the keys didn't register — retry
+            if state == "setup_wizard":
+                _create_account_from_recovery()
+                return
+
+            # Default didn't reach recovery — try navigating to macOS Base System
             if state == "boot_picker":
-                emit("info", "vm", "Boot picker still showing, retrying key sequence...")
+                emit("info", "vm", "Boot picker still showing, navigating right to macOS Base System...")
                 time.sleep(3)
                 _send_key("right", 1)
-                time.sleep(1)
                 _send_key("ret", 2)
                 state, _ = _wait_for_screen(
                     {"recovery", "apple_logo", "setup_wizard"},
