@@ -871,6 +871,11 @@ def _mouse_click(px, py, delay=0.5):
 def _take_screenshot():
     """Take a screenshot via QEMU monitor, return raw PPM bytes or None."""
     ppm_path = "/tmp/airtag-vm-screen.ppm"
+    # Remove stale file so we don't return old data when monitor is dead
+    try:
+        os.unlink(ppm_path)
+    except FileNotFoundError:
+        pass
     _monitor_cmd(f"screendump {ppm_path}")
     time.sleep(0.3)
     try:
@@ -1463,164 +1468,190 @@ def _kill_vm():
     _systemctl("stop", "airtag-novnc")
 
 
-def _open_terminal_from_setup_wizard():
-    """Open Terminal from the Setup Assistant using keyboard shortcuts.
-
-    On macOS, Ctrl+Option+Cmd+T opens Terminal even during Setup Assistant.
-    If that fails, try navigating the menu bar with Ctrl+F2.
-
-    Returns True if Terminal was opened, False otherwise.
-    """
-    # Try Ctrl+Option+Cmd+T (opens Terminal on macOS)
-    emit("info", "vm", "Trying Ctrl+Option+Cmd+T to open Terminal...")
-    _monitor_cmd("sendkey ctrl-alt-meta_l-t")
-    time.sleep(5)
-
-    ppm = _take_screenshot()
-    state = _detect_screen(ppm)
-    if state == "terminal":
-        emit("info", "vm", "Terminal opened via Ctrl+Option+Cmd+T!")
-        return True
-
-    # Save debug screenshot
-    if ppm:
-        try:
-            img = _ppm_to_image(ppm)
-            if img:
-                img.save("/tmp/airtag-vm-terminal-attempt.png")
-                text = _ocr_region(img, 50, 50, 1230, 750)
-                emit("info", "vm", f"After Ctrl+Opt+Cmd+T: {text[:200]!r}")
-        except Exception:
-            pass
-
-    # Try Utilities menu via keyboard: Ctrl+F2 focuses menu bar
-    emit("info", "vm", "Trying Ctrl+F2 to access menu bar...")
-    _monitor_cmd("sendkey ctrl-f2")
-    time.sleep(2)
-    # Navigate to Utilities: right-arrow multiple times from Apple menu
-    for _ in range(5):
-        _send_key("right", 0.3)
-    # Open Utilities menu
-    _send_key("ret", 1)
-    # Select Terminal (should be in the dropdown)
-    _send_key("ret", 3)
-
-    ppm = _take_screenshot()
-    state = _detect_screen(ppm)
-    if state == "terminal":
-        emit("info", "vm", "Terminal opened via menu bar!")
-        return True
-
-    emit("warning", "vm", f"Could not open Terminal (screen: {state})")
-    return False
-
 
 def _create_account_from_recovery():
     """Bypass Setup Assistant by creating user account from recovery Terminal.
 
     Catalina's Migration Assistant cannot be skipped and causes kernel panics
     when migrating from the recovery partition. Instead, we:
-    1. Reboot into recovery (macOS Base System) via boot picker
-    2. Open Terminal via Utilities menu
-    3. Mount Macintosh HD Data volume and create user account via dscl
-    4. Touch .AppleSetupDone to skip Setup Assistant
-    5. Reboot into Macintosh HD → boots straight to login/desktop
+    1. Reset VM to get back to boot picker
+    2. Boot into macOS Base System (Recovery)
+    3. Open Terminal via Utilities menu
+    4. Mount Macintosh HD volumes and create user account via dscl
+    5. Touch .AppleSetupDone to skip Setup Assistant
+    6. Reboot into Macintosh HD → boots straight to login/desktop
     """
     _set_phase("setup_wizard", "Bypassing Setup Assistant via recovery Terminal...")
 
-    # Open Terminal directly from the Setup Assistant.
-    # We can't reboot to recovery because OpenCore auto-boots Macintosh HD
-    # without showing the boot picker. Instead, open Terminal from here.
-    if not _open_terminal_from_setup_wizard():
-        _set_phase("error", "Could not open Terminal from Setup Assistant")
+    # === STEP 1: Reset VM to get back to boot picker ===
+    emit("info", "vm", "Resetting VM to boot into Recovery...")
+    _monitor_cmd("system_reset")
+    time.sleep(10)
+
+    state, _ = _wait_for_screen(
+        {"boot_picker", "recovery"},
+        timeout=120,
+        poll_interval=5,
+        msg="Waiting for boot picker after reset",
+    )
+
+    # === STEP 2: Navigate boot picker to Recovery (macOS Base System) ===
+    if state == "boot_picker":
+        # Boot picker layout: EFI (left), macOS Base System (middle), Macintosh HD (right).
+        # Default selection is usually Macintosh HD (rightmost).
+        # We need macOS Base System (one left from default).
+        time.sleep(3)
+
+        for bp_attempt in range(6):
+            if bp_attempt == 0:
+                emit("info", "vm", "Boot picker: selecting macOS Base System (left from default)...")
+                _send_key("left", 1)
+            elif bp_attempt == 1:
+                emit("info", "vm", "Boot picker: trying left again...")
+                _send_key("left", 1)
+            elif bp_attempt == 2:
+                emit("info", "vm", "Boot picker: trying right...")
+                _send_key("right", 1)
+            elif bp_attempt == 3:
+                emit("info", "vm", "Boot picker: trying right again...")
+                _send_key("right", 1)
+            else:
+                emit("info", "vm", f"Boot picker attempt {bp_attempt}: Enter on current...")
+
+            _send_key("ret", 2)
+
+            boot_state, _ = _wait_for_screen(
+                {"recovery", "setup_wizard", "boot_picker", "apple_logo"},
+                timeout=120,
+                poll_interval=5,
+                msg=f"Waiting for Recovery (boot attempt {bp_attempt})",
+            )
+
+            if boot_state == "recovery":
+                state = "recovery"
+                break
+            elif boot_state == "setup_wizard":
+                # Booted into Macintosh HD Setup Assistant — reset and retry
+                emit("info", "vm", "Booted into Setup Assistant, resetting to try Recovery...")
+                _monitor_cmd("system_reset")
+                time.sleep(10)
+                state, _ = _wait_for_screen(
+                    {"boot_picker"}, timeout=120, poll_interval=5,
+                    msg="Waiting for boot picker after reset",
+                )
+                if state != "boot_picker":
+                    break
+                time.sleep(3)
+                continue
+            elif boot_state == "apple_logo":
+                # Might be booting into macOS — wait longer
+                boot_state, _ = _wait_for_screen(
+                    {"recovery", "setup_wizard", "boot_picker"},
+                    timeout=180, poll_interval=5,
+                    msg="Waiting for apple_logo to resolve",
+                )
+                if boot_state == "recovery":
+                    state = "recovery"
+                    break
+                elif boot_state == "setup_wizard":
+                    emit("info", "vm", "Booted into Setup Assistant, resetting...")
+                    _monitor_cmd("system_reset")
+                    time.sleep(10)
+                    state, _ = _wait_for_screen(
+                        {"boot_picker"}, timeout=120, poll_interval=5,
+                    )
+                    if state != "boot_picker":
+                        break
+                    time.sleep(3)
+                    continue
+            # boot_picker — try next entry
+
+        if state != "recovery":
+            _set_phase("error", f"Could not reach Recovery after 6 boot attempts (state: {state})")
+            return
+
+    elif state != "recovery":
+        _set_phase("error", f"Expected boot picker or recovery after reset, got: {state}")
         return
 
-    # Test if sudo works (non-interactive — fails immediately if password required).
-    # Print exit code with "RC" prefix. The command text has "RC$?" which won't
-    # match "RC0" or "RC1" in OCR, avoiding false positives.
-    emit("info", "vm", "Testing sudo access...")
-    _type_text("sudo -n true 2>/dev/null; echo RC$?")
+    # === STEP 3: Open Terminal from Recovery ===
+    emit("info", "vm", "Recovery loaded. Opening Terminal via Utilities menu...")
+    time.sleep(5)
+
+    # Menu bar: [Apple x=20] [Recovery x=83] [File x=144] [Edit x=187] [Utilities x=242]
+    _mouse_click(242, 10, 1.5)  # Click "Utilities"
+    _mouse_click(242, 55, 4)    # Click "Terminal"
+    time.sleep(2)
+    _mouse_click(400, 300, 1)   # Focus Terminal window
+
+    state, _ = _wait_for_screen("terminal", timeout=15, poll_interval=2)
+    if state != "terminal":
+        emit("info", "vm", f"Terminal not detected ({state}), retrying...")
+        _send_key("escape", 0.5)
+        time.sleep(1)
+        _mouse_click(242, 10, 1.5)
+        _mouse_click(242, 55, 4)
+        time.sleep(3)
+        _mouse_click(400, 300, 1)
+        state, _ = _wait_for_screen("terminal", timeout=10, poll_interval=2)
+        if state != "terminal":
+            emit("warning", "vm", f"Could not confirm Terminal ({state}) — proceeding anyway")
+
+    # === STEP 4: Mount volumes and create user account ===
+    emit("info", "vm", "Terminal open. Mounting Macintosh HD volumes...")
+
+    # Mount both APFS volumes (Catalina splits system/data)
+    _type_text('diskutil mount "Macintosh HD" 2>/dev/null')
+    _send_key("ret")
+    time.sleep(3)
+    _type_text('diskutil mount "Macintosh HD - Data" 2>/dev/null')
     _send_key("ret")
     time.sleep(3)
 
+    # Determine data volume path (Catalina = split, older = single)
+    # Use short variable name to keep dscl commands manageable
+    _type_text('D="/Volumes/Macintosh HD - Data"')
+    _send_key("ret")
+    time.sleep(1)
+    _type_text('[ ! -d "$D" ] && D="/Volumes/Macintosh HD"')
+    _send_key("ret")
+    time.sleep(1)
+    _type_text('DS="$D/private/var/db/dslocal/nodes/Default"')
+    _send_key("ret")
+    time.sleep(1)
+
+    # Verify the directory exists
+    _type_text('ls "$DS/users" && echo DS_OK || echo DS_FAIL')
+    _send_key("ret")
+    time.sleep(3)
+
+    # Debug screenshot
     ppm = _take_screenshot()
-    sudo_works = False
     if ppm:
         try:
             img = _ppm_to_image(ppm)
             if img:
+                img.save("/tmp/airtag-vm-recovery-terminal.png")
                 text = _ocr_region(img, 50, 50, 1230, 750)
-                emit("info", "vm", f"Sudo test result: {text[:300]!r}")
-                if "RC0" in text:
-                    sudo_works = True
-                # RC1 = sudo failed, or password prompt visible
-                elif "RC1" in text or "password" in text.lower():
-                    sudo_works = False
+                emit("info", "vm", f"Recovery terminal: {text[:400]!r}")
         except Exception:
             pass
-
-    if not sudo_works:
-        # sudo requires a password. Try direct file write to /var/db/ instead.
-        emit("warning", "vm", "sudo not available — testing direct /var/db/ write access...")
-        _type_text("touch /var/db/.AppleSetupDone 2>/dev/null; echo WR$?")
-        _send_key("ret")
-        time.sleep(3)
-
-        ppm = _take_screenshot()
-        can_write = False
-        if ppm:
-            try:
-                img = _ppm_to_image(ppm)
-                if img:
-                    text = _ocr_region(img, 50, 50, 1230, 750)
-                    emit("info", "vm", f"Write test result: {text[:300]!r}")
-                    if "WR0" in text:
-                        can_write = True
-            except Exception:
-                pass
-
-        if can_write:
-            # We can write to /var/db/! .AppleSetupDone is created.
-            # Kill Setup Assistant — should work without sudo since same user
-            emit("info", "vm", ".AppleSetupDone created! Killing Setup Assistant...")
-            _type_text("killall 'Setup Assistant' 2>/dev/null; echo KL$?")
-            _send_key("ret")
-            time.sleep(5)
-
-            ppm = _take_screenshot()
-            state = _detect_screen(ppm)
-            if state in ("desktop", "login_screen"):
-                pw_path = DATA_DIR / "vm-password"
-                pw_path.write_text(VM_PASSWORD)
-                pw_path.chmod(0o600)
-                _set_phase("done", "macOS setup complete (no user account — using login screen)!")
-                return
-
-            # killall might not have worked, or need dscl for user account.
-            # Close Terminal and fall back to wizard
-            emit("warning", "vm", "Setup Assistant still running after killall — falling back to wizard")
-
-        # Close Terminal and fall back to the wizard
-        emit("warning", "vm", "Falling back to wizard automation")
-        _send_key("meta_l-q")  # Cmd+Q to close Terminal
-        time.sleep(3)
-        _run_setup_wizard()
-        return
-
-    emit("info", "vm", "Terminal is open with sudo. Creating user account...")
 
     user = VM_USER
     pw = VM_PASSWORD
 
+    emit("info", "vm", f"Creating user '{user}' via dscl on mounted volume...")
+
+    # Create user record via dscl targeting the mounted volume's directory store
     dscl_cmds = [
-        f"sudo dscl . -create /Users/{user}",
-        f"sudo dscl . -create /Users/{user} UserShell /bin/bash",
-        f'sudo dscl . -create /Users/{user} RealName "{user}"',
-        f"sudo dscl . -create /Users/{user} UniqueID 501",
-        f"sudo dscl . -create /Users/{user} PrimaryGroupID 20",
-        f"sudo dscl . -create /Users/{user} NFSHomeDirectory /Users/{user}",
-        f"sudo dscl . -passwd /Users/{user} {pw}",
-        f"sudo dscl . -append /Groups/admin GroupMembership {user}",
+        f'dscl -f "$DS" localonly -create /Local/Default/Users/{user}',
+        f'dscl -f "$DS" localonly -create /Local/Default/Users/{user} UserShell /bin/bash',
+        f'dscl -f "$DS" localonly -create /Local/Default/Users/{user} RealName "{user}"',
+        f'dscl -f "$DS" localonly -create /Local/Default/Users/{user} UniqueID 501',
+        f'dscl -f "$DS" localonly -create /Local/Default/Users/{user} PrimaryGroupID 20',
+        f'dscl -f "$DS" localonly -create /Local/Default/Users/{user} NFSHomeDirectory /Users/{user}',
+        f'dscl -f "$DS" localonly -passwd /Local/Default/Users/{user} {pw}',
+        f'dscl -f "$DS" localonly -append /Local/Default/Groups/admin GroupMembership {user}',
     ]
 
     for cmd in dscl_cmds:
@@ -1629,19 +1660,19 @@ def _create_account_from_recovery():
         time.sleep(2)
 
     # Create home directory and skip Setup Assistant
-    _type_text(f"sudo createhomedir -c -u {user}")
+    _type_text(f'mkdir -p "$D/Users/{user}"')
     _send_key("ret")
-    time.sleep(2)
-    _type_text("sudo touch /var/db/.AppleSetupDone")
+    time.sleep(1)
+    _type_text('touch "$D/private/var/db/.AppleSetupDone"')
     _send_key("ret")
     time.sleep(1)
 
     # Verify
-    _type_text("ls -la /var/db/.AppleSetupDone && id " + user)
+    _type_text('ls -la "$D/private/var/db/.AppleSetupDone" && echo SETUP_OK')
     _send_key("ret")
     time.sleep(3)
 
-    # Take debug screenshot
+    # Debug screenshot of results
     ppm = _take_screenshot()
     if ppm:
         try:
@@ -1653,29 +1684,12 @@ def _create_account_from_recovery():
         except Exception:
             pass
 
-    # Kill the Setup Assistant and reboot to apply changes
-    emit("info", "vm", "Killing Setup Assistant and rebooting...")
-    _type_text("sudo killall 'Setup Assistant'")
-    _send_key("ret")
-    time.sleep(3)
-
-    # Check if we landed on the desktop or login screen after killing Setup Assistant
-    ppm = _take_screenshot()
-    state = _detect_screen(ppm)
-    if state in ("desktop", "login_screen"):
-        pw_path = DATA_DIR / "vm-password"
-        pw_path.write_text(VM_PASSWORD)
-        pw_path.chmod(0o600)
-        _set_phase("done", "macOS setup complete!")
-        emit("info", "vm", f"Account: {VM_USER} / {VM_PASSWORD}")
-        return
-
-    # If not on desktop, reboot to apply .AppleSetupDone
-    _type_text("sudo reboot")
+    # === STEP 5: Reboot into Macintosh HD ===
+    emit("info", "vm", "Rebooting into Macintosh HD...")
+    _type_text("reboot")
     _send_key("ret")
     time.sleep(15)
 
-    # Wait for macOS to boot
     state, _ = _wait_for_screen(
         {"boot_picker", "desktop", "login_screen", "setup_wizard"},
         timeout=300,
@@ -1684,15 +1698,28 @@ def _create_account_from_recovery():
     )
 
     if state == "boot_picker":
-        time.sleep(5)
-        _send_key("ret", 2)  # Default entry = Macintosh HD
+        # Try to select Macintosh HD — try default first, then alternatives
+        for hd_attempt in range(4):
+            if hd_attempt == 0:
+                emit("info", "vm", "Boot picker: pressing Enter for default (Macintosh HD)...")
+            elif hd_attempt == 1:
+                emit("info", "vm", "Boot picker: trying right...")
+                _send_key("right", 1)
+            elif hd_attempt == 2:
+                emit("info", "vm", "Boot picker: trying left...")
+                _send_key("left", 1)
+            else:
+                _send_key("left", 1)
 
-        state, _ = _wait_for_screen(
-            {"desktop", "login_screen", "setup_wizard"},
-            timeout=300,
-            poll_interval=5,
-            msg="Waiting for macOS to boot",
-        )
+            _send_key("ret", 2)
+            state, _ = _wait_for_screen(
+                {"desktop", "login_screen", "setup_wizard"},
+                timeout=300,
+                poll_interval=5,
+                msg=f"Waiting for Macintosh HD to boot (attempt {hd_attempt})",
+            )
+            if state != "boot_picker":
+                break
 
     if state in ("desktop", "login_screen"):
         pw_path = DATA_DIR / "vm-password"
@@ -1701,7 +1728,8 @@ def _create_account_from_recovery():
         _set_phase("done", "macOS setup complete!")
         emit("info", "vm", f"Account: {VM_USER} / {VM_PASSWORD}")
     elif state == "setup_wizard":
-        # .AppleSetupDone didn't work or path was wrong — fall back to wizard
+        # .AppleSetupDone didn't work — dscl path may have been wrong.
+        # Fall back to wizard automation as last resort.
         emit("warning", "vm", "Setup wizard appeared despite .AppleSetupDone — running wizard...")
         _run_setup_wizard()
     else:
