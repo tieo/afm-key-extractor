@@ -21,6 +21,9 @@ class RecordingDriver:
     def wait(self, seconds):
         self.events.append(("wait", seconds))
 
+    def chord(self, *qcodes, post_delay=0.0):
+        self.events.append(("chord", qcodes))
+
 
 def test_format_disk_opens_terminal_and_runs_diskutil():
     d = RecordingDriver()
@@ -31,4 +34,5 @@ def test_format_disk_opens_terminal_and_runs_diskutil():
         ("type", "diskutil eraseDisk APFS Macintosh-HD disk0"),
         ("key", "ret"),
         ("wait", 8.0),
+        ("chord", ("meta_l", "q")),
     ]

@@ -29,3 +29,4 @@ def run(driver: Driver) -> None:
     driver.type_text("diskutil eraseDisk APFS Macintosh-HD disk0")
     driver.key("ret")
     driver.wait(8.0)
+    driver.chord("meta_l", "q", post_delay=2.0)

@@ -122,6 +122,18 @@ class Driver:
         )
         self._sleep(post_delay)
 
+    def chord(self, *qcodes: str, post_delay: float = 0.2) -> None:
+        """Send several qcodes simultaneously (e.g. ``chord("meta_l", "q")``)."""
+        self._qmp_cmd(
+            {
+                "execute": "send-key",
+                "arguments": {
+                    "keys": [{"type": "qcode", "data": k} for k in qcodes]
+                },
+            }
+        )
+        self._sleep(post_delay)
+
     def click(self, x: int, y: int, post_delay: float = 0.3) -> None:
         """Click at pixel (x, y) in the ``FB_WIDTH x FB_HEIGHT`` framebuffer."""
         qx = int(x / FB_WIDTH * ABS_MAX)

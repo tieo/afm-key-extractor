@@ -171,5 +171,40 @@ is one edit.
 
 ---
 
+## Step 3 — Recovery Utilities → Reinstall macOS Ventura
+
+**Entry state**: Recovery Utilities picker (Terminal was just quit via
+Cmd+Q at end of step 2). Default highlight is row 1 "Restore from Time
+Machine" — step 2's exit does not change that, so we must click the
+Ventura icon before Continue or we'd land on Time Machine restore.
+
+**Row coordinates** (native 1280×800): row N icon at
+`(466, 175 + (N-1) * 92)`. Row 2 Ventura icon: `(466, 277)`.
+
+**Action**:
+
+1. Click Ventura icon `(466, 277)` → click picker Continue `(830, 521)`.
+2. On "Install macOS Ventura" splash, click Continue `(640, 643)`. The
+   button is grey (not the typical blue default) and can take 10+ s to
+   advance — don't re-screenshot too soon.
+3. License agreement → click Agree `(693, 638)`.
+4. Confirmation sheet "I have read and agree…" → click Agree `(739,
+   455)`.
+5. Disk picker → click Macintosh-HD icon `(510, 440)`, then Continue
+   `(686, 640)`. Base System is the default highlight; skipping the
+   explicit disk click would install onto the installer volume.
+6. Installer runs. Progress bar with ETA. Takes 20–45 min depending on
+   download speed and CPU; VM may reboot mid-install.
+
+**Exit state**: VM reboots into the installed Ventura on Macintosh-HD.
+OpenCore boot picker reappears with the installed volume as a new
+entry. First post-install boot reaches Setup Assistant (Language
+picker). That is the entry point for step 4 (Recovery-terminal bypass).
+
+**Code**: `server/wizard/steps/reinstall.py`. All pixel constants at
+module top — re-measure on drift.
+
+---
+
 *(Later steps appended below as they are driven manually and
 automated.)*
