@@ -58,6 +58,8 @@ in python3Packages.buildPythonApplication {
   installPhase = ''
     mkdir -p $out/bin $out/lib/airtag-tracker/static
     cp tracker.py $out/lib/airtag-tracker/
+    # Setup Assistant bypass — imported from tracker.py at runtime.
+    cp -r wizard $out/lib/airtag-tracker/
     cp -r static/* $out/lib/airtag-tracker/static/
     cat > $out/bin/airtag-tracker <<WRAPPER
     #!/bin/sh

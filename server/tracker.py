@@ -13,8 +13,6 @@ import sqlite3
 import subprocess as sp
 import threading
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1266,681 +1264,12 @@ def _wait_for_screen(expected, timeout=300, poll_interval=5, msg=None):
 
 
 VM_USER = "airtag"
-VM_PASSWORD = "airtag"
-WIZARD_TIMEOUT = 1200  # 20 min — migration transfer + reboot can take 15+ min
-
-
-# ── Setup Wizard ─────────────────────────────────────────────────────────
-#
-# Version-specific screen definitions. Each macOS version has different wizard
-# screens. To add a new version, add entries to WIZARD_SCREENS below.
-
-MACOS_VERSION = "ventura"
-
-
-@dataclass
-class WizardScreen:
-    """A setup wizard screen: how to identify it and what to do."""
-
-    id: str
-    match: list[str]  # All must appear in OCR text to identify this screen
-    button: str  # Button text to find and click via OCR
-    fallback_pos: tuple[int, int] = (986, 670)  # Click here if OCR can't find button
-    confirm_button: str | None = None  # Click after main action (e.g. T&C "Agree" popup)
-    confirm_fallback: tuple[int, int] | None = None
-    custom_action: Callable | None = None  # Override for non-button screens (account form)
-
-    def matches(self, text: str) -> bool:
-        return all(kw in text for kw in self.match)
-
-    def execute(self) -> None:
-        if self.custom_action:
-            self.custom_action()
-            return
-        if not _find_and_click(self.button):
-            emit("info", "vm", f"  → fallback click at {self.fallback_pos}")
-            _mouse_click(self.fallback_pos[0], self.fallback_pos[1], 0.3)
-        if self.confirm_button:
-            time.sleep(1.5)
-            if not _find_and_click(self.confirm_button) and self.confirm_fallback:
-                emit("info", "vm", f"  → confirm fallback at {self.confirm_fallback}")
-                _mouse_click(self.confirm_fallback[0], self.confirm_fallback[1], 0.3)
-
-
-WIZARD_SCREENS: dict[str, list[WizardScreen]] = {
-    "catalina": [
-        WizardScreen("country", ["select your country or region"], "Continue"),
-        WizardScreen("language", ["written and spoken"], "Continue"),
-        WizardScreen("preferred_languages", ["preferred languages"], "Continue"),
-        WizardScreen("input_sources", ["input sources"], "Continue"),
-        WizardScreen("dictation", ["dictation"], "Continue"),
-        WizardScreen("accessibility", ["accessibility", "features"], "Not Now"),
-        WizardScreen("privacy", ["data", "privacy"], "Continue"),
-        # Migration from recovery partition CANNOT be allowed — it copies
-        # files from macOS Base System to Macintosh HD, corrupting the boot.
-        # The transfer_info screen has NO "Don't transfer" option in Catalina.
-        # Strategy: Cmd+Q on migration intro to quit Setup Assistant, which
-        # triggers a "Do you want to shut down?" dialog. Click Restart —
-        # after reboot, Setup Assistant resumes and may skip past migration.
-        # transfer_info MUST come before migration — both screens' OCR text
-        # contains "migration assistant", so the more specific match wins.
-        WizardScreen(
-            "transfer_info",
-            ["transfer information to this mac"],
-            "",
-            custom_action=lambda: _escape_transfer_info(),
-        ),
-        WizardScreen(
-            "select_transfer",
-            ["select the information to transfer"],
-            "",
-            custom_action=lambda: _escape_transfer_info(),
-        ),
-        WizardScreen(
-            "migration",
-            ["migration assistant"],
-            "",
-            custom_action=lambda: _handle_migration(),
-        ),
-        WizardScreen(
-            "shutdown_dialog",
-            ["want to shut"],
-            "Restart",
-        ),
-        # Safety nets in case migration runs:
-        WizardScreen(
-            "transferring",
-            ["transferring your information"],
-            "",
-            custom_action=lambda: _wait_for_transfer(),
-        ),
-        WizardScreen(
-            "migration_complete",
-            ["migration complete"],
-            "Continue",
-            custom_action=lambda: _on_migration_complete(),
-        ),
-        WizardScreen(
-            "apple_id",
-            ["sign in with your apple id"],
-            "Set Up Later",
-            fallback_pos=(196, 670),
-        ),
-        WizardScreen(
-            "icloud_signin", ["sign in to icloud"], "Set Up Later", fallback_pos=(196, 670)
-        ),
-        WizardScreen("skip_confirm", ["skip"], "Skip", fallback_pos=(750, 455)),
-        WizardScreen(
-            "terms",
-            ["terms and conditions"],
-            "Agree",
-            confirm_button="Agree",
-            confirm_fallback=(750, 455),
-            custom_action=lambda: _handle_terms(),
-        ),
-        WizardScreen(
-            "create_account",
-            ["create a computer account"],
-            "Continue",
-            custom_action=lambda: _fill_account_form(),
-        ),
-        WizardScreen("express_setup", ["express set up"], "Customize Settings"),
-        WizardScreen("location", ["enable location"], "Continue"),
-        WizardScreen("timezone", ["time zone"], "Continue"),
-        WizardScreen("analytics", ["analytics"], "Continue"),
-        WizardScreen("siri", ["siri"], "Continue"),
-        WizardScreen("screen_time", ["screen time"], "Set Up Later", fallback_pos=(196, 670)),
-        WizardScreen("appearance", ["choose your look"], "Continue"),
-        WizardScreen("touch_id", ["touch id"], "Continue"),
-        WizardScreen("apple_pay", ["apple pay"], "Set Up Later", fallback_pos=(196, 670)),
-    ],
-    # Ventura wizard screens — used as fallback if recovery bypass fails.
-    # Primary path bypasses Setup Assistant via _create_account_from_recovery().
-    "ventura": [
-        WizardScreen("country", ["country or region"], "Continue"),
-        WizardScreen("language", ["written and spoken"], "Continue"),
-        WizardScreen("accessibility", ["accessibility"], "Not Now"),
-        WizardScreen("privacy", ["data", "privacy"], "Continue"),
-        # Migration/transfer screen has no "Not Now" button in Ventura.
-        # Cmd+Q quits Migration Assistant and produces a shutdown dialog.
-        # shutdown_dialog MUST be before transfer_info/migration because when
-        # the dialog overlays the transfer screen, OCR sees both texts —
-        # we need "want to shut" to match first.
-        # Uses custom_action to click Restart directly — OCR can't find button
-        # text in the small dialog, and the stuck-detection Tab+Enter clicks
-        # "Shut Down" (the default) instead, killing the VM.
-        WizardScreen(
-            "shutdown_dialog",
-            ["want to shut"],
-            "",
-            custom_action=lambda: _click_restart_in_shutdown_dialog(),
-        ),
-        WizardScreen(
-            "transfer_info",
-            ["transfer information to this mac"],
-            "",
-            custom_action=lambda: _handle_migration(),
-        ),
-        WizardScreen(
-            "migration",
-            ["migration assistant"],
-            "",
-            custom_action=lambda: _handle_migration(),
-        ),
-        WizardScreen(
-            "apple_id",
-            ["sign in with your apple id"],
-            "Set Up Later",
-            fallback_pos=(196, 670),
-        ),
-        WizardScreen("skip_confirm", ["skip"], "Skip", fallback_pos=(750, 455)),
-        WizardScreen(
-            "terms",
-            ["terms and conditions"],
-            "Agree",
-            confirm_button="Agree",
-            confirm_fallback=(750, 455),
-            custom_action=lambda: _handle_terms(),
-        ),
-        WizardScreen(
-            "create_account",
-            ["create a computer account"],
-            "Continue",
-            custom_action=lambda: _fill_account_form(),
-        ),
-        WizardScreen("location", ["enable location"], "Continue"),
-        WizardScreen("analytics", ["analytics"], "Continue"),
-        WizardScreen("siri", ["siri"], "Continue"),
-        WizardScreen("screen_time", ["screen time"], "Set Up Later", fallback_pos=(196, 670)),
-        WizardScreen("appearance", ["choose your look"], "Continue"),
-    ],
-}
-
-
-def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
-    """High-contrast grayscale for reliable button text detection."""
-    gray = img.convert("L")
-    lo, hi = gray.getextrema()
-    if hi == lo:
-        return gray
-    scale = 255.0 / (hi - lo)
-    return gray.point(lambda p: int((p - lo) * scale))
-
-
-def _find_button_pos(img: Image.Image, label: str, min_y: int = 600) -> tuple[int, int] | None:
-    """Find a button's center coordinates by its text label via OCR.
-
-    Args:
-        img: Screenshot image to search.
-        label: Text label to find (e.g. "Continue", "Back").
-        min_y: Only consider text at or below this y coordinate. Default 600
-               restricts to the bottom button area. Use 0 to search full screen.
-    """
-    processed = _preprocess_for_ocr(img)
-    try:
-        data = pytesseract.image_to_data(processed, output_type=pytesseract.Output.DICT)
-    except Exception as e:
-        emit("warning", "vm", f"OCR image_to_data failed: {e}")
-        return None
-
-    words = label.lower().split()
-    for i, raw in enumerate(data["text"]):
-        if not raw.strip():
-            continue
-        if data["top"][i] < min_y:
-            continue
-        if words[0] not in raw.strip().lower():
-            continue
-        if len(words) == 1:
-            return (
-                data["left"][i] + data["width"][i] // 2,
-                data["top"][i] + data["height"][i] // 2,
-            )
-        matched = all(
-            i + j < len(data["text"]) and part in data["text"][i + j].strip().lower()
-            for j, part in enumerate(words[1:], 1)
-        )
-        if matched:
-            last = i + len(words) - 1
-            x = (data["left"][i] + data["left"][last] + data["width"][last]) // 2
-            y = data["top"][i] + data["height"][i] // 2
-            return (x, y)
-    return None
-
-
-def _find_and_click(label: str) -> bool:
-    """Screenshot → find button by OCR → click it. Retries once on failure."""
-    for attempt in range(2):
-        if attempt > 0:
-            time.sleep(1)
-        ppm = _take_screenshot()
-        img = _ppm_to_image(ppm)
-        if not img:
-            continue
-        pos = _find_button_pos(img, label)
-        if pos:
-            emit("info", "vm", f"  → '{label}' at ({pos[0]}, {pos[1]})")
-            _mouse_click(pos[0], pos[1], 0.3)
-            return True
-    emit("warning", "vm", f"Button '{label}' not found after 2 attempts")
-    return False
-
-
-def _escape_transfer_info() -> None:
-    """Escape from transfer_info screen by clicking Back."""
-    _escape_transfer_info.attempts = getattr(_escape_transfer_info, "attempts", 0) + 1
-    attempt = _escape_transfer_info.attempts
-    emit("info", "vm", f"  → transfer_info escape attempt {attempt}")
-
-    # Save debug screenshot on first encounter
-    if attempt == 1:
-        ppm = _take_screenshot()
-        img = _ppm_to_image(ppm)
-        if img:
-            img.save(f"/tmp/airtag-vm-transfer-info-debug.png")
-            # Full OCR to see ALL text including any hidden options
-            full_text = _ocr_region(img, 0, 0, 1280, 800)
-            emit("info", "vm", f"  → Full transfer_info OCR: {full_text[:600]!r}")
-
-    # Click Back to return to migration intro
-    emit("info", "vm", "  → Clicking Back on transfer_info")
-    if not _find_and_click("Back"):
-        _mouse_click(260, 665, 0.3)  # Back button position
-    time.sleep(2)
-
-
-def _click_restart_in_shutdown_dialog() -> None:
-    """Handle the 'Do you want to shut down?' dialog.
-
-    The dialog appears after Cmd+Q on Migration Assistant.  It has buttons:
-    Shut Down (default, responds to Enter/Space) and Restart.
-
-    CRITICAL: Never press Space or Enter — they activate the default
-    "Shut Down" button, which kills the VM.
-
-    Strategy: press Escape to dismiss the dialog (safe, confirmed working).
-    The migration handler will then try other approaches on the transfer screen.
-    """
-    _click_restart_in_shutdown_dialog.attempts = getattr(
-        _click_restart_in_shutdown_dialog, "attempts", 0
-    ) + 1
-    attempt = _click_restart_in_shutdown_dialog.attempts
-    emit("info", "vm", f"  → Shutdown dialog attempt {attempt}: pressing Escape")
-    _send_key("esc", 1)
-    time.sleep(2)
-
-
-def _handle_migration() -> None:
-    """Try to skip Migration Assistant.
-
-    Two screens share this handler:
-    - migration intro ("migration assistant"): has radio options including
-      "Don't transfer any information now" which we want to select.
-    - transfer_info ("transfer information to this mac"): has a disabled
-      Continue button (no source selected) and a Back button.
-
-    Mouse clicks don't register on Migration Assistant buttons in QEMU,
-    but DO work on the menu bar and other screen areas.
-
-    CRITICAL: Never use Cmd+Q — it triggers a shutdown dialog where
-    Space/Enter activate "Shut Down" (default), killing the VM.
-
-    Phase 1 (attempt 1): Enable Full Keyboard Access (Ctrl+F7).
-    Phase 2 (attempts 2-5): Tab/Shift+Tab + Space on the transfer screen.
-    Phase 3 (attempts 6-9): Click menu bar to open Utilities → Terminal.
-    Phase 4 (attempts 10-13): Ctrl+F2 keyboard menu bar + arrow nav.
-    Phase 5 (attempt 14+): Rotate through all approaches.
-    """
-    _handle_migration.attempts = getattr(_handle_migration, "attempts", 0) + 1
-    attempt = _handle_migration.attempts
-    emit("info", "vm", f"  → migration attempt {attempt}")
-
-    # Take screenshot to identify which sub-screen we're on
-    ppm = _take_screenshot()
-    img = _ppm_to_image(ppm)
-    if not img:
-        time.sleep(2)
-        return
-
-    text = _ocr_region(img, 0, 0, 1280, 800).lower()
-
-    if attempt == 1:
-        img.save("/tmp/airtag-vm-migration-debug.png")
-        emit("info", "vm", f"  → Full migration OCR: {text[:800]!r}")
-
-    # "transfer information to this mac" is the transfer_info TITLE.
-    # The migration intro body also contains "transfer information from..."
-    # so we must match "to this mac" specifically.
-    on_transfer = "transfer information to this mac" in text
-    on_intro = "migration assistant" in text and not on_transfer
-
-    if attempt <= 3 or attempt % 10 == 0:
-        emit("info", "vm", f"  → migration OCR ({len(text)}ch): on_intro={on_intro}, on_transfer={on_transfer}, text={text[:300]!r}")
-
-    if on_intro:
-        # Migration intro screen — has radio options:
-        #   1. From a Mac, Time Machine backup, or startup disk
-        #   2. From a Windows PC
-        #   3. Don't transfer any information now
-        # Option 1 is pre-selected. We need "Don't transfer" (option 3).
-        # macOS radio buttons use arrow keys (Up/Down), NOT Tab.
-        # Tab moves between control groups (radio group → Continue button).
-        _handle_migration._intro_attempt = getattr(
-            _handle_migration, "_intro_attempt", 0
-        ) + 1
-        intro_attempt = _handle_migration._intro_attempt
-        emit("info", "vm", f"  → On migration intro (intro attempt {intro_attempt})")
-
-        # First try OCR click
-        # Migration intro only has 2 radio options (Mac/Windows PC).
-        # To skip migration, click "Not Now" in the bottom-left corner.
-        if intro_attempt <= 2:
-            for label in ("Not Now", "not now", "Don't transfer", "don't transfer"):
-                pos = _find_button_pos(img, label, min_y=0)
-                if pos:
-                    emit("info", "vm", f"  → Found '{label}' at {pos}, clicking it")
-                    _mouse_click(pos[0], pos[1], 0.3)
-                    time.sleep(3)
-                    return
-
-        if intro_attempt <= 4:
-            # Click "Not Now" at its known position (bottom-left corner)
-            pos_x = 90 if intro_attempt <= 3 else 75
-            emit("info", "vm", f"  → Clicking 'Not Now' at ({pos_x}, 670)")
-            _mouse_click(pos_x, 670, 0.3)
-            time.sleep(3)
-        elif intro_attempt == 4:
-            # VoiceOver approach on intro screen
-            emit("info", "vm", "  → Enabling VoiceOver for intro screen nav")
-            _handle_migration._vo_enabled = True
-            _send_key("meta_l-f5", 1)
-            time.sleep(5)
-            # Navigate to "Don't transfer" with VO
-            # VO Right to scan through elements
-            for i in range(6):
-                _send_key("ctrl-alt-right", 0.5)
-                time.sleep(0.5)
-            _send_key("ctrl-alt-spc", 0.5)  # Select it
-            time.sleep(2)
-        elif intro_attempt <= 8:
-            # More VO exploration on intro
-            n_moves = intro_attempt - 2
-            emit("info", "vm", f"  → VO Right x{n_moves} + activate on intro")
-            for _ in range(n_moves):
-                _send_key("ctrl-alt-right", 0.5)
-                time.sleep(0.3)
-            _send_key("ctrl-alt-spc", 0.5)
-            time.sleep(3)
-        else:
-            # VO from beginning
-            emit("info", "vm", "  → VO Home then Right + activate on intro")
-            _send_key("ctrl-alt-home", 1)
-            time.sleep(1)
-            n = intro_attempt - 7
-            for _ in range(n):
-                _send_key("ctrl-alt-right", 0.5)
-                time.sleep(0.3)
-            _send_key("ctrl-alt-spc", 0.5)
-            time.sleep(3)
-    elif on_transfer:
-        # Transfer info screen: Continue is disabled (no source selected).
-        # Strategy: Enable VoiceOver first (Tab+Space only works after VO
-        # has been active), then Tab+Space to go back to intro screen,
-        # then click "Not Now" link at bottom-left (90, 670).
-
-        def _go_back_and_click_not_now(not_now_x: int = 90):
-            """Escape (dismiss dialogs), Tab+Space to go back to intro,
-            then click 'Not Now' in the bottom-left corner."""
-            emit("info", "vm", f"  → Esc → Tab+Space → click 'Not Now' ({not_now_x}, 670)")
-            _send_key("esc", 0.5)
-            time.sleep(0.5)
-            _send_key("tab", 0.3)
-            _send_key("spc", 0.3)
-            # Wait briefly for intro screen to appear
-            time.sleep(1.0)
-            # Click "Not Now" in bottom-left
-            _mouse_click(not_now_x, 670, 0.3)
-            time.sleep(3)
-
-        if attempt == 1:
-            # Step 1: Enable Full Keyboard Access + VoiceOver
-            # Tab+Space only works after VoiceOver has been active.
-            emit("info", "vm", "  → Enabling Full Keyboard Access (Ctrl+F7) + VoiceOver (Cmd+F5)")
-            _send_key("ctrl-f7", 1)
-            time.sleep(0.5)
-            _handle_migration._vo_enabled = True
-            _send_key("meta_l-f5", 1)
-            time.sleep(3)
-            # Try the combo right away
-            _go_back_and_click_not_now()
-        elif attempt <= 4:
-            # Retry Tab+Space → click "Not Now" with slight position variation
-            not_now_x = [90, 75, 100, 60][attempt - 1]
-            _go_back_and_click_not_now(not_now_x)
-        elif attempt <= 7:
-            # Try Shift+Tab variations to find the Back button
-            n = attempt - 4
-            emit("info", "vm", f"  → Esc → Shift+Tab x{n} + Space → click 'Not Now'")
-            _send_key("esc", 0.5)
-            time.sleep(0.5)
-            for _ in range(n):
-                _send_key("shift-tab", 0.3)
-                time.sleep(0.2)
-            _send_key("spc", 0.3)
-            time.sleep(1.0)
-            _mouse_click(90, 670, 0.3)
-            time.sleep(3)
-        elif attempt <= 12:
-            # VoiceOver navigation to find and activate Back button
-            backward = (attempt % 2 == 0)
-            direction = "left" if backward else "right"
-            key = f"ctrl-alt-{direction}"
-            n_moves = (attempt - 7) // 2 + 1
-            label = "Left" if backward else "Right"
-            emit("info", "vm", f"  → VO: Ctrl+Opt+{label} x{n_moves} + activate")
-            for i in range(n_moves):
-                _send_key(key, 0.5)
-                time.sleep(0.5)
-            _send_key("ctrl-alt-spc", 0.5)
-            time.sleep(2)
-            # After activating Back, click "Not Now" on intro
-            _mouse_click(90, 670, 0.3)
-            time.sleep(3)
-        else:
-            # Rotation of all strategies
-            phase = (attempt - 13) % 3
-            if phase == 0:
-                _go_back_and_click_not_now()
-            elif phase == 1:
-                # VO Home then navigate to find Back/Not Now
-                n = ((attempt - 13) // 3) + 1
-                emit("info", "vm", f"  → VO: Home + Right x{n} + activate → click 'Not Now'")
-                _send_key("ctrl-alt-home", 1)
-                time.sleep(1)
-                for _ in range(n):
-                    _send_key("ctrl-alt-right", 0.5)
-                    time.sleep(0.3)
-                _send_key("ctrl-alt-spc", 0.5)
-                time.sleep(2)
-                _mouse_click(90, 670, 0.3)
-                time.sleep(3)
-            else:
-                # Esc + Shift+Tab + Space → click "Not Now"
-                emit("info", "vm", "  → Esc → Shift+Tab + Space → click 'Not Now'")
-                _send_key("esc", 0.5)
-                time.sleep(0.5)
-                _send_key("shift-tab", 0.3)
-                _send_key("spc", 0.5)
-                time.sleep(1.0)
-                _mouse_click(90, 670, 0.3)
-                time.sleep(3)
-    else:
-        emit("info", "vm", "  → Unknown migration sub-screen, pressing Escape")
-        _send_key("esc", 1)
-        time.sleep(2)
-
-
-def _on_migration_complete() -> None:
-    """Safety net: re-enable network (in case migration ran) and click Continue."""
-    emit("info", "vm", "  → Migration complete — ensuring VM network is enabled")
-    _monitor_cmd("set_link net0 on")
-    time.sleep(1)
-    if not _find_and_click("Continue"):
-        _mouse_click(959, 665, 0.3)
-    time.sleep(2)
-
-
-def _wait_for_transfer() -> None:
-    """Wait while Migration Assistant transfers data.
-
-    The 'transferring your information' screen has no buttons — just a progress
-    indicator. Poll until the screen changes (migration_complete, reboot, etc.).
-    """
-    emit("info", "vm", "  → Migration transfer in progress, waiting...")
-    time.sleep(30)  # transfers take several minutes; avoid spamming screenshots
-
-
-def _handle_terms() -> None:
-    """Click Agree on the terms & conditions screen.
-
-    Like Migration Assistant, plain mouse clicks don't register on the Agree
-    button in QEMU. VoiceOver + Full Keyboard Access lets us navigate the
-    focus ring and activate the button via ctrl-alt-space.
-
-    Strategy per attempt:
-      1: Enable FKA (Ctrl+F7) + VoiceOver (Cmd+F5), then VO Right many
-         times to reach Agree, then VO activate.
-      2-4: More VO Right iterations.
-      5+: Rotate VO End, Tab+Space, direct click fallback.
-    After main Agree fires, a confirm dialog appears with default Agree —
-    press Enter (or click confirm fallback at 750,455).
-    """
-    _handle_terms.attempts = getattr(_handle_terms, "attempts", 0) + 1
-    attempt = _handle_terms.attempts
-    emit("info", "vm", f"  → terms attempt {attempt}")
-
-    if attempt == 1:
-        emit("info", "vm", "  → Enabling FKA (Ctrl+F7) + VoiceOver (Cmd+F5)")
-        _send_key("ctrl-f7", 1)
-        time.sleep(0.5)
-        _handle_terms._vo_enabled = True
-        _send_key("meta_l-f5", 1)
-        time.sleep(3)
-
-    # VO navigate to Agree and activate
-    n_right = 4 + attempt * 2  # 6, 8, 10, 12, ...
-    emit("info", "vm", f"  → VO Right x{n_right} + activate")
-    for _ in range(n_right):
-        _send_key("ctrl-alt-right", 0.3)
-        time.sleep(0.2)
-    _send_key("ctrl-alt-spc", 0.5)
-    time.sleep(2)
-
-    # Confirm dialog: default button is Agree — press Enter
-    _send_key("ret", 0.5)
-    time.sleep(2)
-    # Also try confirm fallback click as belt-and-suspenders
-    _mouse_click(750, 455, 0.3)
-    time.sleep(3)
-
-    # If this appears to have worked (next screen), disable VO so
-    # subsequent screens aren't interfered with.
-    ppm = _take_screenshot()
-    img = _ppm_to_image(ppm)
-    if img:
-        text = _ocr_region(img, 0, 0, 1280, 800).lower()
-        if "terms and conditions" not in text and getattr(_handle_terms, "_vo_enabled", False):
-            emit("info", "vm", "  → Left terms, disabling VoiceOver (Cmd+F5)")
-            _handle_terms._vo_enabled = False
-            _send_key("meta_l-f5", 1)
-            time.sleep(2)
-
-
-def _fill_account_form() -> None:
-    """Fill the Create a Computer Account form.
-
-    Mouse clicks on form fields don't place keyboard focus in QEMU (same
-    issue as Migration Assistant / terms). Instead: enable VoiceOver +
-    FKA, VO-navigate to the first text field, activate it, type the
-    value, then Tab between fields.
-    """
-    _fill_account_form.attempts = getattr(_fill_account_form, "attempts", 0) + 1
-    attempt = _fill_account_form.attempts
-    emit("info", "vm", f"  → Filling account form (attempt {attempt})")
-
-    if attempt == 1:
-        emit("info", "vm", "  → Enabling FKA (Ctrl+F7) + VoiceOver (Cmd+F5)")
-        _send_key("ctrl-f7", 1)
-        time.sleep(0.5)
-        _fill_account_form._vo_enabled = True
-        _send_key("meta_l-f5", 1)
-        time.sleep(3)
-
-    # VO Right to reach Full Name text field, VO activate to focus it.
-    # Number of VO Right presses varies by attempt in case the first
-    # interactive element isn't where we expect.
-    n_right = 1 + attempt  # 2, 3, 4, ...
-    emit("info", "vm", f"  → VO Right x{n_right} + activate → Full Name")
-    for _ in range(n_right):
-        _send_key("ctrl-alt-right", 0.3)
-        time.sleep(0.2)
-    _send_key("ctrl-alt-spc", 0.5)
-    time.sleep(1)
-
-    # Type Full Name; Tab to Account Name (autofills), Tab to Password
-    _type_text(VM_USER)
-    time.sleep(0.5)
-    _send_key("tab", 0.3)
-    time.sleep(0.3)
-    _send_key("tab", 0.3)
-    time.sleep(0.3)
-    _type_text(VM_PASSWORD)
-    time.sleep(0.3)
-    _send_key("tab", 0.3)
-    time.sleep(0.3)
-    _type_text(VM_PASSWORD)
-    time.sleep(0.3)
-    _send_key("tab", 0.3)
-    time.sleep(0.3)
-    _send_key("tab", 0.3)  # past hint
-    time.sleep(0.5)
-
-    # VO navigate to Continue and activate
-    emit("info", "vm", "  → VO Right x10 + activate → Continue")
-    for _ in range(10):
-        _send_key("ctrl-alt-right", 0.25)
-        time.sleep(0.15)
-    _send_key("ctrl-alt-spc", 0.5)
-    time.sleep(3)
-
-    # If advanced, disable VO
-    ppm = _take_screenshot()
-    img = _ppm_to_image(ppm)
-    if img:
-        text = _ocr_region(img, 0, 0, 1280, 800).lower()
-        if "create a computer account" not in text and getattr(_fill_account_form, "_vo_enabled", False):
-            emit("info", "vm", "  → Left create_account, disabling VoiceOver (Cmd+F5)")
-            _fill_account_form._vo_enabled = False
-            _send_key("meta_l-f5", 1)
-            time.sleep(2)
-    time.sleep(3)
-
-
-def _wizard_ocr(ppm: bytes) -> str:
-    """OCR the screen for wizard identification."""
-    img = _ppm_to_image(ppm)
-    if not img:
-        return ""
-    return _ocr_region(img, 50, 50, 1230, 750)
-
-
-def _wizard_identify(text: str) -> WizardScreen | None:
-    """Match OCR text against known screens for the current macOS version."""
-    for screen in WIZARD_SCREENS[MACOS_VERSION]:
-        if screen.matches(text):
-            return screen
-    return None
-
+VM_PASSWORD = "airtagpw"  # 8 chars — Setup Assistant silently rejects <8
+
+# The Setup Assistant bypass lives in server/wizard/ and is invoked
+# via _bypass_setup_assistant_via_wizard() below.  See
+# docs/WIZARD_AUTOMATION.md for the design; tests under tests/wizard/
+# exercise the decision tree with fakes.
 
 def _kill_vm():
     """Kill the QEMU process and clean up sockets."""
@@ -1964,30 +1293,16 @@ def _kill_vm():
 
 
 
-def _create_account_from_recovery():
-    """Bypass Setup Assistant by creating user account from recovery Terminal.
 
-    Catalina's Migration Assistant cannot be skipped and causes kernel panics
-    when migrating from the recovery partition. Instead, we:
-    1. Reset VM to get back to boot picker
-    2. Boot into macOS Base System (Recovery)
-    3. Open Terminal via Utilities menu
-    4. Mount Macintosh HD volumes and create user account via dscl
-    5. Touch .AppleSetupDone to skip Setup Assistant
-    6. Reboot into Macintosh HD → boots straight to login/desktop
+def _restart_setup_vm(include_mac_hdd: bool) -> bool:
+    """Kill the current setup VM and relaunch QEMU with the same argv
+    that ``vm_start_setup`` uses, optionally omitting MacHDD to force
+    OpenCore into Recovery.  Returns True on success.  Callers:
+    ``server.wizard.qemu.TrackerVMDriver``.
     """
-    _set_phase("setup_wizard", "Bypassing Setup Assistant via recovery Terminal...")
-
-    # === STEP 1: Restart VM without MacHDD to force Recovery boot ===
-    # OpenCore's boot picker timeout is only 2 seconds — too fast to catch.
-    # Instead, kill the VM and restart it WITHOUT the MacHDD drive.
-    # OpenCore will only see macOS Base System → auto-boots into Recovery.
-    emit("info", "vm", "Killing VM and restarting without MacHDD to force Recovery...")
     _kill_vm()
     time.sleep(3)
-
-    # Start QEMU without MacHDD — only OpenCore + BaseSystem
-    qemu_args = [
+    args = [
         "qemu-system-x86_64",
         "-enable-kvm", "-m", "8192",
         "-cpu", "Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,"
@@ -2008,9 +1323,18 @@ def _create_account_from_recovery():
         "-drive", f"id=OpenCoreBoot,if=none,snapshot=on,format=qcow2,"
                   f"file={VM_DIR}/OpenCore/OpenCore.qcow2",
         "-device", "ide-hd,bus=sata.2,drive=OpenCoreBoot",
-        # MacHDD intentionally omitted — forces Recovery boot
-        "-drive", f"id=InstallMedia,if=none,file={VM_DIR}/BaseSystem.img,format=raw",
-        "-device", "ide-hd,bus=sata.3,drive=InstallMedia",
+    ]
+    if include_mac_hdd:
+        args += [
+            "-drive", f"id=MacHDD,if=none,file={VM_DIR}/mac_hdd_ng.img,format=qcow2",
+            "-device", "ide-hd,bus=sata.4,drive=MacHDD",
+        ]
+    if (VM_DIR / "BaseSystem.img").exists():
+        args += [
+            "-drive", f"id=InstallMedia,if=none,file={VM_DIR}/BaseSystem.img,format=raw",
+            "-device", "ide-hd,bus=sata.3,drive=InstallMedia",
+        ]
+    args += [
         "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
         "-device", "vmxnet3,netdev=net0,id=net0,mac=52:54:00:c9:18:27",
         "-device", "vmware-svga",
@@ -2020,478 +1344,72 @@ def _create_account_from_recovery():
         "-daemonize",
         "-pidfile", "/tmp/airtag-vm-setup.pid",
     ]
-
     try:
-        result = sp.run(qemu_args, capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            _set_phase("error", f"Failed to start Recovery VM: {result.stderr}")
-            return
-    except Exception as e:
-        _set_phase("error", f"Failed to start Recovery VM: {e}")
-        return
+        result = sp.run(args, capture_output=True, text=True, timeout=30)
+    except Exception as exc:
+        emit("error", "vm", f"Failed to restart VM: {exc}")
+        return False
+    if result.returncode != 0:
+        emit("error", "vm", f"QEMU restart failed: {result.stderr}")
+        return False
+    _systemctl("start", "airtag-novnc")
+    return True
 
-    emit("info", "vm", "Recovery VM started (no MacHDD). Waiting for Recovery...")
 
-    # Wait for recovery screen — OpenCore should auto-boot macOS Base System
-    state, _ = _wait_for_screen(
-        {"recovery", "boot_picker"},
-        timeout=180,
-        poll_interval=5,
-        msg="Waiting for Recovery to load",
+def _bypass_setup_assistant_via_wizard():
+    """Entry point from ``_auto_install_worker``.  Replaces the old
+    ``_create_account_from_recovery`` and ``_run_setup_wizard`` calls;
+    all bypass logic lives in the ``wizard`` package.
+
+    Two import layouts coexist: tests run the repo root where the
+    package is ``server.wizard``; the installed layout (see
+    ``server/package.nix``) drops ``tracker.py`` and ``wizard/`` into
+    the same directory, so the import is plain ``wizard``.
+    """
+    try:
+        from wizard import bypass_setup_assistant
+        from wizard.qemu import TrackerVMDriver
+        from wizard.reporter import CallbackReporter
+    except ImportError:
+        from server.wizard import bypass_setup_assistant
+        from server.wizard.qemu import TrackerVMDriver
+        from server.wizard.reporter import CallbackReporter
+
+    def _ocr_region_bytes(ppm, x1, y1, x2, y2):
+        if not ppm:
+            return ""
+        img = _ppm_to_image(ppm)
+        if not img:
+            return ""
+        return _ocr_region(img, x1, y1, x2, y2)
+
+    driver = TrackerVMDriver(
+        _send_key=_send_key,
+        _type_text=_type_text,
+        _mouse_click=_mouse_click,
+        _take_screenshot=_take_screenshot,
+        _ocr_region=_ocr_region_bytes,
+        _detect_screen=_detect_screen,
+        _restart_setup_vm=_restart_setup_vm,
+        _kill_vm=_kill_vm,
     )
-
-    if state == "boot_picker":
-        # Boot picker has EFI (left, default) and macOS Base System (right).
-        # Navigate right to select macOS Base System, then press Enter.
-        emit("info", "vm", "Boot picker: navigating right to macOS Base System...")
-        _send_key("right", 0.5)
-        _send_key("ret", 2)
-        state, _ = _wait_for_screen(
-            {"recovery"}, timeout=120, poll_interval=5,
-            msg="Waiting for Recovery after boot picker",
-        )
-
-    if state != "recovery":
-        _set_phase("error", f"Could not reach Recovery (state: {state})")
-        return
-
-    # === STEP 3: Open Terminal from Recovery ===
-    emit("info", "vm", "Recovery loaded. Opening Terminal via Utilities menu...")
-    time.sleep(5)
-
-    # Menu bar: [Apple x=20] [Recovery x=83] [File x=144] [Edit x=187] [Utilities x=242]
-    _mouse_click(242, 10, 1.5)  # Click "Utilities"
-    _mouse_click(242, 55, 4)    # Click "Terminal"
-    time.sleep(2)
-    _mouse_click(400, 300, 1)   # Focus Terminal window
-
-    state, _ = _wait_for_screen("terminal", timeout=15, poll_interval=2)
-    if state != "terminal":
-        emit("info", "vm", f"Terminal not detected ({state}), retrying...")
-        _send_key("escape", 0.5)
-        time.sleep(1)
-        _mouse_click(242, 10, 1.5)
-        _mouse_click(242, 55, 4)
-        time.sleep(3)
-        _mouse_click(400, 300, 1)
-        state, _ = _wait_for_screen("terminal", timeout=10, poll_interval=2)
-        if state != "terminal":
-            emit("warning", "vm", f"Could not confirm Terminal ({state}) — proceeding anyway")
-
-    # === STEP 4: Mount volumes and create user account ===
-    emit("info", "vm", "Terminal open. Mounting Macintosh HD volumes read-write...")
-
-    # List available disks and volumes for debugging
-    _type_text('diskutil list')
-    _send_key("ret")
-    time.sleep(3)
-
-    # Mount Macintosh HD — try multiple approaches
-    _type_text('diskutil mount "Macintosh HD" 2>&1')
-    _send_key("ret")
-    time.sleep(3)
-    _type_text('diskutil mount "Macintosh HD - Data" 2>&1')
-    _send_key("ret")
-    time.sleep(3)
-
-    # List what's in /Volumes and find the data volume
-    _type_text('ls -la /Volumes/')
-    _send_key("ret")
-    time.sleep(2)
-
-    # Find the data volume with dslocal — check all /Volumes/* paths
-    _type_text('D=""; for P in /Volumes/*; do [ -d "$P/private/var/db/dslocal/nodes/Default/users" ] && D="$P" && break; done; echo "FOUND_D=$D"')
-    _send_key("ret")
-    time.sleep(2)
-
-    # If D is empty, the data volume may not have mounted. Try mounting by disk identifier.
-    _type_text('if [ -z "$D" ]; then for d in disk1s1 disk1s2 disk2s1 disk2s2 disk2s5; do diskutil mount $d 2>/dev/null; done; fi')
-    _send_key("ret")
-    time.sleep(3)
-
-    # Retry finding D after extra mounts
-    _type_text('if [ -z "$D" ]; then for P in /Volumes/*; do [ -d "$P/private/var/db/dslocal/nodes/Default/users" ] && D="$P" && break; done; echo "RETRY_D=$D"; fi')
-    _send_key("ret")
-    time.sleep(2)
-
-    # Set DS and verify — also try to remount read-write if needed
-    _type_text('DS="$D/private/var/db/dslocal/nodes/Default"')
-    _send_key("ret")
-    time.sleep(1)
-    _type_text('mount -uw "$D" 2>/dev/null; ls "$DS/users" && echo DS_OK || echo DS_FAIL')
-    _send_key("ret")
-    time.sleep(3)
-
-    # Debug screenshot
-    ppm = _take_screenshot()
-    if ppm:
+    _set_phase("setup_wizard", "Bypassing Setup Assistant via wizard module")
+    reporter = CallbackReporter(emit=emit, set_phase=_set_phase)
+    outcome = bypass_setup_assistant(driver, reporter, path="recovery")
+    if outcome.status == "ok":
         try:
-            img = _ppm_to_image(ppm)
-            if img:
-                img.save("/tmp/airtag-vm-recovery-terminal.png")
-                text = _ocr_region(img, 50, 50, 1230, 750)
-                emit("info", "vm", f"Recovery terminal: {text[:400]!r}")
-        except Exception:
-            pass
-
-    user = VM_USER
-    pw = VM_PASSWORD
-
-    emit("info", "vm", f"Creating user '{user}' via plist on mounted volume...")
-
-    # dscl -f doesn't work on Ventura (eDSUnknownNodeName).
-    # Instead, write the user plist directly to the dslocal directory.
-    # Generate password hash using Python (available in recovery).
-    # Each user is a plist at $DS/users/<username>.plist
-
-    # First, generate the password hash via Python
-    _type_text(f'PH=$(python3 -c "import hashlib; print(hashlib.sha512(b\\"{pw}\\").hexdigest())")')
-    _send_key("ret")
-    time.sleep(2)
-
-    # Write user plist directly
-    plist_cmds = [
-        f'cat > "$DS/users/{user}.plist" << PEOF',
-        '<?xml version="1.0" encoding="UTF-8"?>',
-        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
-        '<plist version="1.0">',
-        '<dict>',
-        '  <key>uid</key><array><string>501</string></array>',
-        '  <key>gid</key><array><string>20</string></array>',
-        f'  <key>name</key><array><string>{user}</string></array>',
-        f'  <key>realname</key><array><string>{user}</string></array>',
-        f'  <key>shell</key><array><string>/bin/zsh</string></array>',
-        f'  <key>home</key><array><string>/Users/{user}</string></array>',
-        '  <key>generateduid</key><array><string>FFFFEEEE-DDDD-CCCC-BBBB-AAAA00000001</string></array>',
-        f'  <key>passwd</key><array><string>{pw}</string></array>',
-        '</dict>',
-        '</plist>',
-        'PEOF',
-    ]
-
-    for line in plist_cmds:
-        _type_text(line)
-        _send_key("ret")
-        time.sleep(0.3)
-    time.sleep(2)
-
-    # Add user to admin group
-    _type_text(f'G="$DS/groups/admin.plist"; /usr/libexec/PlistBuddy -c "Add :groupmembers: string {user}" "$G" 2>/dev/null; /usr/libexec/PlistBuddy -c "Add :users: string {user}" "$G" 2>/dev/null')
-    _send_key("ret")
-    time.sleep(2)
-
-    # Create home directory and skip Setup Assistant
-    _type_text(f'mkdir -p "$D/Users/{user}"')
-    _send_key("ret")
-    time.sleep(1)
-    _type_text('touch "$D/private/var/db/.AppleSetupDone"')
-    _send_key("ret")
-    time.sleep(1)
-
-    # Write SetupAssistant plist to skip migration and other wizard screens.
-    # .AppleSetupDone alone doesn't work in Ventura — Setup Assistant still runs.
-    # Setting LastSeenBuddyBuildVersion to a high value + DidSee* keys tells
-    # Setup Assistant that all screens have already been completed.
-    _type_text(
-        'SA="$D/Library/Preferences/com.apple.SetupAssistant.plist";'
-        ' /usr/libexec/PlistBuddy -c "Add :LastSeenBuddyBuildVersion string 99Z99" "$SA" 2>/dev/null;'
-        ' for k in DidSeeCloudSetup DidSeeMigrationSetup DidSeePrivacy DidSeeSiriSetup DidSeeAccessibility;'
-        ' do /usr/libexec/PlistBuddy -c "Add :$k bool true" "$SA" 2>/dev/null; done'
-    )
-    _send_key("ret")
-    time.sleep(2)
-
-    # Also write user-level SetupAssistant plist
-    _type_text(
-        f'mkdir -p "$D/Users/{user}/Library/Preferences";'
-        f' cp "$SA" "$D/Users/{user}/Library/Preferences/com.apple.SetupAssistant.plist"'
-    )
-    _send_key("ret")
-    time.sleep(1)
-
-    # Enable Full Keyboard Access so Tab cycles between buttons in dialogs.
-    # Without this, Tab does nothing and Enter/Space always click the default
-    # button — critical for the shutdown dialog where we need to click
-    # "Restart" (non-default) instead of "Shut Down" (default).
-    _type_text('GP="$D/Library/Preferences/.GlobalPreferences.plist"; /usr/libexec/PlistBuddy -c "Add :AppleKeyboardUIMode integer 3" "$GP" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :AppleKeyboardUIMode 3" "$GP"')
-    _send_key("ret")
-    time.sleep(1)
-
-    # Verify
-    _type_text(f'ls -la "$DS/users/{user}.plist" "$D/private/var/db/.AppleSetupDone" && echo SETUP_OK')
-    _send_key("ret")
-    time.sleep(3)
-
-    # Debug screenshot of results
-    ppm = _take_screenshot()
-    if ppm:
-        try:
-            img = _ppm_to_image(ppm)
-            if img:
-                img.save("/tmp/airtag-vm-account-created.png")
-                text = _ocr_region(img, 50, 50, 1230, 750)
-                emit("info", "vm", f"Account creation result: {text[:500]!r}")
-        except Exception:
-            pass
-
-    # === STEP 5: Kill Recovery VM and restart with MacHDD ===
-    # The Recovery VM has no MacHDD, so we can't just reboot.
-    # Kill it and restart QEMU with the full drive list.
-    emit("info", "vm", "Killing Recovery VM and restarting with MacHDD...")
-    _kill_vm()
-    time.sleep(3)
-
-    # Restart with full QEMU args including MacHDD
-    qemu_args_full = [
-        "qemu-system-x86_64",
-        "-enable-kvm", "-m", "8192",
-        "-cpu", "Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,"
-                "+invtsc,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,"
-                "+avx,+aes,+xsave,+xsaveopt,check",
-        "-machine", "q35",
-        "-device", "qemu-xhci,id=xhci",
-        "-device", "usb-kbd,bus=xhci.0",
-        "-device", "usb-tablet,bus=xhci.0",
-        "-smp", "4,cores=2",
-        "-global", "ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off",
-        "-device", "isa-applesmc,osk="
-                   "ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc",
-        "-drive", f"if=pflash,format=raw,readonly=on,file={VM_DIR}/OVMF_CODE_4M.fd",
-        "-drive", f"if=pflash,format=raw,file={VM_DIR}/OVMF_VARS-1920x1080.fd",
-        "-smbios", "type=2",
-        "-device", "ich9-ahci,id=sata",
-        "-drive", f"id=OpenCoreBoot,if=none,snapshot=on,format=qcow2,"
-                  f"file={VM_DIR}/OpenCore/OpenCore.qcow2",
-        "-device", "ide-hd,bus=sata.2,drive=OpenCoreBoot",
-        "-drive", f"id=MacHDD,if=none,file={VM_DIR}/mac_hdd_ng.img,format=qcow2",
-        "-device", "ide-hd,bus=sata.4,drive=MacHDD",
-        "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
-        "-device", "vmxnet3,netdev=net0,id=net0,mac=52:54:00:c9:18:27",
-        "-device", "vmware-svga",
-        "-vnc", "127.0.0.1:1",
-        "-monitor", f"unix:{MONITOR_SOCK},server,nowait",
-        "-qmp", f"unix:{QMP_SOCK},server,nowait",
-        "-daemonize",
-        "-pidfile", "/tmp/airtag-vm-setup.pid",
-    ]
-
-    try:
-        result = sp.run(qemu_args_full, capture_output=True, text=True, timeout=30)
-        if result.returncode != 0:
-            _set_phase("error", f"Failed to restart VM with MacHDD: {result.stderr}")
-            return
-    except Exception as e:
-        _set_phase("error", f"Failed to restart VM with MacHDD: {e}")
-        return
-
-    emit("info", "vm", "VM restarted with MacHDD. Waiting for Macintosh HD to boot...")
-
-    # OpenCore should auto-boot Macintosh HD (default, rightmost entry)
-    state, _ = _wait_for_screen(
-        {"desktop", "login_screen", "setup_wizard", "boot_picker"},
-        timeout=300,
-        poll_interval=5,
-        msg="Waiting for Macintosh HD to boot after account creation",
-    )
-
-    if state == "boot_picker":
-        # Boot picker has 2 entries: EFI (left, default) and Macintosh HD (right).
-        # Press right once to select Macintosh HD, then Enter.
-        emit("info", "vm", "Boot picker detected, selecting Macintosh HD (right)...")
-        _send_key("right", 0.5)
-        _send_key("ret", 2)
-        state, _ = _wait_for_screen(
-            {"desktop", "login_screen", "setup_wizard"},
-            timeout=300, poll_interval=5,
-            msg="Waiting for Macintosh HD after boot picker",
-        )
-
-    if state in ("desktop", "login_screen"):
-        pw_path = DATA_DIR / "vm-password"
-        pw_path.write_text(VM_PASSWORD)
-        pw_path.chmod(0o600)
-        _set_phase("done", "macOS setup complete!")
-        emit("info", "vm", f"Account: {VM_USER} / {VM_PASSWORD}")
-    elif state == "setup_wizard":
-        # .AppleSetupDone didn't work — dscl path may have been wrong.
-        # Fall back to wizard automation as last resort.
-        emit("warning", "vm", "Setup wizard appeared despite .AppleSetupDone — running wizard...")
-        _run_setup_wizard()
-    else:
-        _set_phase("error", f"Unexpected screen after account creation: {state}")
-
-
-def _run_setup_wizard():
-    """Walk through macOS setup wizard using version-specific screen definitions."""
-    _set_phase("setup_wizard", "Automating setup wizard...")
-
-    screens = WIZARD_SCREENS[MACOS_VERSION]
-    emit("info", "vm", f"Using {MACOS_VERSION} definitions ({len(screens)} screens)")
-
-    try:
-        time.sleep(3)
-        last_id = None
-        stuck = 0
-        deadline = time.time() + WIZARD_TIMEOUT
-
-        while time.time() < deadline:
-            ppm = _take_screenshot()
-            screen_type = _detect_screen(ppm)
-
-            # Desktop or login screen = wizard is done
-            if screen_type == "desktop":
-                emit("info", "vm", "macOS desktop detected — wizard complete.")
-                break
-            if screen_type == "login_screen":
-                emit("info", "vm", "macOS login screen detected — wizard complete.")
-                break
-
-            # Boot picker — try each entry until one boots macOS
-            if screen_type == "boot_picker":
-                boot_attempt = getattr(_run_setup_wizard, "_boot_attempt", 0)
-                _run_setup_wizard._boot_attempt = boot_attempt + 1
-
-                # Save debug screenshot
-                try:
-                    img = _ppm_to_image(ppm)
-                    if img:
-                        img.save(f"/tmp/airtag-vm-bootpicker-{boot_attempt}.png")
-                        bp_text = _ocr_region(img, 200, 400, 1100, 700)
-                        emit("info", "vm", f"Boot picker OCR: {bp_text[:200]!r}")
-                except Exception:
-                    pass
-
-                # Cycle: default (Macintosh HD), left (macOS Base System),
-                # right (EFI / wrap), then repeat with longer timeout
-                if boot_attempt == 0:
-                    emit("info", "vm", "Boot picker: pressing Enter on default entry...")
-                elif boot_attempt == 1:
-                    emit("info", "vm", f"Boot picker attempt {boot_attempt}: arrow left + Enter")
-                    _send_key("left", 1)
-                elif boot_attempt == 2:
-                    emit("info", "vm", f"Boot picker attempt {boot_attempt}: arrow right + Enter")
-                    _send_key("right", 1)
-                else:
-                    # After trying all entries, alternate left/right with longer wait
-                    direction = "left" if boot_attempt % 2 == 1 else "right"
-                    emit("info", "vm", f"Boot picker attempt {boot_attempt}: {direction} + Enter")
-                    _send_key(direction, 1)
-
-                _send_key("ret", 2)
-                # First attempt (default = Macintosh HD) gets extra time —
-                # post-migration first boot in QEMU can take 5+ minutes
-                boot_timeout = 300 if boot_attempt == 0 else 120
-                state, ppm = _wait_for_screen(
-                    {"setup_wizard", "apple_logo", "desktop", "login_screen"},
-                    timeout=boot_timeout,
-                    poll_interval=10,
-                    msg="Waiting for macOS to boot after boot picker",
-                )
-                if state in ("desktop", "login_screen"):
-                    emit("info", "vm", f"macOS {state} detected — wizard complete.")
-                    break
-                if state == "setup_wizard":
-                    continue
-                # Still boot_picker or timeout — loop will try next entry
-
-            if screen_type not in ("setup_wizard", "unknown", "apple_logo", "boot_picker"):
-                emit("info", "vm", f"Left wizard (screen: {screen_type}).")
-                break
-
-            if screen_type in ("unknown", "apple_logo"):
-                state, ppm = _wait_for_screen(
-                    {"setup_wizard", "boot_picker", "desktop", "login_screen"},
-                    timeout=180,
-                    poll_interval=5,
-                    msg="Waiting for wizard screen",
-                )
-                if state in ("desktop", "login_screen"):
-                    emit("info", "vm", f"macOS {state} detected — wizard complete.")
-                    break
-                if state == "boot_picker":
-                    continue  # handle boot picker at top of loop
-                if state != "setup_wizard":
-                    emit("info", "vm", f"Wizard ended (screen: {state}).")
-                    break
-
-            text = _wizard_ocr(ppm)
-            if not text:
-                time.sleep(1)
-                continue
-
-            screen = _wizard_identify(text)
-            if not screen:
-                emit("info", "vm", f"Unknown screen: {text[:80]!r}")
-                _find_and_click("Continue")
-                time.sleep(1)
-                continue
-
-            if screen.id == last_id:
-                stuck += 1
-                if stuck >= 3 and not screen.custom_action:
-                    # Rotate strategies to get unstuck.
-                    # Skip for custom_action screens — they handle their own
-                    # retry logic (e.g. shutdown_dialog clicks Restart directly;
-                    # Tab+Enter would click "Shut Down" and kill the VM).
-                    if stuck <= 4:
-                        # First tries: Escape any overlay, toggle VoiceOver off
-                        emit("info", "vm", f"Stuck on '{screen.id}', Esc + Cmd+F5 (attempt {stuck})")
-                        _send_key("esc", 0.5)
-                        time.sleep(0.5)
-                        _send_key("meta_l-f5", 1)
-                        time.sleep(2)
-                    elif stuck % 3 == 0:
-                        # Periodically retry the screen's fallback click
-                        emit("info", "vm", f"Stuck on '{screen.id}', fallback click {screen.fallback_pos}")
-                        _send_key("esc", 0.5)
-                        time.sleep(0.3)
-                        _mouse_click(screen.fallback_pos[0], screen.fallback_pos[1], 0.3)
-                    else:
-                        emit("info", "vm", f"Stuck on '{screen.id}', trying Tab+Enter")
-                        _send_key("tab", 0.3)
-                        _send_key("ret", 1)
-                    time.sleep(1)
-                    continue
-            else:
-                stuck = 0
-                if (last_id in ("migration", "transfer_info")
-                        and screen.id not in ("migration", "transfer_info")
-                        and getattr(_handle_migration, "_vo_enabled", False)):
-                    # Disable VoiceOver when leaving migration — it was
-                    # enabled to bypass Migration Assistant but interferes
-                    # with mouse clicks on subsequent screens.
-                    emit("info", "vm", "  → Left migration, disabling VoiceOver (Cmd+F5)")
-                    _handle_migration._vo_enabled = False
-                    _send_key("meta_l-f5", 1)
-                    time.sleep(2)
-
-            last_id = screen.id
-            emit("info", "vm", f"Screen: {screen.id} → '{screen.button}'")
-            screen.execute()
-            time.sleep(1)
-
-        # Verify we actually exited the wizard successfully
-        final_ppm = _take_screenshot()
-        final_screen = _detect_screen(final_ppm)
-        if final_screen in ("desktop", "login_screen"):
             pw_path = DATA_DIR / "vm-password"
             pw_path.write_text(VM_PASSWORD)
             pw_path.chmod(0o600)
-            _set_phase("done", "macOS setup complete!")
-            emit("info", "vm", f"Account: {VM_USER} / {VM_PASSWORD}")
-        else:
-            _set_phase("error", f"Wizard timed out (screen: {final_screen})")
-            emit("warning", "vm", f"Wizard did not complete — stuck on {final_screen}")
-            try:
-                img = _ppm_to_image(final_ppm)
-                if img:
-                    img.save("/tmp/airtag-vm-wizard-timeout.png")
-            except Exception:
-                pass
+        except Exception as exc:
+            emit("warning", "vm", f"Failed to write vm-password: {exc}")
+        emit("info", "vm", f"Setup Assistant bypassed: {outcome.message}")
+    else:
+        emit("error", "vm",
+             f"Wizard bypass failed (phase={outcome.phase}): {outcome.message}")
+        _set_phase("error", outcome.message)
 
-    except Exception as e:
-        _set_phase("error", f"Setup wizard failed: {e}")
-        log.exception("Setup wizard error")
+
 
 
 def _auto_install_worker():
@@ -2529,7 +1447,7 @@ def _auto_install_worker():
 
         # macOS already installed — setup wizard is showing
         if state == "setup_wizard":
-            _create_account_from_recovery()
+            _bypass_setup_assistant_via_wizard()
             return
 
         if state == "boot_picker":
@@ -2544,7 +1462,7 @@ def _auto_install_worker():
 
             if hdd_size_gb > 10:
                 emit("info", "vm", "macOS appears installed (HDD > 10GB). Bypassing setup via recovery...")
-                _create_account_from_recovery()
+                _bypass_setup_assistant_via_wizard()
                 return
 
             # Fresh disk — navigate to macOS Base System for install.
@@ -2562,7 +1480,7 @@ def _auto_install_worker():
             )
 
             if state == "setup_wizard":
-                _create_account_from_recovery()
+                _bypass_setup_assistant_via_wizard()
                 return
 
             # Keys didn't register — retry
@@ -2578,7 +1496,7 @@ def _auto_install_worker():
                     msg="Waiting for boot to proceed (retry)",
                 )
             if state == "setup_wizard":
-                _create_account_from_recovery()
+                _bypass_setup_assistant_via_wizard()
                 return
         elif state != "recovery":
             _set_phase("error", f"Expected boot picker or recovery, got: {state}")
@@ -2626,7 +1544,7 @@ def _auto_install_worker():
                             )
                             _send_key("ret", 1)
                         elif screen == "setup_wizard":
-                            _create_account_from_recovery()
+                            _bypass_setup_assistant_via_wizard()
                             return
                         elif screen == "apple_logo":
                             if poll % 6 == 0:
@@ -2666,7 +1584,7 @@ def _auto_install_worker():
             time.sleep(2)
             s, _ = _wait_for_screen({"recovery", "setup_wizard"}, timeout=5, poll_interval=1)
             if s == "setup_wizard":
-                _create_account_from_recovery()
+                _bypass_setup_assistant_via_wizard()
                 return
             if s == "recovery":
                 break
@@ -2702,7 +1620,7 @@ def _auto_install_worker():
                     "vm",
                     "Setup wizard detected instead of recovery Terminal — macOS is already installed.",
                 )
-                _create_account_from_recovery()
+                _bypass_setup_assistant_via_wizard()
                 return
             if state != "terminal":
                 emit(
@@ -2873,7 +1791,7 @@ def _auto_install_worker():
                 # Catalina's Migration Assistant cannot be skipped and causes
                 # kernel panics. Instead, reboot into recovery and create the
                 # user account from Terminal, bypassing Setup Assistant entirely.
-                _create_account_from_recovery()
+                _bypass_setup_assistant_via_wizard()
                 return
 
             elif screen == "uefi_error":

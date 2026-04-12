@@ -83,9 +83,17 @@ from the procedure above: `airtagpw`.
 ## Option 3 — Scripted wizard (fallback, fragile)
 
 Drive the Setup Assistant entirely from code. We spent a long time trying
-to make this work before giving up and going with Option 1. The code is
-still present as a fallback in `tracker.py` (`_run_setup_wizard` and
-friends), activated when no golden image is present.
+to make this work before giving up and going with Option 1. The fallback
+now lives in the `server/wizard/` package (primary entry point
+`server.wizard.bypass_setup_assistant`), not inline in `tracker.py`. It
+implements the Recovery-terminal bypass described in
+[`WIZARD_AUTOMATION.md`](WIZARD_AUTOMATION.md): boot into macOS Recovery
+without MacHDD attached, create an admin account via `sysadminctl` (with a
+`dscl` fallback), assert every step via `WIZARD_SENTINEL` shell tags, then
+reboot with the disk attached. The module is invoked from
+`_auto_install_worker` via `_bypass_setup_assistant_via_wizard()` when the
+installer reaches the Setup Assistant screen. Unit coverage is under
+`tests/wizard/`.
 
 ### Why it failed the first time — mistakes made
 
