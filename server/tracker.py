@@ -1507,30 +1507,34 @@ def _handle_migration() -> None:
                     time.sleep(2)
                     return
 
-        if intro_attempt <= 2:
-            # Tab to focus radio group, then Down to "Don't transfer" (3rd option).
-            # Down x2 from option 1 landed on option 2 (Windows PC) in Run 20,
-            # so Tab may land on radio group label, not option 1.
-            # Use Down x4 to reliably reach option 3 regardless of start.
-            n_down = 4 if intro_attempt == 1 else 5
-            emit("info", "vm", f"  → Tab to radio, Down x{n_down} for 'Don't transfer'")
-            _send_key("tab", 0.5)
-            time.sleep(0.3)
-            for _ in range(n_down):
+        if intro_attempt <= 3:
+            # Tab to focus radio group, then navigate to "Don't transfer"
+            # (3rd/last option).  Radio buttons wrap, so a fixed Down count
+            # lands on different options depending on initial focus.
+            # Strategy: attempt 1 uses Up x1 (wraps from option 1 to last),
+            # attempt 2 uses Down x2 (works if starting on option 1),
+            # attempt 3 uses End key (jumps to last option).
+            if intro_attempt == 1:
+                emit("info", "vm", "  → Tab to radio, Up x1 (wrap to last)")
+                _send_key("tab", 0.5)
+                time.sleep(0.3)
+                _send_key("up", 0.3)
+                time.sleep(0.3)
+            elif intro_attempt == 2:
+                emit("info", "vm", "  → Tab to radio, Down x2")
+                _send_key("tab", 0.5)
+                time.sleep(0.3)
                 _send_key("down", 0.3)
                 time.sleep(0.2)
-            time.sleep(0.3)
+                _send_key("down", 0.3)
+                time.sleep(0.3)
+            else:
+                emit("info", "vm", "  → Tab to radio, End (last)")
+                _send_key("tab", 0.5)
+                time.sleep(0.3)
+                _send_key("end", 0.5)
+                time.sleep(0.3)
             # Tab to Continue, Space to click
-            _send_key("tab", 0.3)
-            _send_key("spc", 0.5)
-            time.sleep(3)
-        elif intro_attempt == 3:
-            # End key to jump to last radio option, then Tab + Space
-            emit("info", "vm", "  → Tab, End (last radio), Tab, Space")
-            _send_key("tab", 0.5)
-            time.sleep(0.3)
-            _send_key("end", 0.5)
-            time.sleep(0.3)
             _send_key("tab", 0.3)
             _send_key("spc", 0.5)
             time.sleep(3)
@@ -1580,11 +1584,9 @@ def _handle_migration() -> None:
 
         def _tab_space_then_select_dont_transfer():
             """Escape (dismiss dialogs), Tab+Space to go back to intro,
-            then immediately select 'Don't transfer' via Down x4,
-            Tab to Continue, Space.
-            Down x4 (not x2): Tab may land on radio group label, not
-            option 1, so we need extra Downs to reliably reach option 3."""
-            emit("info", "vm", "  → Esc → Tab+Space → Down x4 → Tab → Space (combo)")
+            then immediately select 'Don't transfer' via Up x1
+            (wraps from option 1 to last), Tab to Continue, Space."""
+            emit("info", "vm", "  → Esc → Tab+Space → Up x1 → Tab → Space (combo)")
             # Dismiss any open dialog (e.g. "Other server...")
             _send_key("esc", 0.5)
             time.sleep(0.5)
@@ -1592,12 +1594,10 @@ def _handle_migration() -> None:
             _send_key("spc", 0.3)
             # Don't wait — immediately send radio selection
             time.sleep(0.5)
-            # Tab to focus radio group, Down x4 to "Don't transfer"
+            # Tab to focus radio group, Up x1 to wrap to "Don't transfer" (last option)
             _send_key("tab", 0.3)
             time.sleep(0.2)
-            for _ in range(4):
-                _send_key("down", 0.2)
-                time.sleep(0.15)
+            _send_key("up", 0.3)
             time.sleep(0.3)
             # Tab to Continue button, Space to click
             _send_key("tab", 0.3)
