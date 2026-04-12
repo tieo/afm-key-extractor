@@ -538,8 +538,23 @@ def vm_start_setup():
         except (ValueError, ProcessLookupError):
             pid_file.unlink(missing_ok=True)
 
-    has_base_system = (VM_DIR / "BaseSystem.img").exists()
-    emit("info", "vm", f"Starting VM for setup (installer media: {has_base_system})")
+    # If a pre-baked golden image exists, restore mac_hdd_ng.img from it
+    # so the VM boots straight to the logged-in desktop / login screen.
+    # This bypasses the Setup Assistant entirely — no wizard automation
+    # is needed, and the machine is in a known-good post-setup state.
+    golden_path = VM_DIR / "mac_hdd_golden.img"
+    use_golden = golden_path.exists()
+    if use_golden:
+        emit("info", "vm", f"Golden image found — restoring {golden_path.name} → mac_hdd_ng.img")
+        try:
+            import shutil
+            shutil.copy2(golden_path, VM_DIR / "mac_hdd_ng.img")
+        except Exception as e:
+            emit("error", "vm", f"Failed to restore golden image: {e}")
+            return jsonify({"error": f"Failed to restore golden image: {e}"}), 500
+
+    has_base_system = (VM_DIR / "BaseSystem.img").exists() and not use_golden
+    emit("info", "vm", f"Starting VM (golden: {use_golden}, installer media: {has_base_system})")
 
     qemu_args = [
         "qemu-system-x86_64",
@@ -618,6 +633,16 @@ def vm_start_setup():
         # Auto-start installation if installer media is present (first install)
         if has_base_system:
             threading.Thread(target=_auto_install_worker, daemon=True).start()
+        elif use_golden:
+            # Golden boot: nothing to automate. Mark setup done immediately
+            # and write the account password file so pollers can use it.
+            try:
+                pw_path = DATA_DIR / "vm-password"
+                pw_path.write_text(VM_PASSWORD)
+                pw_path.chmod(0o600)
+            except Exception as e:
+                emit("warning", "vm", f"Failed to write vm-password: {e}")
+            _set_phase("done", "Booted from golden image")
 
         return jsonify(
             {
@@ -649,6 +674,116 @@ def vm_stop():
     _qmp_disconnect()
     _systemctl("stop", "airtag-novnc")
     return jsonify({"status": "stopped"})
+
+
+@app.route("/api/vm/start-manual", methods=["POST"])
+def vm_start_manual():
+    """Start the VM via VNC with NO automation.
+
+    Intended for the one-time manual wizard completion: the operator
+    connects over VNC/noVNC, finishes Setup Assistant by hand (migration
+    skip, terms, create_account), then calls /api/vm/bake-golden to
+    snapshot the resulting disk as the golden image. Subsequent
+    /api/vm/start-setup calls will restore from the golden image instead
+    of rerunning the wizard.
+    """
+    if not VM_ENABLED:
+        return jsonify({"error": "VM not enabled"}), 400
+
+    if not (VM_DIR / "mac_hdd_ng.img").exists():
+        return jsonify({"error": "VM not provisioned yet"}), 400
+
+    pid_file = Path("/tmp/airtag-vm-setup.pid")
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)
+            return jsonify({"status": "already_running", "vnc_ws_port": VNC_WS_PORT})
+        except (ValueError, ProcessLookupError):
+            pid_file.unlink(missing_ok=True)
+
+    emit("info", "vm", "Starting VM in MANUAL mode (no automation)")
+
+    qemu_args = [
+        "qemu-system-x86_64",
+        "-enable-kvm",
+        "-m", "8192",
+        "-cpu", "Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,+invtsc,vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check",
+        "-machine", "q35",
+        "-device", "qemu-xhci,id=xhci",
+        "-device", "usb-kbd,bus=xhci.0",
+        "-device", "usb-tablet,bus=xhci.0",
+        "-smp", "4,cores=2",
+        "-global", "ICH9-LPC.acpi-pci-hotplug-with-bridge-support=off",
+        "-device", "isa-applesmc,osk=ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc",
+        "-drive", f"if=pflash,format=raw,readonly=on,file={VM_DIR}/OVMF_CODE_4M.fd",
+        "-drive", f"if=pflash,format=raw,file={VM_DIR}/OVMF_VARS-1920x1080.fd",
+        "-smbios", "type=2",
+        "-device", "ich9-ahci,id=sata",
+        "-drive", f"id=OpenCoreBoot,if=none,snapshot=on,format=qcow2,file={VM_DIR}/OpenCore/OpenCore.qcow2",
+        "-device", "ide-hd,bus=sata.2,drive=OpenCoreBoot",
+        "-drive", f"id=MacHDD,if=none,file={VM_DIR}/mac_hdd_ng.img,format=qcow2",
+        "-device", "ide-hd,bus=sata.4,drive=MacHDD",
+        "-netdev", "user,id=net0,hostfwd=tcp::2222-:22",
+        "-device", "vmxnet3,netdev=net0,id=net0,mac=52:54:00:c9:18:27",
+        "-device", "vmware-svga",
+        "-vnc", "127.0.0.1:1",
+        "-monitor", f"unix:{MONITOR_SOCK},server,nowait",
+        "-qmp", "unix:/tmp/airtag-vm-qmp.sock,server,nowait",
+        "-daemonize",
+        "-pidfile", "/tmp/airtag-vm-setup.pid",
+    ]
+
+    try:
+        result = sp.run(qemu_args, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return jsonify({"error": f"Failed to start VM: {result.stderr}"}), 500
+        _systemctl("start", "airtag-novnc")
+        _set_phase("manual", "VM running in manual mode — complete wizard via VNC")
+        return jsonify({"status": "started", "vnc_ws_port": VNC_WS_PORT, "mode": "manual"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/vm/bake-golden", methods=["POST"])
+def vm_bake_golden():
+    """Snapshot current mac_hdd_ng.img as mac_hdd_golden.img.
+
+    Must be called while the VM is stopped (otherwise the image is
+    inconsistent). Future start-setup calls will restore from this
+    golden image and skip the wizard entirely.
+    """
+    if not VM_ENABLED:
+        return jsonify({"error": "VM not enabled"}), 400
+
+    pid_file = Path("/tmp/airtag-vm-setup.pid")
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)
+            return jsonify({"error": "VM still running — stop it first"}), 400
+        except (ValueError, ProcessLookupError):
+            pid_file.unlink(missing_ok=True)
+
+    src = VM_DIR / "mac_hdd_ng.img"
+    if not src.exists():
+        return jsonify({"error": "mac_hdd_ng.img not found"}), 400
+
+    dst = VM_DIR / "mac_hdd_golden.img"
+    try:
+        import shutil
+        if dst.exists():
+            backup = VM_DIR / "mac_hdd_golden.img.bak"
+            emit("info", "vm", f"Existing golden image backed up to {backup.name}")
+            shutil.move(str(dst), str(backup))
+        emit("info", "vm", f"Baking golden image: {src.name} → {dst.name}")
+        shutil.copy2(src, dst)
+        size_gb = dst.stat().st_size / (1024**3)
+        emit("info", "vm", f"Golden image baked ({size_gb:.1f} GB)")
+        return jsonify({"status": "baked", "path": str(dst), "size_gb": round(size_gb, 2)})
+    except Exception as e:
+        emit("error", "vm", f"Failed to bake golden image: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 # --- QEMU monitor helpers for VM automation ---
