@@ -271,5 +271,43 @@ down cleanly and `cp mac_hdd_ng.img mac_hdd_golden.img`.
 
 ---
 
-*(Later steps — shutdown + golden image promotion — appended as they
-are driven and automated.)*
+## Step 5 — dismiss first-boot dialogs + shutdown
+
+**Entry state**: desktop logged in as `airtag`. A *Keyboard Setup
+Assistant* modal blocks focus. A *Upgrade to macOS Tahoe*
+notification floats upper-right; we leave it.
+
+**Action**: click Quit on the keyboard modal at `(863, 651)`. Quit
+drops back to the login screen (the modal was running in a system-
+level session; dismissing it deauths the GUI). Type the password and
+press Return to log back in; this establishes an active session so
+the ACPI power button is accepted.
+
+**Shutdown**: caller then issues QMP `system_powerdown`. macOS
+respects this and halts within ~20 s.
+
+**Golden promotion** (off-VM): `cp --reflink=auto mac_hdd_ng.img
+mac_hdd_golden.img`. Keep the previous golden as `.prev` for
+rollback.
+
+**Quirk**: on first manual run, `system_powerdown` issued at the
+login screen *before* logging in is ignored — macOS refuses to shut
+down with no user session. The re-login in step 5 fixes this. A hard
+QMP `quit` works but skips APFS journaling fsync; prefer the clean
+path.
+
+**Exit state**: VM halted; `mac_hdd_golden.img` identical to the
+final installed state. Starting a new VM with
+`-drive file=mac_hdd_golden.img` boots directly to the login screen
+(the `airtag` user ready to accept the known password over SSH once
+the service enables sshd via its normal flow).
+
+---
+
+## End-to-end verification (TODO next iteration)
+
+`cp --reflink=auto mac_hdd_blank.img mac_hdd_ng.img` then run steps
+1→5 in sequence from a clean VM start. Expected wall-clock: ~45 min
+(step 3 install dominates). Verification = VM powered off with the
+airtag user in APFS and `mac_hdd_ng.img ≈ mac_hdd_golden.img`.
+
