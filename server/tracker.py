@@ -1547,21 +1547,14 @@ def _handle_migration() -> None:
             time.sleep(3)
     elif on_transfer:
         # Transfer info screen: Continue is disabled (no source selected).
-        # CONFIRMED: Tab+Space navigates BACK to migration intro screen.
-        # CRITICAL: Migration intro auto-advances back to transfer_info within
-        # ~500ms, so we must send radio selection keys IMMEDIATELY after
-        # Tab+Space, without waiting for the next iteration.
-        if attempt == 1:
-            # Enable Full Keyboard Access so Tab can focus all controls
-            emit("info", "vm", "  → Enabling Full Keyboard Access (Ctrl+F7)")
-            _send_key("ctrl-f7", 1)
-            time.sleep(1)
+        # Strategy: Enable VoiceOver first (Tab+Space only works after VO
+        # has been active), then Tab+Space to go back to intro screen,
+        # then click "Not Now" link at bottom-left (90, 670).
 
-        def _go_back_and_click_not_now():
+        def _go_back_and_click_not_now(not_now_x: int = 90):
             """Escape (dismiss dialogs), Tab+Space to go back to intro,
             then click 'Not Now' in the bottom-left corner."""
-            emit("info", "vm", "  → Esc → Tab+Space → click 'Not Now' (90, 670)")
-            # Dismiss any open dialog (e.g. "Other server...")
+            emit("info", "vm", f"  → Esc → Tab+Space → click 'Not Now' ({not_now_x}, 670)")
             _send_key("esc", 0.5)
             time.sleep(0.5)
             _send_key("tab", 0.3)
@@ -1569,45 +1562,39 @@ def _handle_migration() -> None:
             # Wait briefly for intro screen to appear
             time.sleep(1.0)
             # Click "Not Now" in bottom-left
-            _mouse_click(90, 670, 0.3)
+            _mouse_click(not_now_x, 670, 0.3)
             time.sleep(3)
 
-        if attempt <= 3:
+        if attempt == 1:
+            # Step 1: Enable Full Keyboard Access + VoiceOver
+            # Tab+Space only works after VoiceOver has been active.
+            emit("info", "vm", "  → Enabling Full Keyboard Access (Ctrl+F7) + VoiceOver (Cmd+F5)")
+            _send_key("ctrl-f7", 1)
+            time.sleep(0.5)
+            _handle_migration._vo_enabled = True
+            _send_key("meta_l-f5", 1)
+            time.sleep(3)
+            # Try the combo right away
             _go_back_and_click_not_now()
-        elif attempt <= 6:
-            # Escape first, then Shift+Tab + Space (Back button) then combo
-            n = attempt - 3
-            emit("info", "vm", f"  → Esc → Shift+Tab x{n} + Space, then combo")
+        elif attempt <= 4:
+            # Retry Tab+Space → click "Not Now" with slight position variation
+            not_now_x = [90, 75, 100, 60][attempt - 1]
+            _go_back_and_click_not_now(not_now_x)
+        elif attempt <= 7:
+            # Try Shift+Tab variations to find the Back button
+            n = attempt - 4
+            emit("info", "vm", f"  → Esc → Shift+Tab x{n} + Space → click 'Not Now'")
             _send_key("esc", 0.5)
             time.sleep(0.5)
             for _ in range(n):
                 _send_key("shift-tab", 0.3)
                 time.sleep(0.2)
             _send_key("spc", 0.3)
-            time.sleep(0.5)
-            # Immediately try radio selection in case we're on intro
-            _send_key("tab", 0.3)
-            time.sleep(0.2)
-            _send_key("down", 0.2)
-            time.sleep(0.2)
-            _send_key("down", 0.2)
-            time.sleep(0.3)
-            _send_key("tab", 0.3)
-            _send_key("spc", 0.5)
+            time.sleep(1.0)
+            _mouse_click(90, 670, 0.3)
             time.sleep(3)
-        elif attempt == 7:
-            # Enable VoiceOver to find Back button
-            emit("info", "vm", "  → Enabling VoiceOver (Cmd+F5)")
-            _handle_migration._vo_enabled = True
-            _send_key("meta_l-f5", 1)
-            time.sleep(5)
-            emit("info", "vm", "  → VO Left + activate (Back button)")
-            _send_key("ctrl-alt-left", 0.5)
-            time.sleep(0.5)
-            _send_key("ctrl-alt-spc", 0.5)
-            time.sleep(3)
-        elif attempt <= 15:
-            # VO navigation to find and activate Back button
+        elif attempt <= 12:
+            # VoiceOver navigation to find and activate Back button
             backward = (attempt % 2 == 0)
             direction = "left" if backward else "right"
             key = f"ctrl-alt-{direction}"
@@ -1618,30 +1605,37 @@ def _handle_migration() -> None:
                 _send_key(key, 0.5)
                 time.sleep(0.5)
             _send_key("ctrl-alt-spc", 0.5)
+            time.sleep(2)
+            # After activating Back, click "Not Now" on intro
+            _mouse_click(90, 670, 0.3)
             time.sleep(3)
         else:
-            # Rotation: alternate combo and VO approaches
-            phase = (attempt - 16) % 3
+            # Rotation of all strategies
+            phase = (attempt - 13) % 3
             if phase == 0:
                 _go_back_and_click_not_now()
             elif phase == 1:
-                # Escape to dismiss any dialog, then Shift+Tab + Space
-                emit("info", "vm", "  → Esc → Shift+Tab + Space")
-                _send_key("esc", 0.5)
-                time.sleep(0.5)
-                _send_key("shift-tab", 0.3)
-                _send_key("spc", 0.5)
-                time.sleep(3)
-            else:
-                # VO Home then navigate forward
-                emit("info", "vm", "  → VO: Home + Right + activate")
+                # VO Home then navigate to find Back/Not Now
+                n = ((attempt - 13) // 3) + 1
+                emit("info", "vm", f"  → VO: Home + Right x{n} + activate → click 'Not Now'")
                 _send_key("ctrl-alt-home", 1)
                 time.sleep(1)
-                n = ((attempt - 16) // 3) + 1
                 for _ in range(n):
                     _send_key("ctrl-alt-right", 0.5)
                     time.sleep(0.3)
                 _send_key("ctrl-alt-spc", 0.5)
+                time.sleep(2)
+                _mouse_click(90, 670, 0.3)
+                time.sleep(3)
+            else:
+                # Esc + Shift+Tab + Space → click "Not Now"
+                emit("info", "vm", "  → Esc → Shift+Tab + Space → click 'Not Now'")
+                _send_key("esc", 0.5)
+                time.sleep(0.5)
+                _send_key("shift-tab", 0.3)
+                _send_key("spc", 0.5)
+                time.sleep(1.0)
+                _mouse_click(90, 670, 0.3)
                 time.sleep(3)
     else:
         emit("info", "vm", "  → Unknown migration sub-screen, pressing Escape")
