@@ -1416,32 +1416,21 @@ def _click_restart_in_shutdown_dialog() -> None:
     """Handle the 'Do you want to shut down?' dialog.
 
     The dialog appears after Cmd+Q on Migration Assistant.  It has buttons:
-    Shut Down (default, responds to Enter) and Restart.
+    Shut Down (default, responds to Enter/Space) and Restart.
 
-    Strategy: Tab to move focus from Shut Down to Restart, then Space to
-    activate Restart.  After reboot, Setup Assistant may skip past migration.
-    If Tab+Space doesn't work, fall back to Escape to dismiss the dialog.
+    CRITICAL: Never press Space or Enter — they activate the default
+    "Shut Down" button, which kills the VM.
+
+    Strategy: press Escape to dismiss the dialog (safe, confirmed working).
+    The migration handler will then try other approaches on the transfer screen.
     """
     _click_restart_in_shutdown_dialog.attempts = getattr(
         _click_restart_in_shutdown_dialog, "attempts", 0
     ) + 1
     attempt = _click_restart_in_shutdown_dialog.attempts
-    emit("info", "vm", f"  → Shutdown dialog attempt {attempt}")
-
-    if attempt % 3 != 0:
-        # Try Tab to focus Restart, then Space to click it
-        # Tab count varies: sometimes 1 Tab reaches Restart, sometimes 2
-        n_tabs = 1 + (attempt - 1) % 2
-        emit("info", "vm", f"  → Tab x{n_tabs} + Space to try Restart")
-        for _ in range(n_tabs):
-            _send_key("tab", 0.3)
-        _send_key("spc", 1)
-        time.sleep(5)  # Wait for potential reboot
-    else:
-        # Every 3rd attempt: Escape to dismiss dialog and try other approaches
-        emit("info", "vm", "  → Pressing Escape to dismiss dialog")
-        _send_key("esc", 1)
-        time.sleep(2)
+    emit("info", "vm", f"  → Shutdown dialog attempt {attempt}: pressing Escape")
+    _send_key("esc", 1)
+    time.sleep(2)
 
 
 def _handle_migration() -> None:
@@ -1453,15 +1442,17 @@ def _handle_migration() -> None:
     - transfer_info ("transfer information to this mac"): has a disabled
       Continue button (no source selected) and a Back button.
 
-    Mouse clicks don't register on Migration Assistant/Setup Assistant buttons
-    in QEMU.  Strategy uses keyboard-only approaches:
+    Mouse clicks don't register on Migration Assistant buttons in QEMU,
+    but DO work on the menu bar and other screen areas.
 
-    Phase 1 (attempts 1-2): Enable Full Keyboard Access, then Cmd+Q.
-      The shutdown dialog handler will try Tab+Space to hit Restart.
-      After reboot, Setup Assistant may skip past migration.
-    Phase 2 (attempts 3-8): Tab/Shift+Tab navigation with FKA enabled.
-    Phase 3 (attempts 9-12): Open Terminal via menu bar (Ctrl+F2 → Utilities).
-    Phase 4 (attempt 13+): Rotate through all approaches.
+    CRITICAL: Never use Cmd+Q — it triggers a shutdown dialog where
+    Space/Enter activate "Shut Down" (default), killing the VM.
+
+    Phase 1 (attempt 1): Enable Full Keyboard Access (Ctrl+F7).
+    Phase 2 (attempts 2-5): Tab/Shift+Tab + Space on the transfer screen.
+    Phase 3 (attempts 6-9): Click menu bar to open Utilities → Terminal.
+    Phase 4 (attempts 10-13): Ctrl+F2 keyboard menu bar + arrow nav.
+    Phase 5 (attempt 14+): Rotate through all approaches.
     """
     _handle_migration.attempts = getattr(_handle_migration, "attempts", 0) + 1
     attempt = _handle_migration.attempts
@@ -1498,7 +1489,6 @@ def _handle_migration() -> None:
                 return
         # Try keyboard: Tab through radio options, Space to select, Tab to Continue
         emit("info", "vm", "  → Trying keyboard nav on migration intro")
-        # Tab to last radio option ("Don't transfer"), Space to select, Tab to Continue, Space
         for _ in range(5):
             _send_key("tab", 0.3)
         _send_key("spc", 0.5)  # Select radio
@@ -1508,103 +1498,174 @@ def _handle_migration() -> None:
         time.sleep(3)
     elif on_transfer:
         if attempt == 1:
-            # First: enable Full Keyboard Access so Tab can focus all controls
+            # Enable Full Keyboard Access so Tab can focus all controls
             emit("info", "vm", "  → Enabling Full Keyboard Access (Ctrl+F7)")
             _send_key("ctrl-f7", 1)
             time.sleep(1)
 
-        if attempt <= 2:
-            # Cmd+Q → shutdown dialog → handler tries Tab+Space for Restart
-            emit("info", "vm", "  → Cmd+Q to trigger shutdown dialog")
-            _send_key("meta_l-q")
-            time.sleep(3)
-        elif attempt <= 5:
-            # With FKA on, try Tab navigation to Back button + Space
-            n = attempt - 2
-            emit("info", "vm", f"  → Tab x{n} + Space (FKA should be on)")
-            for _ in range(n):
-                _send_key("tab", 0.3)
-            _send_key("spc", 0.5)
-            time.sleep(2)
-        elif attempt <= 8:
-            # Shift+Tab to go backwards
-            n = attempt - 5
-            emit("info", "vm", f"  → Shift+Tab x{n} + Space")
-            for _ in range(n):
-                _send_key("shift-tab", 0.3)
-            _send_key("spc", 0.5)
-            time.sleep(2)
-        elif attempt <= 12:
-            # Try opening Terminal via menu bar
-            # Ctrl+F2 focuses the menu bar in macOS
-            emit("info", "vm", "  → Trying menu bar: Ctrl+F2 → Utilities → Terminal")
-            _send_key("ctrl-f2", 1)
-            time.sleep(1)
-            # Navigate: right arrow to find Utilities menu
-            # Menu order in Setup Assistant: Migration Assistant, Edit, Utilities, Window, Help
-            for _ in range(3):
-                _send_key("right", 0.3)
-            _send_key("ret", 0.5)  # Open Utilities menu
-            time.sleep(0.5)
-            # Terminal should be in the menu
-            _send_key("ret", 0.5)  # Select first/only item (Terminal)
-            time.sleep(3)
-
-            # If Terminal opened, kill Setup Assistant to skip the wizard
+        def _try_terminal_from_screenshot():
+            """Check if Terminal opened and run kill command."""
             ppm2 = _take_screenshot()
             img2 = _ppm_to_image(ppm2)
             if img2:
                 text2 = _ocr_region(img2, 0, 0, 1280, 800).lower()
-                if "terminal" in text2 or "bash" in text2 or "$" in text2:
+                if "terminal" in text2 or "bash" in text2 or "%" in text2 or "~" in text2:
                     emit("info", "vm", "  → Terminal detected! Killing Setup Assistant")
                     _type_text("killall 'Setup Assistant' 2>/dev/null; "
+                               "killall 'Migration Assistant' 2>/dev/null; "
                                "touch /var/db/.AppleSetupDone; "
                                "killall loginwindow")
                     _send_key("ret")
                     time.sleep(5)
-                    return
-                else:
-                    emit("info", "vm", f"  → Menu bar nav result: {text2[:200]!r}")
+                    return True
+                emit("info", "vm", f"  → Screen after menu: {text2[:200]!r}")
+            return False
+
+        if attempt <= 3:
+            # Tab/Shift+Tab navigation on the transfer screen itself
+            if attempt == 2:
+                n = 1
+                emit("info", "vm", f"  → Tab x{n} + Space")
+                for _ in range(n):
+                    _send_key("tab", 0.3)
+                _send_key("spc", 0.5)
+            else:
+                n = attempt - 1
+                emit("info", "vm", f"  → Shift+Tab x{n} + Space")
+                for _ in range(n):
+                    _send_key("shift-tab", 0.3)
+                _send_key("spc", 0.5)
+            time.sleep(2)
+        elif attempt <= 7:
+            # Click on menu bar with mouse — menu bar accepts clicks
+            # even when wizard buttons don't.
+            # Migration Assistant menu bar (1280x800):
+            #   Apple=15, MigrationAssistant=120, Edit=240, Utilities≈310, Window≈400
+            # We try different x positions across attempts.
+            menu_positions = [
+                (310, 11, "Utilities"),     # Utilities menu
+                (250, 11, "Edit area"),     # Edit menu area
+                (370, 11, "Window area"),   # Window menu area
+                (180, 11, "App menu"),      # Migration Assistant menu
+            ]
+            idx = attempt - 4
+            mx, my, label = menu_positions[idx]
+            emit("info", "vm", f"  → Clicking menu bar at ({mx}, {my}) [{label}]")
+            _mouse_click(mx, my, 0.5)
+            time.sleep(1)
+            # Look for menu items — if a menu opened, try to find Terminal
+            # Navigate down to find Terminal option
+            for _ in range(5):
+                _send_key("down", 0.3)
+                time.sleep(0.3)
+                ppm2 = _take_screenshot()
+                img2 = _ppm_to_image(ppm2)
+                if img2:
+                    text2 = _ocr_region(img2, 0, 0, 1280, 400).lower()
+                    if "terminal" in text2:
+                        emit("info", "vm", "  → Found Terminal in menu! Pressing Enter")
+                        _send_key("ret", 0.5)
+                        time.sleep(3)
+                        if _try_terminal_from_screenshot():
+                            return
+                        break
+            # Press Escape to close any open menu
+            _send_key("esc", 0.5)
+            time.sleep(1)
+        elif attempt <= 11:
+            # Ctrl+F2 keyboard shortcut for menu bar (different variants)
+            # Try both ctrl-f2 and fn-ctrl-f2
+            variant = (attempt - 8) % 4
+            if variant == 0:
+                emit("info", "vm", "  → Ctrl+F2 for menu bar")
+                _send_key("ctrl-f2", 1)
+            elif variant == 1:
+                emit("info", "vm", "  → Ctrl+Fn+F2 for menu bar")
+                _send_key("ctrl-fn-f2", 1)
+            elif variant == 2:
+                emit("info", "vm", "  → F2 for menu bar")
+                _send_key("f2", 1)
+            else:
+                emit("info", "vm", "  → Ctrl+F2, then Escape, then Ctrl+F2 again")
+                _send_key("ctrl-f2", 0.5)
+                time.sleep(0.5)
+                _send_key("esc", 0.5)
+                time.sleep(0.3)
+                _send_key("ctrl-f2", 1)
+            time.sleep(1)
+            # Navigate to Utilities
+            for n_right in range(6):
+                _send_key("right", 0.3)
+            _send_key("down", 0.3)  # Open menu
+            time.sleep(0.3)
+            # Type 't' to jump to Terminal
+            _send_key("t", 0.3)
+            _send_key("ret", 0.5)
+            time.sleep(3)
+            if _try_terminal_from_screenshot():
+                return
         else:
             # Rotate through approaches
-            phase = (attempt - 13) % 5
+            phase = (attempt - 12) % 6
             if phase == 0:
-                # Toggle FKA again in case it got reset
+                # Toggle FKA
                 emit("info", "vm", "  → Re-toggling Full Keyboard Access")
                 _send_key("ctrl-f7", 1)
                 time.sleep(1)
             elif phase == 1:
-                # Cmd+Q for another shutdown dialog cycle
-                emit("info", "vm", "  → Cmd+Q cycle")
-                _send_key("meta_l-q")
-                time.sleep(3)
-            elif phase == 2:
-                # Tab + Space with FKA
+                # Tab + Space
                 emit("info", "vm", "  → Tab + Space")
                 _send_key("tab", 0.3)
                 _send_key("spc", 0.5)
                 time.sleep(2)
-            elif phase == 3:
-                # Try Ctrl+F2 menu bar again
-                emit("info", "vm", "  → Ctrl+F2 menu bar retry")
-                _send_key("ctrl-f2", 1)
+            elif phase == 2:
+                # Click on Utilities menu position
+                emit("info", "vm", "  → Click menu bar Utilities position")
+                _mouse_click(310, 11, 0.5)
                 time.sleep(1)
-                # Try different arrow count in case menu structure differs
-                n_right = 2 + ((attempt - 13) // 5) % 4
-                for _ in range(n_right):
-                    _send_key("right", 0.3)
+                # Arrow down through items looking for Terminal
+                for _ in range(6):
+                    _send_key("down", 0.3)
                 _send_key("ret", 0.5)
-                time.sleep(0.5)
-                _send_key("ret", 0.5)
-                time.sleep(2)
-            else:
-                # Escape + Shift+Tab + Space
-                emit("info", "vm", "  → Escape then Shift+Tab + Space")
+                time.sleep(3)
+                if _try_terminal_from_screenshot():
+                    return
                 _send_key("esc", 0.5)
                 time.sleep(0.5)
+            elif phase == 3:
+                # Shift+Tab + Space
+                emit("info", "vm", "  → Shift+Tab + Space")
                 _send_key("shift-tab", 0.3)
                 _send_key("spc", 0.5)
                 time.sleep(2)
+            elif phase == 4:
+                # Click different menu bar position
+                x_pos = 250 + ((attempt - 12) // 6) * 60
+                emit("info", "vm", f"  → Click menu bar at x={x_pos}")
+                _mouse_click(x_pos, 11, 0.5)
+                time.sleep(1)
+                for _ in range(4):
+                    _send_key("down", 0.3)
+                _send_key("ret", 0.5)
+                time.sleep(3)
+                if _try_terminal_from_screenshot():
+                    return
+                _send_key("esc", 0.5)
+                time.sleep(0.5)
+            else:
+                # Escape to clear state, then Ctrl+F2
+                emit("info", "vm", "  → Escape + Ctrl+F2 menu retry")
+                _send_key("esc", 0.5)
+                time.sleep(0.5)
+                _send_key("ctrl-f2", 1)
+                time.sleep(1)
+                for _ in range(3):
+                    _send_key("right", 0.3)
+                _send_key("down", 0.3)
+                _send_key("ret", 0.5)
+                time.sleep(3)
+                if _try_terminal_from_screenshot():
+                    return
     else:
         emit("info", "vm", "  → Unknown migration sub-screen, pressing Escape")
         _send_key("esc", 1)
