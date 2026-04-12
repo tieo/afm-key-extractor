@@ -38,6 +38,32 @@ class UnixTransport:
         self._s.close()
 
 
+_UNSHIFTED = {
+    " ": "spc", "-": "minus", "=": "equal", "/": "slash", ".": "dot",
+    ",": "comma", ";": "semicolon", "'": "apostrophe", "[": "bracket_left",
+    "]": "bracket_right", "\\": "backslash", "`": "grave_accent",
+}
+_SHIFTED = {
+    ":": "semicolon", '"': "apostrophe", "_": "minus", "?": "slash",
+    "|": "backslash", "+": "equal", "<": "comma", ">": "dot",
+    "{": "bracket_left", "}": "bracket_right", "~": "grave_accent",
+    "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6",
+    "&": "7", "*": "8", "(": "9", ")": "0",
+}
+
+
+def _ascii_to_keys(ch: str) -> list[str]:
+    if ch.isupper():
+        return ["shift", ch.lower()]
+    if ch.isalnum():
+        return [ch]
+    if ch in _UNSHIFTED:
+        return [_UNSHIFTED[ch]]
+    if ch in _SHIFTED:
+        return ["shift", _SHIFTED[ch]]
+    raise ValueError(f"unmapped character: {ch!r}")
+
+
 FB_WIDTH = 1280
 FB_HEIGHT = 800
 ABS_MAX = 32767
@@ -69,6 +95,22 @@ class Driver:
         self._qmp.send((json.dumps(cmd) + "\n").encode())
         raw = self._qmp.recv(4096).decode(errors="replace")
         return json.loads(raw.splitlines()[-1]) if raw.strip() else {}
+
+    def wait(self, seconds: float) -> None:
+        self._sleep(seconds)
+
+    def type_text(self, text: str, post_delay: float = 0.1) -> None:
+        """Send ``text`` as a sequence of keystrokes (ASCII subset)."""
+        for ch in text:
+            keys = _ascii_to_keys(ch)
+            self._qmp_cmd(
+                {
+                    "execute": "send-key",
+                    "arguments": {"keys": [{"type": "qcode", "data": k} for k in keys]},
+                }
+            )
+            self._sleep(0.03)
+        self._sleep(post_delay)
 
     def key(self, qcode: str, post_delay: float = 0.2) -> None:
         """Send a single key (QEMU qcode: ``ret``, ``right``, ``a``, …)."""

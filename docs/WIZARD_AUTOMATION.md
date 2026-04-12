@@ -130,36 +130,44 @@ didn't register — retry.
 
 ---
 
-## Step 2 — Recovery Utilities → format blank disk (Disk Utility)
+## Step 2 — Recovery Utilities → Terminal → format disk
 
-**Entry state**: Recovery Utilities picker shown
-(`02-recovery-utilities.png`). Menu bar reads `Recovery File Edit
-Utilities Window`. Four options listed; "Restore from Time Machine"
-highlighted by default.
+**Entry state**: Recovery Utilities picker (menu bar:
+`Recovery File Edit Utilities Window`).
 
-**Why Disk Utility first**: `mac_hdd_ng.img` is a 128 GiB raw qcow2
-with no partition table. The Ventura installer will refuse to pick it
-as a destination until it has an APFS container. Format it first,
-name the volume `Macintosh HD`.
+**Why Terminal, not Disk Utility**: the Disk Utility GUI's sidebar
+sits flush against the traffic-light region; the first-row click
+target is narrow (~8 px tall) and easy to miss. Terminal + `diskutil`
+is keystroke-only after two menu clicks, no per-widget pixel math.
 
-**Planned action (manual this iteration)**:
+**Action**:
 
-1. Click `Disk Utility` row (y≈175 approx, needs measurement).
-2. Click `Continue`.
-3. In Disk Utility, select the uninitialised 128 GiB disk.
-4. `Erase` → Format `APFS`, Name `Macintosh HD`.
-5. Quit Disk Utility → back to Recovery Utilities picker.
+1. Click `Utilities` in the menu bar at `(243, 12)`.
+2. Click the `Terminal` item in the dropdown at `(240, 64)`.
+3. Wait ~3 s for Terminal to open.
+4. Type `diskutil eraseDisk APFS Macintosh-HD disk0` + `ret`.
 
-**Exit state**: Recovery Utilities picker, same layout, but the disk
-is now mountable as `/Volumes/Macintosh HD` from a terminal and the
-installer will accept it as a target in step 3.
+Wait ~8 s. `diskutil` prints `Finished erase on disk0` when done.
 
-**Code target**: a small state machine that clicks through Disk
-Utility. Coordinates TBD — captured on the manual pass before
-automation is written.
+**Why `disk0`**: in this VM configuration the blank 128 GiB qcow2 is
+the only large physical disk. `diskutil list physical` shows:
+- `disk0` — internal, physical, ~137.4 GB → **our target**
+- `disk1` — internal, physical, ~3.2 GB (BaseSystem.img, read-only installer)
+- `disk2` — internal, physical, ~482 MB (OpenCore EFI + Linux fs)
 
-*(To be driven manually next; screenshots of each sub-action will
-land in `docs/wizard-screenshots/02a-*`, `02b-*`, etc.)*
+If the attach order ever changes, the next iteration of the automation
+loop will see `diskutil` fail; re-measure then.
+
+**Why `Macintosh-HD` (hyphen)**: avoids shell quoting when typed into
+Terminal. Later steps must use `/Volumes/Macintosh-HD` verbatim.
+
+**Exit state**: Terminal window foregrounded, prompt back at
+`bash-3.2#`, APFS volume mounted at `/Volumes/Macintosh-HD`. Next step
+(Ventura reinstall) proceeds from the same Terminal.
+
+**Code**: `server/wizard/steps/format_disk.py`. Pixel constants
+`UTILITIES_MENU`, `TERMINAL_ITEM` live at module top so re-measuring
+is one edit.
 
 ---
 

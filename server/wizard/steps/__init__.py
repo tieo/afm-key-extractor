@@ -1,3 +1,3 @@
-from . import boot_installer
+from . import boot_installer, format_disk
 
-__all__ = ["boot_installer"]
+__all__ = ["boot_installer", "format_disk"]
