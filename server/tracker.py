@@ -1521,37 +1521,43 @@ def _handle_migration() -> None:
                 emit("info", "vm", f"  → Screen after menu: {text2[:200]!r}")
             return False
 
-        if attempt <= 3:
-            # Tab/Shift+Tab navigation on the transfer screen itself
-            if attempt == 2:
-                n = 1
-                emit("info", "vm", f"  → Tab x{n} + Space")
-                for _ in range(n):
-                    _send_key("tab", 0.3)
+        if attempt <= 2:
+            # Quick Tab/Shift+Tab tries
+            if attempt == 1:
+                emit("info", "vm", "  → Tab + Space")
+                _send_key("tab", 0.3)
                 _send_key("spc", 0.5)
             else:
-                n = attempt - 1
-                emit("info", "vm", f"  → Shift+Tab x{n} + Space")
-                for _ in range(n):
-                    _send_key("shift-tab", 0.3)
+                emit("info", "vm", "  → Shift+Tab + Space")
+                _send_key("shift-tab", 0.3)
                 _send_key("spc", 0.5)
             time.sleep(2)
-        elif attempt <= 7:
-            # VoiceOver: Cmd+F5 to enable, then VO navigation
-            # (Ctrl+Option+arrows) to find and activate buttons.
-            # VoiceOver has its own input handling that may bypass
-            # whatever blocks normal mouse clicks.
-            if attempt == 4:
-                emit("info", "vm", "  → Enabling VoiceOver (Cmd+F5)")
-                _send_key("meta_l-f5", 1)
-                time.sleep(5)  # VoiceOver takes time to initialize
-            # Navigate with VO keys: Ctrl+Option+Right to move forward
-            n_moves = attempt - 3
-            emit("info", "vm", f"  → VO: Ctrl+Opt+Right x{n_moves}, then Ctrl+Opt+Space")
-            for _ in range(n_moves):
-                _send_key("ctrl-alt-right", 0.5)
+        elif attempt == 3:
+            # Enable VoiceOver — confirmed to interact with UI elements
+            emit("info", "vm", "  → Enabling VoiceOver (Cmd+F5)")
+            _send_key("meta_l-f5", 1)
+            time.sleep(5)
+            # Navigate backward to find Back button (it's at the bottom-left)
+            # VO starts at the focused element; Back is likely behind us
+            emit("info", "vm", "  → VO: Ctrl+Opt+Left x1 + activate")
+            _send_key("ctrl-alt-left", 0.5)
+            time.sleep(0.5)
+            _send_key("ctrl-alt-spc", 0.5)
+            time.sleep(3)
+        elif attempt <= 20:
+            # VoiceOver navigation: alternate between backward and forward,
+            # varying the number of moves to explore all UI elements.
+            # VO Right x2 + activate selected "Other server" (confirmed),
+            # so elements ARE reachable.
+            backward = (attempt % 2 == 0)
+            direction = "left" if backward else "right"
+            key = f"ctrl-alt-{direction}"
+            n_moves = (attempt - 3) // 2 + 1
+            label = "Left" if backward else "Right"
+            emit("info", "vm", f"  → VO: Ctrl+Opt+{label} x{n_moves}, then activate")
+            for i in range(n_moves):
+                _send_key(key, 0.5)
                 time.sleep(0.5)
-            # Activate current element
             _send_key("ctrl-alt-spc", 0.5)
             time.sleep(3)
             # Check if screen changed
@@ -1561,87 +1567,50 @@ def _handle_migration() -> None:
                 text2 = _ocr_region(img2, 0, 0, 1280, 800).lower()
                 if "transfer information" not in text2:
                     emit("info", "vm", f"  → VoiceOver navigated away! Screen: {text2[:200]!r}")
-                    # Disable VoiceOver
-                    _send_key("meta_l-f5", 1)
+                    _send_key("meta_l-f5", 1)  # Disable VoiceOver
                     time.sleep(2)
                     return
-        elif attempt <= 11:
-            # Apple menu restart: click Apple logo (x=15, y=11) which
-            # we know works (menu bar clicks register), then arrow down
-            # to "Restart..." and press Enter.
-            # Apple menu items: About, separator, System Preferences, App Store,
-            # separator, Recent Items, separator, Force Quit, Sleep, Restart,
-            # Shut Down, Lock Screen, Log Out
-            emit("info", "vm", f"  → Apple menu restart (attempt {attempt})")
-            # Disable VoiceOver if it's on from earlier attempts
-            if attempt == 8:
-                _send_key("meta_l-f5", 1)
-                time.sleep(2)
-            _send_key("esc", 0.5)  # Clear any state
-            time.sleep(0.5)
-            _mouse_click(15, 11, 0.5)  # Click Apple menu
-            time.sleep(1)
-            # Arrow down to Restart (about 9-10 items)
-            # Vary the count across attempts
-            n_down = 8 + (attempt - 8)
-            emit("info", "vm", f"  → Arrow down x{n_down} to find Restart")
-            for _ in range(n_down):
-                _send_key("down", 0.2)
-            _send_key("ret", 0.5)  # Select item
-            time.sleep(2)
-            # If a confirmation dialog appears, press Enter (Restart is default)
-            _send_key("ret", 1)
-            time.sleep(10)  # Wait for potential reboot
-            # Check if VM rebooted (screen would change)
-            ppm2 = _take_screenshot()
-            img2 = _ppm_to_image(ppm2)
-            if img2:
-                text2 = _ocr_region(img2, 0, 0, 1280, 800).lower()
-                if "transfer information" not in text2:
-                    emit("info", "vm", f"  → Screen changed after Apple Restart: {text2[:200]!r}")
-                    return
-                emit("info", "vm", f"  → Still on transfer: Apple menu item {n_down} wasn't Restart")
         else:
-            # Rotate: VoiceOver nav, Apple menu, Tab nav, FKA toggle
-            phase = (attempt - 12) % 5
+            # Extensive rotation: keep trying VO with more moves
+            phase = (attempt - 21) % 4
             if phase == 0:
-                # Re-toggle FKA
-                emit("info", "vm", "  → Re-toggling Full Keyboard Access")
-                _send_key("ctrl-f7", 1)
+                # VO: go to beginning (Ctrl+Opt+Home) then forward
+                emit("info", "vm", "  → VO: Home, then Right + activate")
+                _send_key("ctrl-alt-home", 1)
                 time.sleep(1)
+                n = ((attempt - 21) // 4) + 1
+                for _ in range(n):
+                    _send_key("ctrl-alt-right", 0.5)
+                    time.sleep(0.3)
+                _send_key("ctrl-alt-spc", 0.5)
+                time.sleep(3)
             elif phase == 1:
-                # Tab + Space
-                emit("info", "vm", "  → Tab + Space")
-                _send_key("tab", 0.3)
-                _send_key("spc", 0.5)
-                time.sleep(2)
-            elif phase == 2:
-                # VoiceOver navigate backward
-                n = ((attempt - 12) // 5) + 1
-                emit("info", "vm", f"  → VO: Ctrl+Opt+Left x{n} + activate")
+                # VO: go to end (Ctrl+Opt+End) then backward
+                emit("info", "vm", "  → VO: End, then Left + activate")
+                _send_key("ctrl-alt-end", 1)
+                time.sleep(1)
+                n = ((attempt - 21) // 4) + 1
                 for _ in range(n):
                     _send_key("ctrl-alt-left", 0.5)
                     time.sleep(0.3)
                 _send_key("ctrl-alt-spc", 0.5)
                 time.sleep(3)
-            elif phase == 3:
-                # Apple menu with different item count
-                n_down = 9 + ((attempt - 12) // 5) % 3
-                emit("info", "vm", f"  → Apple menu: down x{n_down}")
-                _mouse_click(15, 11, 0.5)
-                time.sleep(1)
-                for _ in range(n_down):
-                    _send_key("down", 0.2)
-                _send_key("ret", 0.5)
-                time.sleep(2)
-                _send_key("ret", 1)
-                time.sleep(8)
-            else:
-                # Shift+Tab + Space
-                emit("info", "vm", "  → Shift+Tab + Space")
-                _send_key("shift-tab", 0.3)
+            elif phase == 2:
+                # Tab + Space (FKA may have kicked in by now)
+                emit("info", "vm", "  → Tab + Space")
+                _send_key("tab", 0.3)
                 _send_key("spc", 0.5)
                 time.sleep(2)
+            else:
+                # VO: interact with current group, navigate inside
+                emit("info", "vm", "  → VO: interact (Ctrl+Opt+Shift+Down) then navigate")
+                _send_key("ctrl-alt-shift-down", 0.5)
+                time.sleep(0.5)
+                for _ in range(3):
+                    _send_key("ctrl-alt-right", 0.5)
+                    time.sleep(0.3)
+                _send_key("ctrl-alt-spc", 0.5)
+                time.sleep(3)
     else:
         emit("info", "vm", "  → Unknown migration sub-screen, pressing Escape")
         _send_key("esc", 1)
