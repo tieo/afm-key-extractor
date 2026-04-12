@@ -1495,52 +1495,27 @@ def _handle_migration() -> None:
         emit("info", "vm", f"  → On migration intro (intro attempt {intro_attempt})")
 
         # First try OCR click
+        # Migration intro only has 2 radio options (Mac/Windows PC).
+        # To skip migration, click "Not Now" in the bottom-left corner.
         if intro_attempt <= 2:
-            for label in ("Don't transfer", "don't transfer", "Not Now", "not now"):
+            for label in ("Not Now", "not now", "Don't transfer", "don't transfer"):
                 pos = _find_button_pos(img, label, min_y=0)
                 if pos:
                     emit("info", "vm", f"  → Found '{label}' at {pos}, clicking it")
                     _mouse_click(pos[0], pos[1], 0.3)
-                    time.sleep(1)
-                    if not _find_and_click("Continue"):
-                        _mouse_click(950, 670, 0.3)
-                    time.sleep(2)
+                    time.sleep(3)
                     return
 
-        if intro_attempt <= 3:
-            # Tab to focus radio group, then navigate to "Don't transfer"
-            # (3rd/last option).  Radio buttons wrap, so a fixed Down count
-            # lands on different options depending on initial focus.
-            # Strategy: attempt 1 uses Up x1 (wraps from option 1 to last),
-            # attempt 2 uses Down x2 (works if starting on option 1),
-            # attempt 3 uses End key (jumps to last option).
-            if intro_attempt == 1:
-                emit("info", "vm", "  → Tab to radio, Up x1 (wrap to last)")
-                _send_key("tab", 0.5)
-                time.sleep(0.3)
-                _send_key("up", 0.3)
-                time.sleep(0.3)
-            elif intro_attempt == 2:
-                emit("info", "vm", "  → Tab to radio, Down x2")
-                _send_key("tab", 0.5)
-                time.sleep(0.3)
-                _send_key("down", 0.3)
-                time.sleep(0.2)
-                _send_key("down", 0.3)
-                time.sleep(0.3)
-            else:
-                emit("info", "vm", "  → Tab to radio, End (last)")
-                _send_key("tab", 0.5)
-                time.sleep(0.3)
-                _send_key("end", 0.5)
-                time.sleep(0.3)
-            # Tab to Continue, Space to click
-            _send_key("tab", 0.3)
-            _send_key("spc", 0.5)
+        if intro_attempt <= 4:
+            # Click "Not Now" at its known position (bottom-left corner)
+            pos_x = 90 if intro_attempt <= 3 else 75
+            emit("info", "vm", f"  → Clicking 'Not Now' at ({pos_x}, 670)")
+            _mouse_click(pos_x, 670, 0.3)
             time.sleep(3)
         elif intro_attempt == 4:
             # VoiceOver approach on intro screen
             emit("info", "vm", "  → Enabling VoiceOver for intro screen nav")
+            _handle_migration._vo_enabled = True
             _send_key("meta_l-f5", 1)
             time.sleep(5)
             # Navigate to "Don't transfer" with VO
@@ -1582,30 +1557,23 @@ def _handle_migration() -> None:
             _send_key("ctrl-f7", 1)
             time.sleep(1)
 
-        def _tab_space_then_select_dont_transfer():
+        def _go_back_and_click_not_now():
             """Escape (dismiss dialogs), Tab+Space to go back to intro,
-            then immediately select 'Don't transfer' via Up x1
-            (wraps from option 1 to last), Tab to Continue, Space."""
-            emit("info", "vm", "  → Esc → Tab+Space → Up x1 → Tab → Space (combo)")
+            then click 'Not Now' in the bottom-left corner."""
+            emit("info", "vm", "  → Esc → Tab+Space → click 'Not Now' (90, 670)")
             # Dismiss any open dialog (e.g. "Other server...")
             _send_key("esc", 0.5)
             time.sleep(0.5)
             _send_key("tab", 0.3)
             _send_key("spc", 0.3)
-            # Don't wait — immediately send radio selection
-            time.sleep(0.5)
-            # Tab to focus radio group, Up x1 to wrap to "Don't transfer" (last option)
-            _send_key("tab", 0.3)
-            time.sleep(0.2)
-            _send_key("up", 0.3)
-            time.sleep(0.3)
-            # Tab to Continue button, Space to click
-            _send_key("tab", 0.3)
-            _send_key("spc", 0.5)
+            # Wait briefly for intro screen to appear
+            time.sleep(1.0)
+            # Click "Not Now" in bottom-left
+            _mouse_click(90, 670, 0.3)
             time.sleep(3)
 
         if attempt <= 3:
-            _tab_space_then_select_dont_transfer()
+            _go_back_and_click_not_now()
         elif attempt <= 6:
             # Escape first, then Shift+Tab + Space (Back button) then combo
             n = attempt - 3
@@ -1630,6 +1598,7 @@ def _handle_migration() -> None:
         elif attempt == 7:
             # Enable VoiceOver to find Back button
             emit("info", "vm", "  → Enabling VoiceOver (Cmd+F5)")
+            _handle_migration._vo_enabled = True
             _send_key("meta_l-f5", 1)
             time.sleep(5)
             emit("info", "vm", "  → VO Left + activate (Back button)")
@@ -1654,7 +1623,7 @@ def _handle_migration() -> None:
             # Rotation: alternate combo and VO approaches
             phase = (attempt - 16) % 3
             if phase == 0:
-                _tab_space_then_select_dont_transfer()
+                _go_back_and_click_not_now()
             elif phase == 1:
                 # Escape to dismiss any dialog, then Shift+Tab + Space
                 emit("info", "vm", "  → Esc → Shift+Tab + Space")
@@ -2248,11 +2217,13 @@ def _run_setup_wizard():
             else:
                 stuck = 0
                 if (last_id in ("migration", "transfer_info")
-                        and screen.id not in ("migration", "transfer_info")):
+                        and screen.id not in ("migration", "transfer_info")
+                        and getattr(_handle_migration, "_vo_enabled", False)):
                     # Disable VoiceOver when leaving migration — it was
                     # enabled to bypass Migration Assistant but interferes
                     # with mouse clicks on subsequent screens.
                     emit("info", "vm", "  → Left migration, disabling VoiceOver (Cmd+F5)")
+                    _handle_migration._vo_enabled = False
                     _send_key("meta_l-f5", 1)
                     time.sleep(2)
 
