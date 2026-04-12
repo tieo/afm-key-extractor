@@ -1471,8 +1471,14 @@ def _handle_migration() -> None:
         img.save("/tmp/airtag-vm-migration-debug.png")
         emit("info", "vm", f"  → Full migration OCR: {text[:800]!r}")
 
-    on_transfer = "transfer information" in text
+    # "transfer information to this mac" is the transfer_info TITLE.
+    # The migration intro body also contains "transfer information from..."
+    # so we must match "to this mac" specifically.
+    on_transfer = "transfer information to this mac" in text
     on_intro = "migration assistant" in text and not on_transfer
+
+    if attempt <= 3 or attempt % 10 == 0:
+        emit("info", "vm", f"  → migration OCR ({len(text)}ch): on_intro={on_intro}, on_transfer={on_transfer}, text={text[:300]!r}")
 
     if on_intro:
         # Migration intro screen — has radio options:
@@ -1575,26 +1581,54 @@ def _handle_migration() -> None:
     elif on_transfer:
         # Transfer info screen: Continue is disabled (no source selected).
         # CONFIRMED: Tab+Space navigates BACK to migration intro screen.
-        # Strategy: get back to intro, then select "Don't transfer" there.
+        # CRITICAL: Migration intro auto-advances back to transfer_info within
+        # ~500ms, so we must send radio selection keys IMMEDIATELY after
+        # Tab+Space, without waiting for the next iteration.
         if attempt == 1:
             # Enable Full Keyboard Access so Tab can focus all controls
             emit("info", "vm", "  → Enabling Full Keyboard Access (Ctrl+F7)")
             _send_key("ctrl-f7", 1)
             time.sleep(1)
 
-        if attempt <= 3:
-            # Tab+Space confirmed to go back to intro in run 17
-            emit("info", "vm", "  → Tab + Space (go back to intro)")
+        def _tab_space_then_select_dont_transfer():
+            """Tab+Space to go back to intro, then immediately select
+            'Don't transfer' via Down x2, Tab to Continue, Space."""
+            emit("info", "vm", "  → Tab+Space → Down x2 → Tab → Space (combo)")
+            _send_key("tab", 0.3)
+            _send_key("spc", 0.3)
+            # Don't wait — immediately send radio selection
+            time.sleep(0.5)
+            # Tab to focus radio group, Down x2 to "Don't transfer"
+            _send_key("tab", 0.3)
+            time.sleep(0.2)
+            _send_key("down", 0.2)
+            time.sleep(0.2)
+            _send_key("down", 0.2)
+            time.sleep(0.3)
+            # Tab to Continue button, Space to click
             _send_key("tab", 0.3)
             _send_key("spc", 0.5)
             time.sleep(3)
+
+        if attempt <= 3:
+            _tab_space_then_select_dont_transfer()
         elif attempt <= 6:
-            # Try Shift+Tab then Space (Back button)
+            # Shift+Tab + Space (Back button) then combo
             n = attempt - 3
-            emit("info", "vm", f"  → Shift+Tab x{n} + Space")
+            emit("info", "vm", f"  → Shift+Tab x{n} + Space, then combo")
             for _ in range(n):
                 _send_key("shift-tab", 0.3)
                 time.sleep(0.2)
+            _send_key("spc", 0.3)
+            time.sleep(0.5)
+            # Immediately try radio selection in case we're on intro
+            _send_key("tab", 0.3)
+            time.sleep(0.2)
+            _send_key("down", 0.2)
+            time.sleep(0.2)
+            _send_key("down", 0.2)
+            time.sleep(0.3)
+            _send_key("tab", 0.3)
             _send_key("spc", 0.5)
             time.sleep(3)
         elif attempt == 7:
@@ -1602,7 +1636,6 @@ def _handle_migration() -> None:
             emit("info", "vm", "  → Enabling VoiceOver (Cmd+F5)")
             _send_key("meta_l-f5", 1)
             time.sleep(5)
-            # Navigate backward to find Back button
             emit("info", "vm", "  → VO Left + activate (Back button)")
             _send_key("ctrl-alt-left", 0.5)
             time.sleep(0.5)
@@ -1622,17 +1655,21 @@ def _handle_migration() -> None:
             _send_key("ctrl-alt-spc", 0.5)
             time.sleep(3)
         else:
-            # Rotation: alternate Tab+Space and VO approaches
+            # Rotation: alternate combo and VO approaches
             phase = (attempt - 16) % 3
             if phase == 0:
-                emit("info", "vm", "  → Tab + Space (rotation)")
+                _tab_space_then_select_dont_transfer()
+            elif phase == 1:
+                # Try different combo: just Down arrows + Tab + Space
+                # (maybe focus is already on radio after VoiceOver)
+                emit("info", "vm", "  → Direct: Down x2 + Tab + Space")
+                _send_key("down", 0.2)
+                time.sleep(0.2)
+                _send_key("down", 0.2)
+                time.sleep(0.3)
                 _send_key("tab", 0.3)
                 _send_key("spc", 0.5)
                 time.sleep(3)
-            elif phase == 1:
-                emit("info", "vm", "  → Escape (try dismiss)")
-                _send_key("esc", 1)
-                time.sleep(2)
             else:
                 # VO Home then navigate forward
                 emit("info", "vm", "  → VO: Home + Right + activate")
