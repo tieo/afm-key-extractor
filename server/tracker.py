@@ -1395,7 +1395,19 @@ def _bypass_setup_assistant_via_wizard():
     )
     _set_phase("setup_wizard", "Bypassing Setup Assistant via wizard module")
     reporter = CallbackReporter(emit=emit, set_phase=_set_phase)
-    outcome = bypass_setup_assistant(driver, reporter, path="recovery")
+    try:
+        outcome = bypass_setup_assistant(driver, reporter, path="recovery")
+    except Exception as exc:
+        # Raised by the wizard itself (not via Outcome).  Could be the
+        # tracker helpers blowing up when vm_stop has killed QEMU
+        # mid-wizard — make sure the UI sees a clear, wizard-specific
+        # error instead of the generic "Auto-install failed" that the
+        # outer worker's except Exception would emit.
+        log.exception("Wizard bypass raised")
+        msg = f"Wizard bypass crashed ({type(exc).__name__}): {exc}"
+        emit("error", "vm", msg)
+        _set_phase("error", msg)
+        return
     if outcome.status == "ok":
         try:
             pw_path = DATA_DIR / "vm-password"
@@ -1405,9 +1417,9 @@ def _bypass_setup_assistant_via_wizard():
             emit("warning", "vm", f"Failed to write vm-password: {exc}")
         emit("info", "vm", f"Setup Assistant bypassed: {outcome.message}")
     else:
-        emit("error", "vm",
-             f"Wizard bypass failed (phase={outcome.phase}): {outcome.message}")
-        _set_phase("error", outcome.message)
+        msg = f"Wizard bypass failed (phase={outcome.phase}): {outcome.message}"
+        emit("error", "vm", msg)
+        _set_phase("error", msg)
 
 
 
