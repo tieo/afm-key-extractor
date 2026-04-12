@@ -1591,9 +1591,13 @@ def _handle_migration() -> None:
             time.sleep(1)
 
         def _tab_space_then_select_dont_transfer():
-            """Tab+Space to go back to intro, then immediately select
-            'Don't transfer' via Down x2, Tab to Continue, Space."""
-            emit("info", "vm", "  → Tab+Space → Down x2 → Tab → Space (combo)")
+            """Escape (dismiss dialogs), Tab+Space to go back to intro,
+            then immediately select 'Don't transfer' via Down x2,
+            Tab to Continue, Space."""
+            emit("info", "vm", "  → Esc → Tab+Space → Down x2 → Tab → Space (combo)")
+            # Dismiss any open dialog (e.g. "Other server...")
+            _send_key("esc", 0.5)
+            time.sleep(0.5)
             _send_key("tab", 0.3)
             _send_key("spc", 0.3)
             # Don't wait — immediately send radio selection
@@ -1613,9 +1617,11 @@ def _handle_migration() -> None:
         if attempt <= 3:
             _tab_space_then_select_dont_transfer()
         elif attempt <= 6:
-            # Shift+Tab + Space (Back button) then combo
+            # Escape first, then Shift+Tab + Space (Back button) then combo
             n = attempt - 3
-            emit("info", "vm", f"  → Shift+Tab x{n} + Space, then combo")
+            emit("info", "vm", f"  → Esc → Shift+Tab x{n} + Space, then combo")
+            _send_key("esc", 0.5)
+            time.sleep(0.5)
             for _ in range(n):
                 _send_key("shift-tab", 0.3)
                 time.sleep(0.2)
@@ -1660,14 +1666,11 @@ def _handle_migration() -> None:
             if phase == 0:
                 _tab_space_then_select_dont_transfer()
             elif phase == 1:
-                # Try different combo: just Down arrows + Tab + Space
-                # (maybe focus is already on radio after VoiceOver)
-                emit("info", "vm", "  → Direct: Down x2 + Tab + Space")
-                _send_key("down", 0.2)
-                time.sleep(0.2)
-                _send_key("down", 0.2)
-                time.sleep(0.3)
-                _send_key("tab", 0.3)
+                # Escape to dismiss any dialog, then Shift+Tab + Space
+                emit("info", "vm", "  → Esc → Shift+Tab + Space")
+                _send_key("esc", 0.5)
+                time.sleep(0.5)
+                _send_key("shift-tab", 0.3)
                 _send_key("spc", 0.5)
                 time.sleep(3)
             else:
