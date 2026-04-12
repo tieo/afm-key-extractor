@@ -2227,12 +2227,25 @@ def _run_setup_wizard():
                     # retry logic (e.g. shutdown_dialog clicks Restart directly;
                     # Tab+Enter would click "Shut Down" and kill the VM).
                     emit("info", "vm", f"Stuck on '{screen.id}', trying Tab+Enter")
+                    if stuck == 3:
+                        # First stuck attempt: disable VoiceOver in case it's
+                        # intercepting clicks (enabled during migration)
+                        emit("info", "vm", "  → Disabling VoiceOver (Cmd+F5)")
+                        _send_key("meta_l-f5", 1)
+                        time.sleep(2)
                     _send_key("tab", 0.3)
                     _send_key("ret", 1)
                     time.sleep(1)
                     continue
             else:
                 stuck = 0
+                if last_id in ("migration", "transfer_info"):
+                    # Disable VoiceOver when leaving migration — it was
+                    # enabled to bypass Migration Assistant but interferes
+                    # with mouse clicks on subsequent screens.
+                    emit("info", "vm", "  → Left migration, disabling VoiceOver (Cmd+F5)")
+                    _send_key("meta_l-f5", 1)
+                    time.sleep(2)
 
             last_id = screen.id
             emit("info", "vm", f"Screen: {screen.id} → '{screen.button}'")
