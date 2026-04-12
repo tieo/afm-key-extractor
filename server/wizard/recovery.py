@@ -18,8 +18,8 @@ the driver provides ``detect_screen`` / ``ocr_region``.
 from __future__ import annotations
 
 import time as _real_time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 VM_USER = "airtag"
 VM_PASSWORD = "airtagpw"  # 8 chars — Setup Assistant silently rejects <8
@@ -308,7 +308,9 @@ def _parse_sentinel(text: str, key: str) -> str | None:
 
 # Mount every APFS volume, probe for a dslocal users dir, remount RW.
 _DATA_VOLUME_SCRIPT = r"""
-for d in $(diskutil list | awk '/APFS Volume/ {print $NF}'); do diskutil mount "$d" >/dev/null 2>&1 || true; done
+for d in $(diskutil list | awk '/APFS Volume/ {print $NF}'); do
+  diskutil mount "$d" >/dev/null 2>&1 || true
+done
 DVOL=""
 for v in /Volumes/*; do
   if [ -d "$v/private/var/db/dslocal/nodes/Default/users" ]; then DVOL="$v"; break; fi
@@ -319,7 +321,8 @@ fi
 """.strip()
 
 _SYSADMINCTL_SCRIPT = r"""
-sysadminctl -addUser {user} -fullName "{full}" -password "{pw}" -admin -home "{dvol}/Users/{user}" -shell /bin/zsh
+sysadminctl -addUser {user} -fullName "{full}" -password "{pw}" \
+  -admin -home "{dvol}/Users/{user}" -shell /bin/zsh
 echo WIZARD_SENTINEL USER_CREATED=$?
 P="{dvol}/private/var/db/dslocal/nodes/Default/users/{user}.plist"
 [ -s "$P" ] && echo WIZARD_SENTINEL USER_PLIST_OK
@@ -348,5 +351,6 @@ for k in {keys}; do defaults write "$SA" $k -bool YES; done
 [ -f "$SA" ] && echo WIZARD_SENTINEL SA_PLIST_OK
 HU="{dvol}/Users/{user}/Library/Preferences"
 mkdir -p "$HU" && cp "$SA" "$HU/com.apple.SetupAssistant.plist" && echo WIZARD_SENTINEL USER_SA_OK
-defaults write "{dvol}/Library/Preferences/.GlobalPreferences" AppleKeyboardUIMode -int 3 && echo WIZARD_SENTINEL KBD_OK
+GP="{dvol}/Library/Preferences/.GlobalPreferences"
+defaults write "$GP" AppleKeyboardUIMode -int 3 && echo WIZARD_SENTINEL KBD_OK
 """.strip()

@@ -54,4 +54,4 @@ def bypass_setup_assistant(vm, reporter: Reporter, path: Path = "recovery",
                    message=f"unknown bypass path {path!r}")
 
 
-__all__ = ["bypass_setup_assistant", "Outcome", "Reporter"]
+__all__ = ["Outcome", "Reporter", "bypass_setup_assistant"]
