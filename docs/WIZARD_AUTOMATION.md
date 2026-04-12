@@ -206,5 +206,70 @@ module top — re-measure on drift.
 
 ---
 
-*(Later steps appended below as they are driven manually and
-automated.)*
+## Step 4 — Setup Assistant → logged-in desktop
+
+**Entry state**: fresh install rebooted into Setup Assistant. Country
+picker shown, VoiceOver hint at bottom of screen.
+
+**Approach pivot**: approach D planned an offline `.AppleSetupDone` +
+`dscl` bypass from Recovery. In practice, scripting Setup Assistant is
+*simpler* and avoids wrestling with Ventura's sealed system volume
+(`/Volumes/Macintosh-HD` is read-only; writable bits live on
+`/Volumes/Macintosh-HD - Data` with firmlinks). 13 clicks is less
+brittle than offline dslocal editing. Offline bypass remains a
+documented fallback if SA layout shifts.
+
+**Note on OpenCore picker**: after step 3's install, OpenCore lists
+three entries — EFI, macOS Base System, Macintosh-HD — and auto-boots
+Macintosh-HD after a short timeout. Spamming `right` during the
+picker window keeps it visible; a single `ret` then commits the
+highlighted entry. Our automation reaches the picker immediately post-
+reboot and can pick either Macintosh-HD (normal boot) or Base System
+(Recovery) deterministically.
+
+**Screens** (all coordinates native 1280×800):
+
+| # | Screen | Action |
+|---|--------|--------|
+| 1 | Country | type `united sta` → ret → Continue (985,660) |
+| 2 | Written and Spoken Languages | Continue |
+| 3 | Accessibility | Continue (no opts enabled) |
+| 4 | Data & Privacy | Continue |
+| 5 | Migration Assistant | "Not Now" blue link (300,672) |
+| 6 | Sign In with Apple ID | "Set Up Later" (300,672) → ret confirms Skip |
+| 7 | Terms & Conditions | Continue → Agree on sheet (743,480) |
+| 8 | Create a Computer Account | type name, tab×2, type pw, tab, type pw, Continue (long wait) |
+| 9 | Enable Location Services | Continue → ret confirms Don't Use |
+| 10 | Time Zone | Continue (Pacific default) |
+| 11 | Analytics | Continue |
+| 12 | Screen Time | "Set Up Later" (300,672) |
+| 13 | Choose Your Look | Continue (Light default) |
+
+**Key insight on button coords**: the primary Continue button sits at
+`(985, 660)` across most screens — the dialog size varies but Continue
+stays pinned to the bottom-right corner. The "Set Up Later" / "Not
+Now" blue links are at `(300, 672)` in their respective screens;
+verified by searching for Apple-blue pixels (r<30, g≈90–140, b>200).
+
+**Known quirks**:
+- T&C confirmation sheet's keyboard default is *Disagree*, not Agree
+  — click (743, 480) explicitly.
+- Location Services and Apple ID confirmation sheets have opposite
+  defaults (Skip/Don't Use are defaults, so ret works there).
+- Typing into the country list filters the selection; `ret` commits
+  the highlighted row before the actual Continue click.
+
+**Exit state**: macOS desktop with `airtag` logged in. Two loose
+ends on first boot:
+1. Keyboard Setup Assistant modal asks to identify the keyboard —
+   dismiss with Quit button (not yet coded).
+2. "Upgrade to macOS Tahoe" notification — ignore.
+
+**Code**: `server/wizard/steps/setup_assistant.py`. End state of the
+VM at this point is the candidate for `mac_hdd_golden.img` — shut
+down cleanly and `cp mac_hdd_ng.img mac_hdd_golden.img`.
+
+---
+
+*(Later steps — shutdown + golden image promotion — appended as they
+are driven and automated.)*
