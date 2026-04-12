@@ -2222,19 +2222,27 @@ def _run_setup_wizard():
             if screen.id == last_id:
                 stuck += 1
                 if stuck >= 3 and not screen.custom_action:
-                    # Tab+Enter fallback for screens without custom_action.
+                    # Rotate strategies to get unstuck.
                     # Skip for custom_action screens — they handle their own
                     # retry logic (e.g. shutdown_dialog clicks Restart directly;
                     # Tab+Enter would click "Shut Down" and kill the VM).
-                    emit("info", "vm", f"Stuck on '{screen.id}', trying Tab+Enter")
-                    if stuck == 3:
-                        # First stuck attempt: disable VoiceOver in case it's
-                        # intercepting clicks (enabled during migration)
-                        emit("info", "vm", "  → Disabling VoiceOver (Cmd+F5)")
+                    if stuck <= 4:
+                        # First tries: Escape any overlay, toggle VoiceOver off
+                        emit("info", "vm", f"Stuck on '{screen.id}', Esc + Cmd+F5 (attempt {stuck})")
+                        _send_key("esc", 0.5)
+                        time.sleep(0.5)
                         _send_key("meta_l-f5", 1)
                         time.sleep(2)
-                    _send_key("tab", 0.3)
-                    _send_key("ret", 1)
+                    elif stuck % 3 == 0:
+                        # Periodically retry the screen's fallback click
+                        emit("info", "vm", f"Stuck on '{screen.id}', fallback click {screen.fallback_pos}")
+                        _send_key("esc", 0.5)
+                        time.sleep(0.3)
+                        _mouse_click(screen.fallback_pos[0], screen.fallback_pos[1], 0.3)
+                    else:
+                        emit("info", "vm", f"Stuck on '{screen.id}', trying Tab+Enter")
+                        _send_key("tab", 0.3)
+                        _send_key("ret", 1)
                     time.sleep(1)
                     continue
             else:
