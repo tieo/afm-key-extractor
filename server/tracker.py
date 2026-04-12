@@ -1475,138 +1475,171 @@ def _handle_migration() -> None:
     on_intro = "migration assistant" in text and not on_transfer
 
     if on_intro:
-        # Migration intro screen — look for "Don't transfer" radio option
-        emit("info", "vm", "  → On migration intro, looking for skip option")
-        for label in ("Don't transfer", "don't transfer", "Not Now", "not now"):
-            pos = _find_button_pos(img, label, min_y=0)
-            if pos:
-                emit("info", "vm", f"  → Found '{label}' at {pos}, clicking it")
-                _mouse_click(pos[0], pos[1], 0.3)
-                time.sleep(1)
-                if not _find_and_click("Continue"):
-                    _mouse_click(950, 670, 0.3)
-                time.sleep(2)
-                return
-        # Try keyboard: Tab through radio options, Space to select, Tab to Continue
-        emit("info", "vm", "  → Trying keyboard nav on migration intro")
-        for _ in range(5):
+        # Migration intro screen — has radio options:
+        #   1. From a Mac, Time Machine backup, or startup disk
+        #   2. From a Windows PC
+        #   3. Don't transfer any information now
+        # Option 1 is pre-selected. We need "Don't transfer" (option 3).
+        # macOS radio buttons use arrow keys (Up/Down), NOT Tab.
+        # Tab moves between control groups (radio group → Continue button).
+        _handle_migration._intro_attempt = getattr(
+            _handle_migration, "_intro_attempt", 0
+        ) + 1
+        intro_attempt = _handle_migration._intro_attempt
+        emit("info", "vm", f"  → On migration intro (intro attempt {intro_attempt})")
+
+        # First try OCR click
+        if intro_attempt <= 2:
+            for label in ("Don't transfer", "don't transfer", "Not Now", "not now"):
+                pos = _find_button_pos(img, label, min_y=0)
+                if pos:
+                    emit("info", "vm", f"  → Found '{label}' at {pos}, clicking it")
+                    _mouse_click(pos[0], pos[1], 0.3)
+                    time.sleep(1)
+                    if not _find_and_click("Continue"):
+                        _mouse_click(950, 670, 0.3)
+                    time.sleep(2)
+                    return
+
+        if intro_attempt == 1:
+            # Tab to focus radio group, then Down x2 to "Don't transfer"
+            emit("info", "vm", "  → Tab to radio group, Down x2 for 'Don't transfer'")
+            _send_key("tab", 0.5)
+            time.sleep(0.3)
+            _send_key("down", 0.3)
+            time.sleep(0.3)
+            _send_key("down", 0.3)
+            time.sleep(0.5)
+            # Tab to Continue, Space to click
             _send_key("tab", 0.3)
-        _send_key("spc", 0.5)  # Select radio
-        time.sleep(0.5)
-        _send_key("tab", 0.3)  # To Continue button
-        _send_key("spc", 0.5)  # Click Continue
-        time.sleep(3)
+            _send_key("spc", 0.5)
+            time.sleep(3)
+        elif intro_attempt == 2:
+            # Try starting from the bottom: Shift+Tab to get to radio, Up might help
+            emit("info", "vm", "  → Shift+Tab, then Down x3 for 'Don't transfer'")
+            _send_key("shift-tab", 0.5)
+            time.sleep(0.3)
+            # Press Down x3 (wraps around) to ensure we're on last option
+            for _ in range(3):
+                _send_key("down", 0.3)
+                time.sleep(0.3)
+            _send_key("tab", 0.3)
+            _send_key("spc", 0.5)
+            time.sleep(3)
+        elif intro_attempt == 3:
+            # Direct approach: Tab once (to radio), Space to interact, Down x2
+            emit("info", "vm", "  → Tab, Space, Down x2, Tab, Space")
+            _send_key("tab", 0.5)
+            time.sleep(0.3)
+            _send_key("spc", 0.5)  # Might activate/interact with radio group
+            time.sleep(0.3)
+            _send_key("down", 0.3)
+            time.sleep(0.3)
+            _send_key("down", 0.3)
+            time.sleep(0.5)
+            _send_key("tab", 0.3)
+            _send_key("spc", 0.5)
+            time.sleep(3)
+        elif intro_attempt == 4:
+            # VoiceOver approach on intro screen
+            emit("info", "vm", "  → Enabling VoiceOver for intro screen nav")
+            _send_key("meta_l-f5", 1)
+            time.sleep(5)
+            # Navigate to "Don't transfer" with VO
+            # VO Right to scan through elements
+            for i in range(6):
+                _send_key("ctrl-alt-right", 0.5)
+                time.sleep(0.5)
+            _send_key("ctrl-alt-spc", 0.5)  # Select it
+            time.sleep(2)
+        elif intro_attempt <= 8:
+            # More VO exploration on intro
+            n_moves = intro_attempt - 2
+            emit("info", "vm", f"  → VO Right x{n_moves} + activate on intro")
+            for _ in range(n_moves):
+                _send_key("ctrl-alt-right", 0.5)
+                time.sleep(0.3)
+            _send_key("ctrl-alt-spc", 0.5)
+            time.sleep(3)
+        else:
+            # VO from beginning
+            emit("info", "vm", "  → VO Home then Right + activate on intro")
+            _send_key("ctrl-alt-home", 1)
+            time.sleep(1)
+            n = intro_attempt - 7
+            for _ in range(n):
+                _send_key("ctrl-alt-right", 0.5)
+                time.sleep(0.3)
+            _send_key("ctrl-alt-spc", 0.5)
+            time.sleep(3)
     elif on_transfer:
+        # Transfer info screen: Continue is disabled (no source selected).
+        # CONFIRMED: Tab+Space navigates BACK to migration intro screen.
+        # Strategy: get back to intro, then select "Don't transfer" there.
         if attempt == 1:
             # Enable Full Keyboard Access so Tab can focus all controls
             emit("info", "vm", "  → Enabling Full Keyboard Access (Ctrl+F7)")
             _send_key("ctrl-f7", 1)
             time.sleep(1)
 
-        def _try_terminal_from_screenshot():
-            """Check if Terminal opened and run kill command."""
-            ppm2 = _take_screenshot()
-            img2 = _ppm_to_image(ppm2)
-            if img2:
-                text2 = _ocr_region(img2, 0, 0, 1280, 800).lower()
-                if "terminal" in text2 or "bash" in text2 or "%" in text2 or "~" in text2:
-                    emit("info", "vm", "  → Terminal detected! Killing Setup Assistant")
-                    _type_text("killall 'Setup Assistant' 2>/dev/null; "
-                               "killall 'Migration Assistant' 2>/dev/null; "
-                               "touch /var/db/.AppleSetupDone; "
-                               "killall loginwindow")
-                    _send_key("ret")
-                    time.sleep(5)
-                    return True
-                emit("info", "vm", f"  → Screen after menu: {text2[:200]!r}")
-            return False
-
-        if attempt <= 2:
-            # Quick Tab/Shift+Tab tries
-            if attempt == 1:
-                emit("info", "vm", "  → Tab + Space")
-                _send_key("tab", 0.3)
-                _send_key("spc", 0.5)
-            else:
-                emit("info", "vm", "  → Shift+Tab + Space")
+        if attempt <= 3:
+            # Tab+Space confirmed to go back to intro in run 17
+            emit("info", "vm", "  → Tab + Space (go back to intro)")
+            _send_key("tab", 0.3)
+            _send_key("spc", 0.5)
+            time.sleep(3)
+        elif attempt <= 6:
+            # Try Shift+Tab then Space (Back button)
+            n = attempt - 3
+            emit("info", "vm", f"  → Shift+Tab x{n} + Space")
+            for _ in range(n):
                 _send_key("shift-tab", 0.3)
-                _send_key("spc", 0.5)
-            time.sleep(2)
-        elif attempt == 3:
-            # Enable VoiceOver — confirmed to interact with UI elements
+                time.sleep(0.2)
+            _send_key("spc", 0.5)
+            time.sleep(3)
+        elif attempt == 7:
+            # Enable VoiceOver to find Back button
             emit("info", "vm", "  → Enabling VoiceOver (Cmd+F5)")
             _send_key("meta_l-f5", 1)
             time.sleep(5)
-            # Navigate backward to find Back button (it's at the bottom-left)
-            # VO starts at the focused element; Back is likely behind us
-            emit("info", "vm", "  → VO: Ctrl+Opt+Left x1 + activate")
+            # Navigate backward to find Back button
+            emit("info", "vm", "  → VO Left + activate (Back button)")
             _send_key("ctrl-alt-left", 0.5)
             time.sleep(0.5)
             _send_key("ctrl-alt-spc", 0.5)
             time.sleep(3)
-        elif attempt <= 20:
-            # VoiceOver navigation: alternate between backward and forward,
-            # varying the number of moves to explore all UI elements.
-            # VO Right x2 + activate selected "Other server" (confirmed),
-            # so elements ARE reachable.
+        elif attempt <= 15:
+            # VO navigation to find and activate Back button
             backward = (attempt % 2 == 0)
             direction = "left" if backward else "right"
             key = f"ctrl-alt-{direction}"
-            n_moves = (attempt - 3) // 2 + 1
+            n_moves = (attempt - 7) // 2 + 1
             label = "Left" if backward else "Right"
-            emit("info", "vm", f"  → VO: Ctrl+Opt+{label} x{n_moves}, then activate")
+            emit("info", "vm", f"  → VO: Ctrl+Opt+{label} x{n_moves} + activate")
             for i in range(n_moves):
                 _send_key(key, 0.5)
                 time.sleep(0.5)
             _send_key("ctrl-alt-spc", 0.5)
             time.sleep(3)
-            # Check if screen changed
-            ppm2 = _take_screenshot()
-            img2 = _ppm_to_image(ppm2)
-            if img2:
-                text2 = _ocr_region(img2, 0, 0, 1280, 800).lower()
-                if "transfer information" not in text2:
-                    emit("info", "vm", f"  → VoiceOver navigated away! Screen: {text2[:200]!r}")
-                    _send_key("meta_l-f5", 1)  # Disable VoiceOver
-                    time.sleep(2)
-                    return
         else:
-            # Extensive rotation: keep trying VO with more moves
-            phase = (attempt - 21) % 4
+            # Rotation: alternate Tab+Space and VO approaches
+            phase = (attempt - 16) % 3
             if phase == 0:
-                # VO: go to beginning (Ctrl+Opt+Home) then forward
-                emit("info", "vm", "  → VO: Home, then Right + activate")
-                _send_key("ctrl-alt-home", 1)
-                time.sleep(1)
-                n = ((attempt - 21) // 4) + 1
-                for _ in range(n):
-                    _send_key("ctrl-alt-right", 0.5)
-                    time.sleep(0.3)
-                _send_key("ctrl-alt-spc", 0.5)
-                time.sleep(3)
-            elif phase == 1:
-                # VO: go to end (Ctrl+Opt+End) then backward
-                emit("info", "vm", "  → VO: End, then Left + activate")
-                _send_key("ctrl-alt-end", 1)
-                time.sleep(1)
-                n = ((attempt - 21) // 4) + 1
-                for _ in range(n):
-                    _send_key("ctrl-alt-left", 0.5)
-                    time.sleep(0.3)
-                _send_key("ctrl-alt-spc", 0.5)
-                time.sleep(3)
-            elif phase == 2:
-                # Tab + Space (FKA may have kicked in by now)
-                emit("info", "vm", "  → Tab + Space")
+                emit("info", "vm", "  → Tab + Space (rotation)")
                 _send_key("tab", 0.3)
                 _send_key("spc", 0.5)
+                time.sleep(3)
+            elif phase == 1:
+                emit("info", "vm", "  → Escape (try dismiss)")
+                _send_key("esc", 1)
                 time.sleep(2)
             else:
-                # VO: interact with current group, navigate inside
-                emit("info", "vm", "  → VO: interact (Ctrl+Opt+Shift+Down) then navigate")
-                _send_key("ctrl-alt-shift-down", 0.5)
-                time.sleep(0.5)
-                for _ in range(3):
+                # VO Home then navigate forward
+                emit("info", "vm", "  → VO: Home + Right + activate")
+                _send_key("ctrl-alt-home", 1)
+                time.sleep(1)
+                n = ((attempt - 16) // 3) + 1
+                for _ in range(n):
                     _send_key("ctrl-alt-right", 0.5)
                     time.sleep(0.3)
                 _send_key("ctrl-alt-spc", 0.5)
