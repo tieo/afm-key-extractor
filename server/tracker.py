@@ -1537,54 +1537,73 @@ def _handle_migration() -> None:
                 _send_key("spc", 0.5)
             time.sleep(2)
         elif attempt <= 7:
-            # Open Terminal via Spotlight (Cmd+Space).
-            # Migration Assistant has NO Utilities menu, but Spotlight
-            # can launch Terminal.app directly.
-            emit("info", "vm", f"  → Spotlight: Cmd+Space → type Terminal (attempt {attempt})")
-            # First close any open menus/dialogs
-            _send_key("esc", 0.5)
-            time.sleep(0.5)
-            # Open Spotlight
-            _send_key("meta_l-spc", 1)
-            time.sleep(2)
-            # Type "Terminal" and press Enter
-            _type_text("Terminal")
-            time.sleep(1)
-            _send_key("ret", 1)
-            time.sleep(4)
-            if _try_terminal_from_screenshot():
-                return
-            # Escape to close Spotlight if it's still open
-            _send_key("esc", 0.5)
-            time.sleep(1)
+            # VoiceOver: Cmd+F5 to enable, then VO navigation
+            # (Ctrl+Option+arrows) to find and activate buttons.
+            # VoiceOver has its own input handling that may bypass
+            # whatever blocks normal mouse clicks.
+            if attempt == 4:
+                emit("info", "vm", "  → Enabling VoiceOver (Cmd+F5)")
+                _send_key("meta_l-f5", 1)
+                time.sleep(5)  # VoiceOver takes time to initialize
+            # Navigate with VO keys: Ctrl+Option+Right to move forward
+            n_moves = attempt - 3
+            emit("info", "vm", f"  → VO: Ctrl+Opt+Right x{n_moves}, then Ctrl+Opt+Space")
+            for _ in range(n_moves):
+                _send_key("ctrl-alt-right", 0.5)
+                time.sleep(0.5)
+            # Activate current element
+            _send_key("ctrl-alt-spc", 0.5)
+            time.sleep(3)
+            # Check if screen changed
+            ppm2 = _take_screenshot()
+            img2 = _ppm_to_image(ppm2)
+            if img2:
+                text2 = _ocr_region(img2, 0, 0, 1280, 800).lower()
+                if "transfer information" not in text2:
+                    emit("info", "vm", f"  → VoiceOver navigated away! Screen: {text2[:200]!r}")
+                    # Disable VoiceOver
+                    _send_key("meta_l-f5", 1)
+                    time.sleep(2)
+                    return
         elif attempt <= 11:
-            # Try /Applications/Utilities/Terminal.app via Spotlight
-            # with the full path, in case partial match doesn't work
-            emit("info", "vm", f"  → Spotlight with full path (attempt {attempt})")
-            _send_key("esc", 0.5)
+            # Apple menu restart: click Apple logo (x=15, y=11) which
+            # we know works (menu bar clicks register), then arrow down
+            # to "Restart..." and press Enter.
+            # Apple menu items: About, separator, System Preferences, App Store,
+            # separator, Recent Items, separator, Force Quit, Sleep, Restart,
+            # Shut Down, Lock Screen, Log Out
+            emit("info", "vm", f"  → Apple menu restart (attempt {attempt})")
+            # Disable VoiceOver if it's on from earlier attempts
+            if attempt == 8:
+                _send_key("meta_l-f5", 1)
+                time.sleep(2)
+            _send_key("esc", 0.5)  # Clear any state
             time.sleep(0.5)
-            _send_key("meta_l-spc", 1)
+            _mouse_click(15, 11, 0.5)  # Click Apple menu
+            time.sleep(1)
+            # Arrow down to Restart (about 9-10 items)
+            # Vary the count across attempts
+            n_down = 8 + (attempt - 8)
+            emit("info", "vm", f"  → Arrow down x{n_down} to find Restart")
+            for _ in range(n_down):
+                _send_key("down", 0.2)
+            _send_key("ret", 0.5)  # Select item
             time.sleep(2)
-            # Different search terms across attempts
-            terms = [
-                "Terminal.app",
-                "/Applications/Utilities/Terminal.app",
-                "term",
-                "terminal",
-            ]
-            term = terms[(attempt - 8) % len(terms)]
-            emit("info", "vm", f"  → Typing: {term!r}")
-            _type_text(term)
-            time.sleep(1)
+            # If a confirmation dialog appears, press Enter (Restart is default)
             _send_key("ret", 1)
-            time.sleep(4)
-            if _try_terminal_from_screenshot():
-                return
-            _send_key("esc", 0.5)
-            time.sleep(1)
+            time.sleep(10)  # Wait for potential reboot
+            # Check if VM rebooted (screen would change)
+            ppm2 = _take_screenshot()
+            img2 = _ppm_to_image(ppm2)
+            if img2:
+                text2 = _ocr_region(img2, 0, 0, 1280, 800).lower()
+                if "transfer information" not in text2:
+                    emit("info", "vm", f"  → Screen changed after Apple Restart: {text2[:200]!r}")
+                    return
+                emit("info", "vm", f"  → Still on transfer: Apple menu item {n_down} wasn't Restart")
         else:
-            # Rotate: Spotlight, Tab nav, FKA toggle
-            phase = (attempt - 12) % 4
+            # Rotate: VoiceOver nav, Apple menu, Tab nav, FKA toggle
+            phase = (attempt - 12) % 5
             if phase == 0:
                 # Re-toggle FKA
                 emit("info", "vm", "  → Re-toggling Full Keyboard Access")
@@ -1597,20 +1616,26 @@ def _handle_migration() -> None:
                 _send_key("spc", 0.5)
                 time.sleep(2)
             elif phase == 2:
-                # Spotlight retry
-                emit("info", "vm", "  → Spotlight retry: Terminal")
-                _send_key("esc", 0.5)
-                time.sleep(0.3)
-                _send_key("meta_l-spc", 1)
-                time.sleep(2)
-                _type_text("Terminal")
+                # VoiceOver navigate backward
+                n = ((attempt - 12) // 5) + 1
+                emit("info", "vm", f"  → VO: Ctrl+Opt+Left x{n} + activate")
+                for _ in range(n):
+                    _send_key("ctrl-alt-left", 0.5)
+                    time.sleep(0.3)
+                _send_key("ctrl-alt-spc", 0.5)
+                time.sleep(3)
+            elif phase == 3:
+                # Apple menu with different item count
+                n_down = 9 + ((attempt - 12) // 5) % 3
+                emit("info", "vm", f"  → Apple menu: down x{n_down}")
+                _mouse_click(15, 11, 0.5)
                 time.sleep(1)
+                for _ in range(n_down):
+                    _send_key("down", 0.2)
+                _send_key("ret", 0.5)
+                time.sleep(2)
                 _send_key("ret", 1)
-                time.sleep(4)
-                if _try_terminal_from_screenshot():
-                    return
-                _send_key("esc", 0.5)
-                time.sleep(0.5)
+                time.sleep(8)
             else:
                 # Shift+Tab + Space
                 emit("info", "vm", "  → Shift+Tab + Space")
