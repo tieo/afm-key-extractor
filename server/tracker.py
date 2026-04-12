@@ -1722,21 +1722,72 @@ def _handle_terms() -> None:
 
 
 def _fill_account_form() -> None:
-    """Fill the Create a Computer Account form."""
-    emit("info", "vm", "  → Filling account form")
+    """Fill the Create a Computer Account form.
+
+    Mouse clicks on form fields don't place keyboard focus in QEMU (same
+    issue as Migration Assistant / terms). Instead: enable VoiceOver +
+    FKA, VO-navigate to the first text field, activate it, type the
+    value, then Tab between fields.
+    """
+    _fill_account_form.attempts = getattr(_fill_account_form, "attempts", 0) + 1
+    attempt = _fill_account_form.attempts
+    emit("info", "vm", f"  → Filling account form (attempt {attempt})")
+
+    if attempt == 1:
+        emit("info", "vm", "  → Enabling FKA (Ctrl+F7) + VoiceOver (Cmd+F5)")
+        _send_key("ctrl-f7", 1)
+        time.sleep(0.5)
+        _fill_account_form._vo_enabled = True
+        _send_key("meta_l-f5", 1)
+        time.sleep(3)
+
+    # VO Right to reach Full Name text field, VO activate to focus it.
+    # Number of VO Right presses varies by attempt in case the first
+    # interactive element isn't where we expect.
+    n_right = 1 + attempt  # 2, 3, 4, ...
+    emit("info", "vm", f"  → VO Right x{n_right} + activate → Full Name")
+    for _ in range(n_right):
+        _send_key("ctrl-alt-right", 0.3)
+        time.sleep(0.2)
+    _send_key("ctrl-alt-spc", 0.5)
+    time.sleep(1)
+
+    # Type Full Name; Tab to Account Name (autofills), Tab to Password
+    _type_text(VM_USER)
+    time.sleep(0.5)
+    _send_key("tab", 0.3)
+    time.sleep(0.3)
+    _send_key("tab", 0.3)
+    time.sleep(0.3)
+    _type_text(VM_PASSWORD)
+    time.sleep(0.3)
+    _send_key("tab", 0.3)
+    time.sleep(0.3)
+    _type_text(VM_PASSWORD)
+    time.sleep(0.3)
+    _send_key("tab", 0.3)
+    time.sleep(0.3)
+    _send_key("tab", 0.3)  # past hint
+    time.sleep(0.5)
+
+    # VO navigate to Continue and activate
+    emit("info", "vm", "  → VO Right x10 + activate → Continue")
+    for _ in range(10):
+        _send_key("ctrl-alt-right", 0.25)
+        time.sleep(0.15)
+    _send_key("ctrl-alt-spc", 0.5)
+    time.sleep(3)
+
+    # If advanced, disable VO
     ppm = _take_screenshot()
     img = _ppm_to_image(ppm)
-    pos = _find_button_pos(img, "Full Name", min_y=0) if img else None
-    _mouse_click(pos[0] + 200, pos[1], 0.3) if pos else _mouse_click(790, 330, 0.3)
-    _type_text(VM_USER)
-    _send_key("tab", 0.2)
-    _send_key("tab", 0.2)
-    _type_text(VM_PASSWORD)
-    _send_key("tab", 0.2)
-    _type_text(VM_PASSWORD)
-    _send_key("tab", 0.2)
-    time.sleep(0.3)
-    _find_and_click("Continue")
+    if img:
+        text = _ocr_region(img, 0, 0, 1280, 800).lower()
+        if "create a computer account" not in text and getattr(_fill_account_form, "_vo_enabled", False):
+            emit("info", "vm", "  → Left create_account, disabling VoiceOver (Cmd+F5)")
+            _fill_account_form._vo_enabled = False
+            _send_key("meta_l-f5", 1)
+            time.sleep(2)
     time.sleep(3)
 
 
