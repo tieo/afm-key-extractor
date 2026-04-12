@@ -1507,42 +1507,30 @@ def _handle_migration() -> None:
                     time.sleep(2)
                     return
 
-        if intro_attempt == 1:
-            # Tab to focus radio group, then Down x2 to "Don't transfer"
-            emit("info", "vm", "  → Tab to radio group, Down x2 for 'Don't transfer'")
+        if intro_attempt <= 2:
+            # Tab to focus radio group, then Down to "Don't transfer" (3rd option).
+            # Down x2 from option 1 landed on option 2 (Windows PC) in Run 20,
+            # so Tab may land on radio group label, not option 1.
+            # Use Down x4 to reliably reach option 3 regardless of start.
+            n_down = 4 if intro_attempt == 1 else 5
+            emit("info", "vm", f"  → Tab to radio, Down x{n_down} for 'Don't transfer'")
             _send_key("tab", 0.5)
             time.sleep(0.3)
-            _send_key("down", 0.3)
+            for _ in range(n_down):
+                _send_key("down", 0.3)
+                time.sleep(0.2)
             time.sleep(0.3)
-            _send_key("down", 0.3)
-            time.sleep(0.5)
             # Tab to Continue, Space to click
             _send_key("tab", 0.3)
             _send_key("spc", 0.5)
             time.sleep(3)
-        elif intro_attempt == 2:
-            # Try starting from the bottom: Shift+Tab to get to radio, Up might help
-            emit("info", "vm", "  → Shift+Tab, then Down x3 for 'Don't transfer'")
-            _send_key("shift-tab", 0.5)
-            time.sleep(0.3)
-            # Press Down x3 (wraps around) to ensure we're on last option
-            for _ in range(3):
-                _send_key("down", 0.3)
-                time.sleep(0.3)
-            _send_key("tab", 0.3)
-            _send_key("spc", 0.5)
-            time.sleep(3)
         elif intro_attempt == 3:
-            # Direct approach: Tab once (to radio), Space to interact, Down x2
-            emit("info", "vm", "  → Tab, Space, Down x2, Tab, Space")
+            # End key to jump to last radio option, then Tab + Space
+            emit("info", "vm", "  → Tab, End (last radio), Tab, Space")
             _send_key("tab", 0.5)
             time.sleep(0.3)
-            _send_key("spc", 0.5)  # Might activate/interact with radio group
+            _send_key("end", 0.5)
             time.sleep(0.3)
-            _send_key("down", 0.3)
-            time.sleep(0.3)
-            _send_key("down", 0.3)
-            time.sleep(0.5)
             _send_key("tab", 0.3)
             _send_key("spc", 0.5)
             time.sleep(3)
@@ -1592,9 +1580,11 @@ def _handle_migration() -> None:
 
         def _tab_space_then_select_dont_transfer():
             """Escape (dismiss dialogs), Tab+Space to go back to intro,
-            then immediately select 'Don't transfer' via Down x2,
-            Tab to Continue, Space."""
-            emit("info", "vm", "  → Esc → Tab+Space → Down x2 → Tab → Space (combo)")
+            then immediately select 'Don't transfer' via Down x4,
+            Tab to Continue, Space.
+            Down x4 (not x2): Tab may land on radio group label, not
+            option 1, so we need extra Downs to reliably reach option 3."""
+            emit("info", "vm", "  → Esc → Tab+Space → Down x4 → Tab → Space (combo)")
             # Dismiss any open dialog (e.g. "Other server...")
             _send_key("esc", 0.5)
             time.sleep(0.5)
@@ -1602,12 +1592,12 @@ def _handle_migration() -> None:
             _send_key("spc", 0.3)
             # Don't wait — immediately send radio selection
             time.sleep(0.5)
-            # Tab to focus radio group, Down x2 to "Don't transfer"
+            # Tab to focus radio group, Down x4 to "Don't transfer"
             _send_key("tab", 0.3)
             time.sleep(0.2)
-            _send_key("down", 0.2)
-            time.sleep(0.2)
-            _send_key("down", 0.2)
+            for _ in range(4):
+                _send_key("down", 0.2)
+                time.sleep(0.15)
             time.sleep(0.3)
             # Tab to Continue button, Space to click
             _send_key("tab", 0.3)
