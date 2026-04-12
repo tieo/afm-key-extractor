@@ -2239,7 +2239,8 @@ def _run_setup_wizard():
                     continue
             else:
                 stuck = 0
-                if last_id in ("migration", "transfer_info"):
+                if (last_id in ("migration", "transfer_info")
+                        and screen.id not in ("migration", "transfer_info")):
                     # Disable VoiceOver when leaving migration — it was
                     # enabled to bypass Migration Assistant but interferes
                     # with mouse clicks on subsequent screens.
