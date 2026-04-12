@@ -560,16 +560,72 @@ next screen (tracker.py:2460 has a whole handler to turn it off).
    table handles migration in one entry and either succeeds or fails
    cleanly.
 
-## 8. Open questions
+## 8. Status of earlier open questions
 
-- Is `sysadminctl` actually available in Ventura's Recovery
-  environment? I have not verified this; the code path assumes yes and
-  falls back to `dscl -f …/Default` if not. Verify next time Recovery
-  is booted interactively.
-- Exact canonical set of `DidSee*` keys for Ventura — the list in §4.4
-  is approximate. If any pane of Setup Assistant still fires despite
-  a valid admin account, missing `DidSee*` is the likely cause.
-- Does the Catalina VM in MEMORY reflect the current golden image, or
-  is the golden image Ventura? The code says Ventura; the memory file
-  documents Catalina. Settling this is important only if the golden
-  image is ever rebuilt from scratch.
+### 8.1 Installed macOS version — **resolved: Ventura**
+
+`extractor/provision-vm.sh` hard-codes `MACOS_VERSION="${MACOS_VERSION:-ventura}"`
+and `docs/VM_SETUP.md` describes a Ventura install path. The `catalina`
+entry in the legacy `WIZARD_SCREENS` dict (deleted in b8d7872) and the
+Catalina wizard table documented in the harness memory file both
+predate the move to Ventura and are retained only as historical
+reference for the OCR-driven fallback. The live golden image is a
+Ventura install; the recovery bypass in `server/wizard/recovery.py`
+targets Ventura's Setup Assistant state.
+
+### 8.2 `sysadminctl` availability in Ventura Recovery — **still assumed, with fallback**
+
+Not directly verified from code or docs available in this repo — no
+copy of the OSX-KVM tree or Apple Recovery system image is present on
+the host to inspect, and Apple ships no public man pages for the
+Recovery environment specifically. What is known:
+
+- `sysadminctl` is part of the base macOS install at
+  `/usr/sbin/sysadminctl` and has been shipped since 10.13.
+- Ventura Recovery includes a nearly full userland (`diskutil`,
+  `plutil`, `defaults`, `dscl`, `mount`), so the prior has to be that
+  `sysadminctl` is present too.
+- If it is not present, `recovery.py` already falls back to the
+  `dscl -f …/Default localonly` path (`_DSCL_SCRIPT`).
+
+**Action when next booting Recovery interactively:** run
+`which sysadminctl` and confirm `ShadowHashData` is written when
+`-addUser` succeeds. If missing, delete the `_SYSADMINCTL_SCRIPT`
+branch and make `_DSCL_SCRIPT` the sole path.
+
+### 8.3 Canonical Ventura `DidSee*` key set — **reconciled against deleted code**
+
+The old `tracker.py` path (commit 7bd7db0^) wrote only five keys:
+
+    DidSeeCloudSetup DidSeeMigrationSetup DidSeePrivacy
+    DidSeeSiriSetup DidSeeAccessibility
+
+The expanded list in `server/wizard/recovery.py` adds
+`DidSeeApplePaySetup`, `DidSeeSyncSetup`, `DidSeeTrueTonePrivacy`,
+`DidSeeAppearanceSetup`, `DidSeeScreenTime` to suppress the panes that
+the OCR wizard was observed to hit post-account-creation (Apple Pay,
+iCloud sync, True Tone, Appearance, Screen Time). `DidSeeMigrationSetup`
+from the old code is intentionally dropped — a real user account
+created via `sysadminctl` never triggers Migration, and the suppression
+key name is not stable across versions.
+
+The list is therefore the **union of keys that were empirically needed
+in Setup Assistant panes** observed in the OCR driver, not a set
+enumerated from Apple's `com.apple.SetupAssistant` schema. If a future
+Ventura point release surfaces a pane that is not in this list the
+symptom is: a single Setup Assistant screen fires once, you click past
+it, and it never recurs (because the pane itself writes its `DidSee*`
+on first dismiss). Adding the missing key afterwards is cheap.
+
+### 8.4 What remains genuinely open
+
+- **End-to-end verification on a fresh install.** The current golden
+  image was produced before the `server/wizard/` rewrite. The new
+  module has unit coverage (`tests/wizard/`) but has not driven a real
+  Recovery Terminal yet. Validate on the next fresh install — do not
+  rebuild the golden image just to test.
+- **Timing of `AppleSetupDone` vs. APFS remount.** Whether touching
+  `.AppleSetupDone` on a snapshot-mounted Data volume persists across
+  the first boot is assumed yes (it is a regular file on the root of
+  the Data volume, not in a sealed System snapshot). Confirm by
+  reading back `.AppleSetupDone` after reboot during bring-up.
