@@ -1537,78 +1537,56 @@ def _handle_migration() -> None:
                 _send_key("spc", 0.5)
             time.sleep(2)
         elif attempt <= 7:
-            # Click on menu bar with mouse — menu bar accepts clicks
-            # even when wizard buttons don't.
-            # Migration Assistant menu bar (1280x800):
-            #   Apple=15, MigrationAssistant=120, Edit=240, Utilities≈310, Window≈400
-            # We try different x positions across attempts.
-            menu_positions = [
-                (310, 11, "Utilities"),     # Utilities menu
-                (250, 11, "Edit area"),     # Edit menu area
-                (370, 11, "Window area"),   # Window menu area
-                (180, 11, "App menu"),      # Migration Assistant menu
-            ]
-            idx = attempt - 4
-            mx, my, label = menu_positions[idx]
-            emit("info", "vm", f"  → Clicking menu bar at ({mx}, {my}) [{label}]")
-            _mouse_click(mx, my, 0.5)
+            # Open Terminal via Spotlight (Cmd+Space).
+            # Migration Assistant has NO Utilities menu, but Spotlight
+            # can launch Terminal.app directly.
+            emit("info", "vm", f"  → Spotlight: Cmd+Space → type Terminal (attempt {attempt})")
+            # First close any open menus/dialogs
+            _send_key("esc", 0.5)
+            time.sleep(0.5)
+            # Open Spotlight
+            _send_key("meta_l-spc", 1)
+            time.sleep(2)
+            # Type "Terminal" and press Enter
+            _type_text("Terminal")
             time.sleep(1)
-            # Look for menu items — if a menu opened, try to find Terminal
-            # Navigate down to find Terminal option
-            for _ in range(5):
-                _send_key("down", 0.3)
-                time.sleep(0.3)
-                ppm2 = _take_screenshot()
-                img2 = _ppm_to_image(ppm2)
-                if img2:
-                    text2 = _ocr_region(img2, 0, 0, 1280, 400).lower()
-                    if "terminal" in text2:
-                        emit("info", "vm", "  → Found Terminal in menu! Pressing Enter")
-                        _send_key("ret", 0.5)
-                        time.sleep(3)
-                        if _try_terminal_from_screenshot():
-                            return
-                        break
-            # Press Escape to close any open menu
+            _send_key("ret", 1)
+            time.sleep(4)
+            if _try_terminal_from_screenshot():
+                return
+            # Escape to close Spotlight if it's still open
             _send_key("esc", 0.5)
             time.sleep(1)
         elif attempt <= 11:
-            # Ctrl+F2 keyboard shortcut for menu bar (different variants)
-            # Try both ctrl-f2 and fn-ctrl-f2
-            variant = (attempt - 8) % 4
-            if variant == 0:
-                emit("info", "vm", "  → Ctrl+F2 for menu bar")
-                _send_key("ctrl-f2", 1)
-            elif variant == 1:
-                emit("info", "vm", "  → Ctrl+Fn+F2 for menu bar")
-                _send_key("ctrl-fn-f2", 1)
-            elif variant == 2:
-                emit("info", "vm", "  → F2 for menu bar")
-                _send_key("f2", 1)
-            else:
-                emit("info", "vm", "  → Ctrl+F2, then Escape, then Ctrl+F2 again")
-                _send_key("ctrl-f2", 0.5)
-                time.sleep(0.5)
-                _send_key("esc", 0.5)
-                time.sleep(0.3)
-                _send_key("ctrl-f2", 1)
+            # Try /Applications/Utilities/Terminal.app via Spotlight
+            # with the full path, in case partial match doesn't work
+            emit("info", "vm", f"  → Spotlight with full path (attempt {attempt})")
+            _send_key("esc", 0.5)
+            time.sleep(0.5)
+            _send_key("meta_l-spc", 1)
+            time.sleep(2)
+            # Different search terms across attempts
+            terms = [
+                "Terminal.app",
+                "/Applications/Utilities/Terminal.app",
+                "term",
+                "terminal",
+            ]
+            term = terms[(attempt - 8) % len(terms)]
+            emit("info", "vm", f"  → Typing: {term!r}")
+            _type_text(term)
             time.sleep(1)
-            # Navigate to Utilities
-            for n_right in range(6):
-                _send_key("right", 0.3)
-            _send_key("down", 0.3)  # Open menu
-            time.sleep(0.3)
-            # Type 't' to jump to Terminal
-            _send_key("t", 0.3)
-            _send_key("ret", 0.5)
-            time.sleep(3)
+            _send_key("ret", 1)
+            time.sleep(4)
             if _try_terminal_from_screenshot():
                 return
+            _send_key("esc", 0.5)
+            time.sleep(1)
         else:
-            # Rotate through approaches
-            phase = (attempt - 12) % 6
+            # Rotate: Spotlight, Tab nav, FKA toggle
+            phase = (attempt - 12) % 4
             if phase == 0:
-                # Toggle FKA
+                # Re-toggle FKA
                 emit("info", "vm", "  → Re-toggling Full Keyboard Access")
                 _send_key("ctrl-f7", 1)
                 time.sleep(1)
@@ -1619,53 +1597,26 @@ def _handle_migration() -> None:
                 _send_key("spc", 0.5)
                 time.sleep(2)
             elif phase == 2:
-                # Click on Utilities menu position
-                emit("info", "vm", "  → Click menu bar Utilities position")
-                _mouse_click(310, 11, 0.5)
-                time.sleep(1)
-                # Arrow down through items looking for Terminal
-                for _ in range(6):
-                    _send_key("down", 0.3)
-                _send_key("ret", 0.5)
-                time.sleep(3)
-                if _try_terminal_from_screenshot():
-                    return
+                # Spotlight retry
+                emit("info", "vm", "  → Spotlight retry: Terminal")
                 _send_key("esc", 0.5)
-                time.sleep(0.5)
-            elif phase == 3:
-                # Shift+Tab + Space
-                emit("info", "vm", "  → Shift+Tab + Space")
-                _send_key("shift-tab", 0.3)
-                _send_key("spc", 0.5)
+                time.sleep(0.3)
+                _send_key("meta_l-spc", 1)
                 time.sleep(2)
-            elif phase == 4:
-                # Click different menu bar position
-                x_pos = 250 + ((attempt - 12) // 6) * 60
-                emit("info", "vm", f"  → Click menu bar at x={x_pos}")
-                _mouse_click(x_pos, 11, 0.5)
+                _type_text("Terminal")
                 time.sleep(1)
-                for _ in range(4):
-                    _send_key("down", 0.3)
-                _send_key("ret", 0.5)
-                time.sleep(3)
+                _send_key("ret", 1)
+                time.sleep(4)
                 if _try_terminal_from_screenshot():
                     return
                 _send_key("esc", 0.5)
                 time.sleep(0.5)
             else:
-                # Escape to clear state, then Ctrl+F2
-                emit("info", "vm", "  → Escape + Ctrl+F2 menu retry")
-                _send_key("esc", 0.5)
-                time.sleep(0.5)
-                _send_key("ctrl-f2", 1)
-                time.sleep(1)
-                for _ in range(3):
-                    _send_key("right", 0.3)
-                _send_key("down", 0.3)
-                _send_key("ret", 0.5)
-                time.sleep(3)
-                if _try_terminal_from_screenshot():
-                    return
+                # Shift+Tab + Space
+                emit("info", "vm", "  → Shift+Tab + Space")
+                _send_key("shift-tab", 0.3)
+                _send_key("spc", 0.5)
+                time.sleep(2)
     else:
         emit("info", "vm", "  → Unknown migration sub-screen, pressing Escape")
         _send_key("esc", 1)
