@@ -162,9 +162,10 @@
   </style>
 </head>
 <body>
-  <!-- Setup overlay -->
-  <div class="overlay hidden" id="setup-overlay">
-    <div class="setup-box" id="setup-content"></div>
+  <!-- Setup overlay — starts visible so users never see a half-loaded map
+       before checkSetup decides whether setup/login is needed. -->
+  <div class="overlay" id="setup-overlay">
+    <div class="setup-box" id="setup-content"><p style="color:#aaa">Loading…</p></div>
   </div>
 
   <!-- Log panel -->
