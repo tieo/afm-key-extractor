@@ -7,7 +7,8 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9/dist/leaflet.css">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #eee; }
+    body { font-family: -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #eee; overflow-x: hidden; }
+    html { overflow-x: hidden; }
     #map { height: 70vh; width: 100%; }
     .panel { padding: 12px; max-height: 30vh; overflow-y: auto; }
     .tag-card {
@@ -44,7 +45,7 @@
     .overlay.hidden { display: none; }
     .setup-box {
       background: #16213e; border-radius: 12px; padding: 24px;
-      max-width: 420px; width: 92%;
+      max-width: 420px; width: 92%; min-width: 0;
     }
     .setup-box h2 { margin-bottom: 12px; font-size: 1.2em; }
     .setup-box p { color: #aaa; margin-bottom: 14px; font-size: 0.88em; line-height: 1.5; }
