@@ -664,20 +664,36 @@ def vm_start_setup():
         emit("info", "vm", f"VM started, noVNC proxy active on port {VNC_WS_PORT}")
 
         # OpenCore's boot-entry NVRAM is wiped on each boot (snapshot=on), so
-        # OpenCore shows its picker every time. Send Enter after a short delay
-        # to accept the default entry and boot macOS without operator input.
+        # OpenCore shows its picker every time. Send Enter repeatedly over ~15s
+        # to catch the picker whenever it appears and boot the default entry.
         def _auto_boot_opencore():
-            import threading, time as _t
+            import threading, socket as _sock, json as _json, time as _t
+            def _qmp_send_ret():
+                s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
+                s.settimeout(3.0)
+                s.connect("/tmp/airtag-vm-qmp.sock")
+                buf = b""
+                def _recv():
+                    nonlocal buf
+                    while b"\n" not in buf:
+                        buf += s.recv(4096)
+                    line, buf = buf.split(b"\n", 1)
+                    return _json.loads(line)
+                _recv()  # greeting
+                s.sendall(b'{"execute":"qmp_capabilities"}\n'); _recv()
+                cmd = {"execute":"send-key","arguments":{"keys":[{"type":"qcode","data":"ret"}]}}
+                s.sendall((_json.dumps(cmd)+"\n").encode()); _recv()
+                s.close()
             def worker():
-                _t.sleep(6)
-                try:
-                    from wizard.driver import Driver, UnixTransport
-                    qmp = UnixTransport("/tmp/airtag-vm-qmp.sock")
-                    mon = UnixTransport("/tmp/airtag-vm-monitor.sock")
-                    Driver(qmp, mon).key("ret", post_delay=0.3)
-                    emit("info", "vm", "Sent Enter to OpenCore picker")
-                except Exception as e:
-                    emit("warning", "vm", f"OpenCore auto-boot keypress failed: {e}")
+                sent = 0
+                for delay in (3, 5, 8, 12, 18):
+                    _t.sleep(delay - sent)
+                    sent = delay
+                    try:
+                        _qmp_send_ret()
+                        emit("info", "vm", f"Sent Enter to OpenCore picker (@{delay}s)")
+                    except Exception as e:
+                        emit("warning", "vm", f"QMP send-key @{delay}s failed: {e}")
             threading.Thread(target=worker, daemon=True).start()
         _auto_boot_opencore()
 

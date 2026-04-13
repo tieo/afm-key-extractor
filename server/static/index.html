@@ -244,6 +244,7 @@
           <div class="spinner" style="width:32px;height:32px;border:3px solid #16213e;border-top-color:#4cc9f0;border-radius:50%;animation:spin 1s linear infinite"></div>
           <div id="vnc-overlay-label">Starting VM…</div>
           <div id="vnc-overlay-elapsed" style="color:#888;font-size:0.82em"></div>
+          <div style="color:#888;font-size:0.78em;max-width:280px;line-height:1.4">Takes ~30s to reach the desktop. The VM runs on the server — safe to close this page.</div>
         </div>
       </div>
       <div class="section" id="vm-status-section">
@@ -689,7 +690,7 @@
           const r = await fetch(url, {method:'POST'});
           const d = await r.json().catch(() => ({}));
           if (!r.ok || d.error) { toast(d.error || (label+' failed'), 'error'); return false; }
-          toast(label + ' started');
+          toast(label + '…');
           await refreshStatus();
           return true;
         } catch (e) { toast('Network error: '+e.message, 'error'); return false; }
