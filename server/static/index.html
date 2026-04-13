@@ -154,6 +154,10 @@
       }
       .log-entry { flex-wrap: wrap; gap: 4px; }
       .log-cat { min-width: 0; }
+      /* Stack VNC + install-log vertically so VNC isn't squeezed to nothing. */
+      .auto-install-body { flex-direction: column; }
+      .auto-install-body .vnc-wrap { min-height: 40vh; }
+      #install-log { width: 100% !important; max-height: 25vh; }
     }
   </style>
 </head>
@@ -446,7 +450,7 @@
             </div>
             <div id="install-detail" style="color:#aaa;font-size:0.82em"></div>
           </div>
-          <div style="flex:1;display:flex;gap:10px;min-height:0">
+          <div class="auto-install-body" style="flex:1;display:flex;gap:10px;min-height:0">
             <div class="vnc-wrap" style="flex:1;min-width:0;position:relative">
               <iframe id="vnc-auto" class="vnc-frame" allow="fullscreen" allowfullscreen src="//${location.hostname.replace('airtag', 'airtag-vnc')}/vnc.html?autoconnect=true&resize=scale&view_only=true"></iframe>
               <button id="vnc-interact-toggle" onclick="toggleVncInteract()" style="position:absolute;top:6px;right:6px;z-index:10;padding:4px 10px;border-radius:4px;border:1px solid #555;background:rgba(0,0,0,0.7);color:#aaa;font-size:0.75em;cursor:pointer">View Only</button>

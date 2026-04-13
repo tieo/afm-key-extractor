@@ -31,6 +31,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 VM_ENABLED = os.environ.get("AIRTAG_VM_ENABLED", "false") == "true"
 VM_DIR = Path(os.environ.get("AIRTAG_VM_DIR", "/var/lib/airtag-tracker/osx-kvm"))
 VNC_WS_PORT = int(os.environ.get("AIRTAG_VNC_WS_PORT", "6901"))
+VM_PASSWORD = os.environ.get("AIRTAG_VM_PASSWORD", "airtag")
 
 app = Flask(__name__, static_folder=str(STATIC_DIR))
 
