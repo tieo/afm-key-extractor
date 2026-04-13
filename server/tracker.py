@@ -23,7 +23,8 @@ log = logging.getLogger("tracker")
 DATA_DIR = Path(os.environ.get("AIRTAG_DATA_DIR", "/var/lib/airtag-tracker"))
 KEYS_DIR = DATA_DIR / "keys"
 DB_PATH = DATA_DIR / "locations.db"
-ACCOUNT_PATH = DATA_DIR / "account.json"
+ACCOUNT_PATH = DATA_DIR / "account.json"  # legacy plaintext (migrated on load)
+ACCOUNT_ENC_PATH = DATA_DIR / "account.enc"
 ANISETTE_PATH = DATA_DIR / "ani_libs.bin"
 POLL_INTERVAL = int(os.environ.get("AIRTAG_POLL_INTERVAL", "900"))  # 15 min default
 PORT = int(os.environ.get("AIRTAG_PORT", "8042"))
@@ -34,6 +35,53 @@ VNC_WS_PORT = int(os.environ.get("AIRTAG_VNC_WS_PORT", "6901"))
 VM_PASSWORD = os.environ.get("AIRTAG_VM_PASSWORD", "airtag")
 
 app = Flask(__name__, static_folder=str(STATIC_DIR))
+
+
+# --- Account-at-rest encryption (Fernet keyed by /etc/machine-id) ---
+import base64
+import hashlib
+
+from cryptography.fernet import Fernet
+
+
+def _account_key() -> bytes:
+    mid = Path("/etc/machine-id").read_text().strip().encode()
+    derived = hashlib.pbkdf2_hmac("sha256", mid, b"airtag-tracker-account-v1", 200_000, dklen=32)
+    return base64.urlsafe_b64encode(derived)
+
+
+_FERNET = Fernet(_account_key())
+
+
+def account_exists() -> bool:
+    return ACCOUNT_ENC_PATH.exists() or ACCOUNT_PATH.exists()
+
+
+def save_account(acc) -> None:
+    payload = json.dumps(acc.to_json()).encode()
+    token = _FERNET.encrypt(payload)
+    ACCOUNT_ENC_PATH.write_bytes(token)
+    ACCOUNT_ENC_PATH.chmod(0o600)
+
+
+def load_account(anisette):
+    if ACCOUNT_ENC_PATH.exists():
+        data = json.loads(_FERNET.decrypt(ACCOUNT_ENC_PATH.read_bytes()))
+        return AppleAccount.from_json(data, anisette=anisette)
+    if ACCOUNT_PATH.exists():
+        acc = AppleAccount.from_json(str(ACCOUNT_PATH), anisette=anisette)
+        save_account(acc)
+        ACCOUNT_PATH.unlink()
+        emit("info", "account", "Migrated plaintext account.json → encrypted account.enc")
+        return acc
+    return None
+
+
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DATA_DIR.chmod(0o700)
+except Exception:
+    pass
 
 # In-memory state for login flow
 _pending_account = None
@@ -146,11 +194,12 @@ def load_airtags():
 def get_account():
     """Get or create an authenticated Apple account."""
     ani = LocalAnisetteProvider(libs_path=str(ANISETTE_PATH))
-    if ACCOUNT_PATH.exists():
+    if account_exists():
         try:
-            acc = AppleAccount.from_json(str(ACCOUNT_PATH), anisette=ani)
-            emit("info", "account", "Restored Apple account session")
-            return acc
+            acc = load_account(ani)
+            if acc is not None:
+                emit("info", "account", "Restored Apple account session")
+                return acc
         except Exception as e:
             emit("warning", "account", f"Failed to restore session: {e}")
     return None
@@ -238,7 +287,7 @@ def poll_locations():
             else:
                 emit("info", "poll", f"{name}: no new reports")
 
-        acc.to_json(str(ACCOUNT_PATH))
+        save_account(acc)
         for tag_id, tag in tags:
             tag.to_json(str(KEYS_DIR / f"{tag_id}.json"))
 
@@ -757,7 +806,7 @@ def account_status():
     """Check if Apple account is configured and session is valid."""
     return jsonify(
         {
-            "configured": ACCOUNT_PATH.exists(),
+            "configured": account_exists(),
             "airtags": len(list(KEYS_DIR.glob("*.json"))) if KEYS_DIR.exists() else 0,
         }
     )
@@ -801,7 +850,7 @@ def account_login():
             return jsonify({"status": "2fa_required", "methods": method_list})
 
         if state == LoginState.LOGGED_IN:
-            acc.to_json(str(ACCOUNT_PATH))
+            save_account(acc)
             _pending_account = None
             _pending_2fa_methods = None
             emit("info", "account", "Logged in successfully (no 2FA needed)")
@@ -835,7 +884,7 @@ def account_2fa():
         state = method.submit(code)
 
         if state == LoginState.LOGGED_IN:
-            _pending_account.to_json(str(ACCOUNT_PATH))
+            save_account(_pending_account)
             _pending_account = None
             _pending_2fa_methods = None
             emit("info", "account", "2FA verified, logged in successfully")
@@ -941,7 +990,7 @@ def main():
     emit("info", "system", f"Server starting on port {PORT}")
     emit("info", "system", f"Data dir: {DATA_DIR}")
     emit("info", "system", f"VM enabled: {VM_ENABLED}")
-    emit("info", "system", f"Account configured: {ACCOUNT_PATH.exists()}")
+    emit("info", "system", f"Account configured: {account_exists()}")
     n_keys = len(list(KEYS_DIR.glob("*.json"))) if KEYS_DIR.exists() else 0
     emit("info", "system", f"Loaded {n_keys} AirTag key(s)")
     adaptive = settings.get("adaptive", True)
