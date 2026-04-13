@@ -64,16 +64,17 @@ def run(driver: Driver, username: str = "airtag", password: str = "airtag") -> N
     driver.click(*CONTINUE, post_delay=4.0)
     # 3. Accessibility
     driver.click(*CONTINUE, post_delay=4.0)
-    # 4. Data & Privacy
-    driver.click(*CONTINUE, post_delay=4.0)
+    # 4. Data & Privacy — MA splash is slow to render; bump delay before
+    #    hitting "Not Now" so the click doesn't land on a stale widget.
+    driver.click(*CONTINUE, post_delay=6.0)
     # 5. Migration Assistant — Not Now
-    driver.click(*BLUE_LINK_LEFT, post_delay=4.0)
+    driver.click(*BLUE_LINK_LEFT, post_delay=5.0)
     # 6. Apple ID — Set Up Later then confirm Skip with Return
-    driver.click(*BLUE_LINK_LEFT, post_delay=2.0)
-    driver.key("ret", post_delay=4.0)
+    driver.click(*BLUE_LINK_LEFT, post_delay=3.0)
+    driver.key("ret", post_delay=5.0)
     # 7. Terms — Agree, then Agree on sheet
-    driver.click(*CONTINUE, post_delay=2.0)
-    driver.click(*CONFIRM_AGREE, post_delay=4.0)
+    driver.click(*CONTINUE, post_delay=3.0)
+    driver.click(*CONFIRM_AGREE, post_delay=5.0)
     # 8. Create a Computer Account
     driver.type_text(username)
     driver.key("tab")
@@ -82,9 +83,13 @@ def run(driver: Driver, username: str = "airtag", password: str = "airtag") -> N
     driver.key("tab")
     driver.type_text(password)
     driver.click(*CONTINUE, post_delay=15.0)
-    # 9. Location Services — skip, confirm with Return
-    driver.click(*CONTINUE, post_delay=2.0)
-    driver.key("ret", post_delay=4.0)
+    # 9. Location Services — Continue then confirm "Don't Use" via an
+    #    explicit click on the sheet (not `ret`): observed with 5 s
+    #    post_delay that `ret` still lands before the sheet's slide-in
+    #    animation completes, so we send a click and accept that the
+    #    button needs its coordinate maintained if Apple reshuffles.
+    driver.click(*CONTINUE, post_delay=7.0)
+    driver.click(640, 420, post_delay=5.0)  # "Don't Use" on sheet
     # 10. Time Zone
     driver.click(*CONTINUE, post_delay=4.0)
     # 11. Analytics

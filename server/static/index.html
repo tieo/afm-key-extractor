@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>AirTag Tracker</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9/dist/leaflet.css">
   <style>
@@ -125,6 +125,36 @@
     }
     .steps-progress .step-dot.done { background: #4cc9f0; }
     .steps-progress .step-dot.active { background: #4361ee; }
+
+    /* Layout: body is a column so toolbar + map + panel stack and share
+       the viewport, using safe-area insets on iOS. */
+    body { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
+    .toolbar { padding-top: calc(8px + env(safe-area-inset-top)); }
+    .toolbar-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    #map { flex: 1 1 auto; height: auto; min-height: 50vh; }
+    .panel { flex: 0 0 auto; max-height: 35vh; }
+
+    /* Phones: smaller paddings, wrap toolbar cleanly, single-column settings. */
+    @media (max-width: 600px) {
+      .toolbar { flex-wrap: wrap; gap: 6px; padding: 8px 10px; padding-top: calc(8px + env(safe-area-inset-top)); }
+      .toolbar h1 { font-size: 1em; flex: 1 1 auto; }
+      .toolbar-actions { width: 100%; justify-content: space-between; }
+      .btn { padding: 8px 10px; font-size: 0.85em; }
+      .btn.small { padding: 6px 8px; }
+      #map { min-height: 55vh; }
+      .panel { max-height: 40vh; padding: 10px; }
+      .tag-card { padding: 10px; }
+      .tag-name { font-size: 1em; }
+      .settings-panel { padding: 12px; padding-top: calc(12px + env(safe-area-inset-top)); }
+      .log-panel { padding: 12px; padding-top: calc(12px + env(safe-area-inset-top)); }
+      .settings-section { padding: 12px; }
+      /* Collapse 2-col grids inside settings to single column. */
+      .settings-section [style*="grid-template-columns"] {
+        grid-template-columns: 1fr !important;
+      }
+      .log-entry { flex-wrap: wrap; gap: 4px; }
+      .log-cat { min-width: 0; }
+    }
   </style>
 </head>
 <body>
@@ -214,7 +244,7 @@
 
   <div class="toolbar">
     <h1>AirTag Tracker</h1>
-    <div>
+    <div class="toolbar-actions">
       <button class="btn sync" onclick="syncKeys()">Sync</button>
       <button class="btn" onclick="pollNow()">Refresh</button>
       <button class="btn ghost" onclick="toggleLog()" title="Activity Log">Log</button>

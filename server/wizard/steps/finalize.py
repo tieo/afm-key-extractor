@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from ..driver import Driver
 
-KBD_QUIT = (863, 651)
+KBD_QUIT = (915, 688)
 
 
 def run(driver: Driver, password: str = "airtag") -> None:
