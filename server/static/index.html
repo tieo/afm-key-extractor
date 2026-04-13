@@ -7,779 +7,352 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9/dist/leaflet.css">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #eee; overflow-x: hidden; }
-    html { overflow-x: hidden; }
-    #map { height: 70vh; width: 100%; }
-    .panel { padding: 12px; max-height: 30vh; overflow-y: auto; }
+    html, body { overflow-x: hidden; }
+    body {
+      font-family: -apple-system, system-ui, sans-serif;
+      background: #1a1a2e; color: #eee;
+      display: flex; flex-direction: column;
+      min-height: 100vh; min-height: 100dvh;
+    }
+
+    /* Toolbar */
+    .toolbar {
+      display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+      padding-top: calc(10px + env(safe-area-inset-top));
+      background: #0f3460; flex-wrap: wrap; flex-shrink: 0;
+    }
+    .toolbar h1 { font-size: 1em; flex: 1 1 auto; white-space: nowrap; }
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+    /* Buttons */
+    .btn {
+      padding: 8px 12px; border-radius: 6px; border: 1px solid #333;
+      background: #16213e; color: #eee; cursor: pointer; font-size: 0.9em;
+      white-space: nowrap;
+    }
+    .btn:hover { border-color: #4cc9f0; }
+    .btn.primary { background: #4361ee; border-color: #4361ee; color: #fff; }
+    .btn.sync { background: #4cc9f0; border-color: #4cc9f0; color: #000; }
+    .btn.danger { background: #2a1822; border-color: #e63946; color: #e63946; }
+    .btn.ghost { background: transparent; }
+    .btn.small { padding: 6px 10px; font-size: 0.82em; }
+    .btn:disabled { opacity: 0.5; cursor: default; }
+
+    /* Status bar with badges */
+    .status-bar {
+      display: flex; gap: 8px; padding: 6px 14px; background: #16213e;
+      font-size: 0.82em; color: #aaa; flex-wrap: wrap; align-items: center;
+      flex-shrink: 0;
+    }
+    .badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 3px 9px; border-radius: 10px; background: #0f3460;
+      border: 1px solid #1a2f56; cursor: pointer; user-select: none;
+    }
+    .badge:hover { border-color: #4cc9f0; }
+    .badge .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+    .dot.green { background: #2ecc71; } .dot.red { background: #e74c3c; }
+    .dot.yellow { background: #f1c40f; } .dot.gray { background: #666; }
+
+    /* Map + tags */
+    #map { flex: 1 1 auto; min-height: 45vh; width: 100%; }
+    .tags-panel {
+      padding: 10px 14px; max-height: 28vh; overflow-y: auto;
+      background: #16213e; flex-shrink: 0;
+    }
     .tag-card {
-      background: #16213e; border-radius: 8px; padding: 12px; margin-bottom: 8px;
-      cursor: pointer; display: flex; justify-content: space-between; align-items: center;
-      border: 2px solid transparent; transition: border-color 0.2s;
+      padding: 10px 12px; background: #0f3460; border-radius: 8px;
+      margin-bottom: 6px; cursor: pointer; border: 1px solid transparent;
     }
     .tag-card.active { border-color: #4cc9f0; }
-    .tag-card:hover { border-color: #4361ee; }
-    .tag-name { font-weight: 600; font-size: 1.1em; }
-    .tag-time { font-size: 0.85em; color: #888; }
-    .tag-coords { font-size: 0.8em; color: #666; }
-    .toolbar {
-      display: flex; gap: 8px; padding: 8px 12px; background: #0f3460;
-      align-items: center; justify-content: space-between;
-    }
-    .toolbar h1 { font-size: 1.1em; font-weight: 600; }
-    .btn {
-      background: #4361ee; color: white; border: none; border-radius: 6px;
-      padding: 8px 16px; font-size: 0.9em; cursor: pointer;
-    }
-    .btn:active { background: #3a56d4; }
-    .btn.sync { background: #4cc9f0; color: #1a1a2e; }
-    .btn.danger { background: #e74c3c; }
-    .btn.small { padding: 4px 10px; font-size: 0.8em; }
-    .btn.ghost { background: transparent; border: 1px solid #4361ee; }
-    .status { font-size: 0.75em; color: #888; padding: 4px 12px; }
+    .tag-name { font-weight: 500; font-size: 0.95em; }
+    .tag-time { color: #888; font-size: 0.78em; }
+    .tag-coords { color: #666; font-size: 0.75em; font-family: monospace; }
 
-    /* Full-screen overlay */
-    .overlay {
-      position: fixed; inset: 0; background: #1a1a2e; z-index: 9999;
-      display: flex; align-items: center; justify-content: center; flex-direction: column;
+    /* Slide-in panels — same pattern for log / settings / vm / account */
+    .panel {
+      position: fixed; top: 0; right: 0; width: 100%; max-width: 520px;
+      height: 100vh; height: 100dvh; background: #1a1a2e; z-index: 9000;
+      box-shadow: -4px 0 20px rgba(0,0,0,0.5);
+      padding: 16px; padding-top: calc(16px + env(safe-area-inset-top));
+      display: flex; flex-direction: column; gap: 12px;
+      transform: translateX(0); transition: transform 0.2s ease;
+      overflow-y: auto;
     }
-    .overlay.hidden { display: none; }
-    .setup-box {
-      background: #16213e; border-radius: 12px; padding: 24px;
-      max-width: 420px; width: 92%; min-width: 0;
+    .panel.hidden { transform: translateX(110%); pointer-events: none; }
+    .panel-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+    .panel-header h2 { font-size: 1.1em; }
+    .panel-body { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+    .section {
+      background: #16213e; border-radius: 10px; padding: 14px;
     }
-    .setup-box h2 { margin-bottom: 12px; font-size: 1.2em; }
-    .setup-box p { color: #aaa; margin-bottom: 14px; font-size: 0.88em; line-height: 1.5; }
-    .setup-box input {
-      width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #333;
-      background: #0f3460; color: #eee; font-size: 1em; margin-bottom: 10px;
-    }
-    .setup-box input::placeholder { color: #666; }
-    .setup-box .btn { width: 100%; padding: 12px; font-size: 1em; margin-top: 4px; }
-    .setup-box .error { color: #e74c3c; font-size: 0.85em; margin-bottom: 10px; }
-    .setup-box .info { color: #4cc9f0; font-size: 0.85em; margin-bottom: 10px; }
-    .step { color: #666; font-size: 0.8em; margin-bottom: 8px; }
-    .method-item {
-      background: #0f3460; border-radius: 6px; padding: 10px; margin-bottom: 6px;
-      cursor: pointer; border: 2px solid transparent;
-    }
-    .method-item.selected { border-color: #4cc9f0; }
+    .section h3 { font-size: 0.95em; margin-bottom: 10px; color: #4cc9f0; }
+    .section p { color: #aaa; font-size: 0.85em; margin-bottom: 8px; line-height: 1.4; }
 
-    /* VNC viewer */
+    /* Form inputs */
+    input[type=email], input[type=password], input[type=text], input[type=number] {
+      width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #333;
+      background: #0f3460; color: #eee; font-size: 0.95em; margin-bottom: 8px;
+    }
+    input::placeholder { color: #666; }
+    .error { color: #e74c3c; font-size: 0.85em; margin: 6px 0; }
+    .info { color: #4cc9f0; font-size: 0.85em; margin: 6px 0; }
+    label.check { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 0.9em; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    @media (max-width: 500px) { .grid2 { grid-template-columns: 1fr; } }
+
+    /* VM panel — VNC iframe */
     .vnc-wrap {
-      flex: 1; min-height: 0; width: 100%;
-      border-radius: 8px; overflow: hidden; background: #000; margin-bottom: 8px;
+      position: relative; width: 100%; flex: 1 1 auto;
+      min-height: 40vh; background: #000; border-radius: 8px; overflow: hidden;
     }
-    .vnc-frame {
-      width: 100%; height: 100%; border: none;
+    .vnc-wrap iframe { width: 100%; height: 100%; border: 0; display: block; }
+    .vnc-wrap .vnc-toggle {
+      position: absolute; top: 6px; right: 6px; z-index: 2;
+      background: rgba(0,0,0,0.7); border: 1px solid #555; color: #aaa;
+      padding: 4px 10px; border-radius: 4px; font-size: 0.75em; cursor: pointer;
     }
 
-    /* Settings panel */
-    .settings-panel {
-      position: fixed; inset: 0; background: #1a1a2e; z-index: 9998;
-      overflow-y: auto; padding: 16px;
+    /* Progress bar */
+    .progress {
+      background: #0a0a1a; border-radius: 6px; height: 8px; overflow: hidden; margin: 6px 0;
     }
-    .settings-panel.hidden { display: none; }
-    .settings-section {
-      background: #16213e; border-radius: 8px; padding: 16px; margin-bottom: 16px;
+    .progress > div {
+      height: 100%; background: linear-gradient(90deg,#4361ee,#4cc9f0);
+      width: 0%; transition: width 1s ease;
     }
-    .settings-section h3 { margin-bottom: 12px; font-size: 1em; }
-    .key-item {
-      display: flex; justify-content: space-between; align-items: center;
-      padding: 8px 0; border-bottom: 1px solid #0f3460;
-    }
-    .key-item:last-child { border-bottom: none; }
-    .key-name { font-weight: 500; }
-    .key-meta { font-size: 0.8em; color: #888; }
-    .drop-zone {
-      border: 2px dashed #4361ee; border-radius: 8px; padding: 24px;
-      text-align: center; color: #888; cursor: pointer; margin-top: 12px;
-    }
-    .drop-zone.dragover { border-color: #4cc9f0; color: #4cc9f0; }
-    .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
-    .dot.green { background: #2ecc71; }
-    .dot.red { background: #e74c3c; }
-    .dot.yellow { background: #f1c40f; }
 
-    /* Log panel */
-    .log-panel {
-      position: fixed; inset: 0; background: #1a1a2e; z-index: 9997;
-      overflow-y: auto; padding: 16px; font-family: monospace; font-size: 0.8em;
-    }
-    .log-panel.hidden { display: none; }
-    .log-entry { padding: 3px 0; border-bottom: 1px solid #111; display: flex; gap: 8px; }
-    .log-ts { color: #555; white-space: nowrap; }
-    .log-cat { color: #4361ee; min-width: 60px; }
-    .log-msg { color: #ccc; word-break: break-word; }
-    .log-entry.error .log-msg { color: #e74c3c; }
-    .log-entry.warning .log-msg { color: #f1c40f; }
-    .log-filters { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
-    .log-filters .chip {
-      padding: 3px 10px; border-radius: 12px; font-size: 0.85em; cursor: pointer;
+    /* Log list */
+    .log-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+    .chip {
+      padding: 3px 10px; border-radius: 12px; font-size: 0.82em; cursor: pointer;
       background: #16213e; border: 1px solid #333;
     }
-    .log-filters .chip.active { border-color: #4cc9f0; color: #4cc9f0; }
-    .steps-progress {
-      display: flex; gap: 4px; margin-bottom: 16px;
-    }
-    .steps-progress .step-dot {
-      flex: 1; height: 4px; border-radius: 2px; background: #333;
-    }
-    .steps-progress .step-dot.done { background: #4cc9f0; }
-    .steps-progress .step-dot.active { background: #4361ee; }
+    .chip.active { border-color: #4cc9f0; color: #4cc9f0; }
+    #log-entries { font-family: monospace; font-size: 0.78em; flex: 1; overflow-y: auto; background: #0a0a1a; border-radius: 6px; padding: 8px; }
+    .log-entry { padding: 2px 0; border-bottom: 1px solid #111; display: flex; gap: 8px; flex-wrap: wrap; }
+    .log-ts { color: #555; white-space: nowrap; }
+    .log-cat { color: #4361ee; min-width: 60px; }
+    .log-msg { color: #ccc; word-break: break-word; flex: 1; min-width: 0; }
+    .log-entry.error .log-msg { color: #e74c3c; }
+    .log-entry.warning .log-msg { color: #f1c40f; }
 
-    /* Layout: body is a column so toolbar + map + panel stack and share
-       the viewport, using safe-area insets on iOS. */
-    body { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
-    .toolbar { padding-top: calc(8px + env(safe-area-inset-top)); }
-    .toolbar-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-    #map { flex: 1 1 auto; height: auto; min-height: 50vh; }
-    .panel { flex: 0 0 auto; max-height: 35vh; }
+    /* Drop zone for key upload */
+    .drop-zone {
+      border: 2px dashed #4361ee; border-radius: 8px; padding: 20px;
+      text-align: center; color: #888; cursor: pointer; margin-top: 8px;
+    }
+    .drop-zone.dragover { border-color: #4cc9f0; color: #4cc9f0; }
 
-    /* Phones: smaller paddings, wrap toolbar cleanly, single-column settings. */
+    .key-item {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 0; border-bottom: 1px solid #0f3460;
+    }
+    .key-meta { font-size: 0.78em; color: #888; }
+
     @media (max-width: 600px) {
-      .toolbar { flex-wrap: wrap; gap: 6px; padding: 8px 10px; padding-top: calc(8px + env(safe-area-inset-top)); }
-      .toolbar h1 { font-size: 1em; flex: 1 1 auto; }
-      .toolbar-actions { width: 100%; justify-content: space-between; }
-      .btn { padding: 8px 10px; font-size: 0.85em; }
-      .btn.small { padding: 6px 8px; }
-      #map { min-height: 55vh; }
-      .panel { max-height: 40vh; padding: 10px; }
-      .tag-card { padding: 10px; }
-      .tag-name { font-size: 1em; }
-      .settings-panel { padding: 12px; padding-top: calc(12px + env(safe-area-inset-top)); }
-      .log-panel { padding: 12px; padding-top: calc(12px + env(safe-area-inset-top)); }
-      .settings-section { padding: 12px; }
-      /* Collapse 2-col grids inside settings to single column. */
-      .settings-section [style*="grid-template-columns"] {
-        grid-template-columns: 1fr !important;
-      }
-      .log-entry { flex-wrap: wrap; gap: 4px; }
-      .log-cat { min-width: 0; }
-      /* Stack VNC + install-log vertically so VNC isn't squeezed to nothing. */
-      .auto-install-body { flex-direction: column; }
-      .auto-install-body .vnc-wrap { min-height: 40vh; }
-      #install-log { width: 100% !important; max-height: 25vh; }
+      .toolbar h1 { font-size: 0.95em; }
+      .btn { padding: 7px 10px; font-size: 0.85em; }
+      .btn.small { padding: 5px 8px; font-size: 0.78em; }
     }
   </style>
 </head>
 <body>
-  <!-- Setup overlay — starts visible so users never see a half-loaded map
-       before checkSetup decides whether setup/login is needed. -->
-  <div class="overlay" id="setup-overlay">
-    <div class="setup-box" id="setup-content"><p style="color:#aaa">Loading…</p></div>
-  </div>
-
-  <!-- Log panel -->
-  <div class="log-panel hidden" id="log-panel">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <h2 style="font-size:1.1em">Activity Log</h2>
-      <button class="btn small" onclick="toggleLog()">Close</button>
-    </div>
-    <div class="log-filters">
-      <span class="chip active" data-cat="" onclick="filterLog(this,'')">All</span>
-      <span class="chip" data-cat="poll" onclick="filterLog(this,'poll')">Poll</span>
-      <span class="chip" data-cat="movement" onclick="filterLog(this,'movement')">Movement</span>
-      <span class="chip" data-cat="adaptive" onclick="filterLog(this,'adaptive')">Adaptive</span>
-      <span class="chip" data-cat="vm" onclick="filterLog(this,'vm')">VM</span>
-      <span class="chip" data-cat="account" onclick="filterLog(this,'account')">Account</span>
-      <span class="chip" data-cat="keys" onclick="filterLog(this,'keys')">Keys</span>
-      <span class="chip" data-cat="system" onclick="filterLog(this,'system')">System</span>
-    </div>
-    <div id="log-entries"></div>
-  </div>
-
-  <!-- Settings panel -->
-  <div class="settings-panel hidden" id="settings-panel">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      <h2>Settings</h2>
-      <button class="btn small" onclick="toggleSettings()">Close</button>
-    </div>
-
-    <div class="settings-section">
-      <h3>Polling</h3>
-      <div id="poll-status" style="margin-bottom:12px;font-size:0.85em;color:#aaa"></div>
-      <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;cursor:pointer">
-        <input type="checkbox" id="set-adaptive" onchange="savePollingSettings()"> Adaptive polling (faster when moving)
-      </label>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-        <div>
-          <label style="font-size:0.8em;color:#888">Idle interval (min)</label>
-          <input type="number" id="set-idle" min="1" max="1440" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee">
-        </div>
-        <div>
-          <label style="font-size:0.8em;color:#888">Active interval (min)</label>
-          <input type="number" id="set-active" min="1" max="60" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee">
-        </div>
-        <div>
-          <label style="font-size:0.8em;color:#888">Movement threshold (m)</label>
-          <input type="number" id="set-threshold" min="1" max="10000" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee">
-        </div>
-        <div>
-          <label style="font-size:0.8em;color:#888">Cooldown polls</label>
-          <input type="number" id="set-cooldown" min="1" max="100" style="width:100%;padding:8px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee">
-        </div>
-      </div>
-      <button class="btn small" style="margin-top:10px" onclick="savePollingSettings()">Save</button>
-    </div>
-
-    <div class="settings-section">
-      <h3>Apple Account</h3>
-      <div id="account-info">Checking...</div>
-      <button class="btn small" style="margin-top:8px" onclick="showLoginForm()">Re-login</button>
-    </div>
-
-    <div class="settings-section">
-      <h3>AirTag Keys</h3>
-      <div id="keys-list">Loading...</div>
-      <div class="drop-zone" id="drop-zone" onclick="document.getElementById('key-file-input').click()">
-        Drop .json key files here or click to upload
-      </div>
-      <input type="file" id="key-file-input" accept=".json" multiple style="display:none">
-    </div>
-
-    <div class="settings-section" id="vm-section" style="display:none">
-      <h3>macOS VM</h3>
-      <div id="vm-info">Checking...</div>
-      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-        <button class="btn small sync" onclick="syncKeys();toggleSettings()">Extract Keys Now</button>
-        <button class="btn small" onclick="startVmSetup()">Open VM Setup</button>
-        <button class="btn small danger" onclick="reinstallVm()">Reinstall macOS</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="toolbar">
+  <header class="toolbar">
     <h1>AirTag Tracker</h1>
-    <div class="toolbar-actions">
+    <div class="actions">
       <button class="btn sync" onclick="syncKeys()">Sync</button>
       <button class="btn" onclick="pollNow()">Refresh</button>
-      <button class="btn ghost" onclick="toggleLog()" title="Activity Log">Log</button>
-      <button class="btn ghost" onclick="toggleSettings()">Settings</button>
+      <button class="btn ghost" onclick="togglePanel('log')">Log</button>
+      <button class="btn ghost" onclick="togglePanel('account')">Account</button>
+      <button class="btn ghost" onclick="togglePanel('vm')">VM</button>
+      <button class="btn ghost" onclick="togglePanel('settings')">Settings</button>
     </div>
+  </header>
+
+  <div class="status-bar" id="status-bar">
+    <span id="tags-status">…</span>
+    <span class="badge" id="badge-account" onclick="togglePanel('account')"><span class="dot gray"></span><span>Account</span></span>
+    <span class="badge" id="badge-vm" onclick="togglePanel('vm')"><span class="dot gray"></span><span>VM</span></span>
   </div>
+
   <div id="map"></div>
-  <div class="status" id="status">Loading...</div>
-  <div class="panel" id="tags"></div>
+  <div class="tags-panel" id="tags"></div>
+
+  <!-- Account panel -->
+  <aside class="panel hidden" id="account-panel">
+    <div class="panel-header"><h2>Apple ID</h2><button class="btn small ghost" onclick="togglePanel('account')">Close</button></div>
+    <div class="panel-body" id="account-body"></div>
+  </aside>
+
+  <!-- VM panel — always has VNC iframe + install progress + controls -->
+  <aside class="panel hidden" id="vm-panel">
+    <div class="panel-header"><h2>macOS VM</h2><button class="btn small ghost" onclick="togglePanel('vm')">Close</button></div>
+    <div class="panel-body">
+      <div class="section" id="vm-status-section">
+        <div id="vm-status-summary" style="display:flex;align-items:center;gap:8px;margin-bottom:6px"></div>
+        <div id="vm-phase-row" style="display:none">
+          <div style="display:flex;justify-content:space-between;font-size:0.85em">
+            <b id="vm-phase-label">…</b>
+            <span id="vm-elapsed" style="color:#888"></span>
+          </div>
+          <div class="progress"><div id="vm-progress"></div></div>
+          <div id="vm-phase-detail" style="color:#aaa;font-size:0.82em"></div>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px" id="vm-controls"></div>
+      </div>
+      <div class="vnc-wrap" id="vnc-wrap">
+        <iframe id="vnc-iframe" allow="fullscreen" allowfullscreen></iframe>
+        <button class="vnc-toggle" id="vnc-interact" onclick="toggleVncInteract()">View Only</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Settings panel -->
+  <aside class="panel hidden" id="settings-panel">
+    <div class="panel-header"><h2>Settings</h2><button class="btn small ghost" onclick="togglePanel('settings')">Close</button></div>
+    <div class="panel-body">
+      <div class="section">
+        <h3>Polling</h3>
+        <div id="poll-status" style="margin-bottom:8px;font-size:0.82em"></div>
+        <label class="check"><input type="checkbox" id="set-adaptive" onchange="savePollingSettings()"> Adaptive polling (faster when moving)</label>
+        <div class="grid2">
+          <div><label style="font-size:0.78em;color:#888">Idle (min)</label><input type="number" id="set-idle" min="1" max="1440"></div>
+          <div><label style="font-size:0.78em;color:#888">Active (min)</label><input type="number" id="set-active" min="1" max="60"></div>
+          <div><label style="font-size:0.78em;color:#888">Threshold (m)</label><input type="number" id="set-threshold" min="1" max="10000"></div>
+          <div><label style="font-size:0.78em;color:#888">Cooldown polls</label><input type="number" id="set-cooldown" min="1" max="100"></div>
+        </div>
+        <button class="btn small" onclick="savePollingSettings()">Save</button>
+      </div>
+
+      <div class="section">
+        <h3>AirTag Keys</h3>
+        <div id="keys-list">Loading…</div>
+        <div class="drop-zone" id="drop-zone" onclick="document.getElementById('key-file-input').click()">
+          Drop .json key files here or tap to upload
+        </div>
+        <input type="file" id="key-file-input" accept=".json" multiple style="display:none">
+      </div>
+    </div>
+  </aside>
+
+  <!-- Log panel -->
+  <aside class="panel hidden" id="log-panel">
+    <div class="panel-header"><h2>Activity Log</h2><button class="btn small ghost" onclick="togglePanel('log')">Close</button></div>
+    <div class="panel-body">
+      <div class="log-filters">
+        <span class="chip active" data-cat="" onclick="filterLog(this,'')">All</span>
+        <span class="chip" data-cat="poll" onclick="filterLog(this,'poll')">Poll</span>
+        <span class="chip" data-cat="movement" onclick="filterLog(this,'movement')">Move</span>
+        <span class="chip" data-cat="vm" onclick="filterLog(this,'vm')">VM</span>
+        <span class="chip" data-cat="account" onclick="filterLog(this,'account')">Account</span>
+        <span class="chip" data-cat="keys" onclick="filterLog(this,'keys')">Keys</span>
+        <span class="chip" data-cat="system" onclick="filterLog(this,'system')">System</span>
+      </div>
+      <div id="log-entries"></div>
+    </div>
+  </aside>
 
   <script src="https://unpkg.com/leaflet@1.9/dist/leaflet.js"></script>
   <script>
+    // ================ Map ================
     const map = L.map('map').setView([51.1, 10.4], 6);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OSM', maxZoom: 19
-    }).addTo(map);
-
-    let markers = {};
-    let historyLines = {};
-    let activeTag = null;
-
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OSM', maxZoom: 19 }).addTo(map);
     const tagIcon = L.divIcon({
       html: '<div style="background:#4cc9f0;width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 6px rgba(0,0,0,.4)"></div>',
       iconSize: [14, 14], className: ''
     });
+    let markers = {}, historyLines = {}, activeTag = null;
 
     function timeAgo(ts) {
-      const diff = (Date.now() - new Date(ts).getTime()) / 1000;
-      if (diff < 60) return 'just now';
-      if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-      if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-      return Math.floor(diff / 86400) + 'd ago';
+      const d = (Date.now() - new Date(ts).getTime()) / 1000;
+      if (d < 60) return 'just now';
+      if (d < 3600) return Math.floor(d/60)+'m ago';
+      if (d < 86400) return Math.floor(d/3600)+'h ago';
+      return Math.floor(d/86400)+'d ago';
     }
 
-    // ========= INITIAL SETUP CHECK =========
-    let vmState = {};
-    let pendingMethods = [];
-    let selectedMethod = 0;
-
-    async function checkSetup() {
-      // Check account status
-      const accRes = await fetch('/api/account/status');
-      const accData = await accRes.json();
-
-      // Check VM status
-      const vmRes = await fetch('/api/vm/status');
-      vmState = await vmRes.json();
-
-      // Determine what needs setup
-      // Always check for active install first — takes priority over everything
-      if (vmState.enabled && vmState.vm_running) {
-        try {
-          const installRes = await fetch('/api/vm/install-status');
-          const installData = await installRes.json();
-          if (installData.phase && installData.phase !== 'idle' && installData.phase !== 'done') {
-            showAutoInstallProgress();
-            return;
-          }
-        } catch(e) { /* fall through */ }
-      }
-      if (vmState.enabled && !vmState.provisioned) {
-        showProvisioningWait();
-      } else if (vmState.enabled && !vmState.setup_complete) {
-        showVmSetupWizard();
-      } else if (!accData.configured) {
-        showLoginForm();
-      } else {
-        document.getElementById('setup-overlay').classList.add('hidden');
+    // ================ Panels ================
+    const PANELS = ['log','account','vm','settings'];
+    function togglePanel(name) {
+      const el = document.getElementById(name + '-panel');
+      const wasHidden = el.classList.contains('hidden');
+      // Close all others
+      PANELS.forEach(n => document.getElementById(n+'-panel').classList.add('hidden'));
+      if (wasHidden) {
+        el.classList.remove('hidden');
+        if (name === 'log') refreshLog();
+        if (name === 'account') renderAccount();
+        if (name === 'vm') enterVmPanel();
+        if (name === 'settings') { loadPollingSettings(); loadKeysList(); }
       }
     }
 
-    function showProvisioningWait() {
-      const overlay = document.getElementById('setup-overlay');
-      overlay.classList.remove('hidden');
-      document.getElementById('setup-content').innerHTML = `
-        <div class="steps-progress">
-          <div class="step-dot active"></div><div class="step-dot"></div><div class="step-dot"></div>
-        </div>
-        <h2>Downloading macOS...</h2>
-        <p>The server is downloading macOS and setting up the VM. This happens once and takes 10-20 minutes depending on your internet speed.</p>
-        <p style="color:#4cc9f0">This page will refresh automatically.</p>
-      `;
-      setTimeout(checkSetup, 15000);
-    }
+    // ================ Status ================
+    let accountState = { configured: false, airtags: 0 };
+    let vmStateCache = { enabled: false };
 
-    function showVmSetupWizard() {
-      const overlay = document.getElementById('setup-overlay');
-      overlay.classList.remove('hidden');
-      document.getElementById('setup-content').innerHTML = `
-        <div class="steps-progress">
-          <div class="step-dot done"></div><div class="step-dot active"></div><div class="step-dot"></div>
-        </div>
-        <h2>Set up macOS VM</h2>
-        <p>A one-time setup is needed: install macOS, sign into your Apple ID, and enable Find My. macOS installation is fully automatic — you'll only need to interact for Apple ID sign-in.</p>
-        <button class="btn" onclick="startVmSetup()">Start Setup</button>
-        <div style="margin-top:24px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.1)">
-          <button class="btn small danger" onclick="reinstallVm()">Reinstall macOS</button>
-        </div>
-      `;
-    }
-
-    async function startVmSetup() {
-      const overlay = document.getElementById('setup-overlay');
-      overlay.classList.remove('hidden');
-      document.getElementById('setup-content').innerHTML = `
-        <h2>Starting VM...</h2>
-        <p>Booting macOS virtual machine. This takes about a minute.</p>
-      `;
-
-      try {
-        const res = await fetch('/api/vm/start-setup', {method: 'POST'});
-        const data = await res.json();
-        if (data.error) {
-          document.getElementById('setup-content').innerHTML = `
-            <h2>Error</h2>
-            <div class="error">${data.error}</div>
-            <button class="btn" onclick="checkSetup()">Retry</button>
-          `;
-          return;
-        }
-        if (data.auto_install) {
-          showAutoInstallProgress();
-        } else {
-          showManualSetup(data.vnc_ws_port);
-        }
-      } catch (e) {
-        document.getElementById('setup-content').innerHTML = `
-          <h2>Error</h2>
-          <div class="error">${e.message}</div>
-          <button class="btn" onclick="checkSetup()">Retry</button>
-        `;
-      }
-    }
-
-    const phaseLabels = {
-      booting: 'Booting VM...',
-      boot_picker: 'Navigating boot menu...',
-      waiting_recovery: 'Loading macOS Recovery...',
-      formatting: 'Formatting disk & starting installer...',
-      installing: 'Installing macOS...',
-      setup_wizard: 'Configuring macOS...',
-      setup_appleid: 'Waiting for Apple ID sign-in...',
-      done: 'Setup complete!',
-      error: 'Installation failed',
-    };
-
-    // Default phase duration estimates (seconds). Overridden by actual times once phases complete.
-    const defaultEstimates = {
-      booting: 15, boot_picker: 15, formatting: 100,
-      installing: 2700, setup_wizard: 90, setup_appleid: 300,
-    };
-    const phaseOrder = ['booting', 'boot_picker', 'formatting', 'installing', 'setup_wizard', 'setup_appleid', 'done'];
-
-    function getPhaseEstimates(stepTimes, elapsed) {
-      // Use actual durations for completed phases, defaults for future ones.
-      // Scale future estimates based on how actual compares to expected.
-      const estimates = {};
-      let actualTotal = 0, expectedTotal = 0;
-      const sortedPhases = phaseOrder.filter(p => p !== 'done');
-
-      for (let i = 0; i < sortedPhases.length; i++) {
-        const phase = sortedPhases[i];
-        const start = stepTimes[phase];
-        const nextPhase = sortedPhases[i + 1];
-        const nextStart = nextPhase ? stepTimes[nextPhase] : undefined;
-
-        if (start !== undefined && nextStart !== undefined) {
-          // Phase completed — use actual duration
-          estimates[phase] = nextStart - start;
-          actualTotal += estimates[phase];
-          expectedTotal += defaultEstimates[phase] || 1;
-        } else {
-          // Phase not completed or in progress — scale default estimate
-          const scale = expectedTotal > 0 ? actualTotal / expectedTotal : 1;
-          estimates[phase] = Math.round((defaultEstimates[phase] || 60) * Math.max(0.3, scale));
-        }
-      }
-      return estimates;
-    }
-
-    function getTotalEstimate(estimates) {
-      return Object.values(estimates).reduce((a, b) => a + b, 0);
-    }
-
-    let installPollTimer = null;
-
-    function showAutoInstallProgress() {
-      const overlay = document.getElementById('setup-overlay');
-      overlay.classList.remove('hidden');
-      overlay.innerHTML = `
-        <div style="width:100%;height:100%;padding:12px 16px;display:flex;flex-direction:column">
-          <div id="install-status" style="margin-bottom:8px">
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px">
-              <b style="color:#4cc9f0;font-size:1.1em" id="install-phase-label">Starting...</b>
-              <span style="color:#888;font-size:0.85em" id="install-elapsed"></span>
-            </div>
-            <div style="background:#1a1a2e;border-radius:6px;height:8px;overflow:hidden;margin-bottom:4px">
-              <div id="install-progress-bar" style="height:100%;background:linear-gradient(90deg,#4361ee,#4cc9f0);width:0%;transition:width 1s ease"></div>
-            </div>
-            <div id="install-detail" style="color:#aaa;font-size:0.82em"></div>
-          </div>
-          <div class="auto-install-body" style="flex:1;display:flex;gap:10px;min-height:0">
-            <div class="vnc-wrap" style="flex:1;min-width:0;position:relative">
-              <iframe id="vnc-auto" class="vnc-frame" allow="fullscreen" allowfullscreen src="//${location.hostname.replace('airtag', 'airtag-vnc')}/vnc.html?autoconnect=true&resize=scale&view_only=true"></iframe>
-              <button id="vnc-interact-toggle" onclick="toggleVncInteract()" style="position:absolute;top:6px;right:6px;z-index:10;padding:4px 10px;border-radius:4px;border:1px solid #555;background:rgba(0,0,0,0.7);color:#aaa;font-size:0.75em;cursor:pointer">View Only</button>
-            </div>
-            <div id="install-log" style="width:340px;flex-shrink:0;background:#0a0a1a;border-radius:8px;overflow-y:auto;padding:8px;font-family:monospace;font-size:0.72em;line-height:1.5;color:#8a8a9a"></div>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px;margin-top:8px;flex-shrink:0">
-            <button class="btn ghost small" onclick="stopVm()">Cancel</button>
-            <button class="btn ghost small danger" onclick="reinstallVm()">Reinstall</button>
-            <div id="manual-setup-controls" style="display:none;flex:1;gap:8px;align-items:center">
-              <input type="password" id="vm-password" placeholder="macOS user password" style="flex:1;padding:10px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee;font-size:0.95em">
-              <button class="btn sync" onclick="completeVmSetup()" style="white-space:nowrap">Complete Setup</button>
-            </div>
-          </div>
-        </div>
-      `;
-      pollInstallStatus();
-      pollInstallLog();
-    }
-
-    let _lastLogTs = '';
-    function toggleVncInteract() {
-      const iframe = document.getElementById('vnc-auto');
-      const btn = document.getElementById('vnc-interact-toggle');
-      const src = iframe.src;
-      if (src.includes('view_only=true')) {
-        iframe.src = src.replace('view_only=true', 'view_only=false');
-        btn.textContent = 'Interactive';
-        btn.style.color = '#4cc9f0';
-        btn.style.borderColor = '#4cc9f0';
-      } else {
-        iframe.src = src.replace('view_only=false', 'view_only=true');
-        btn.textContent = 'View Only';
-        btn.style.color = '#aaa';
-        btn.style.borderColor = '#555';
-      }
-    }
-
-    async function pollInstallLog() {
-      try {
-        const url = _lastLogTs ? `/api/log?cat=vm&since=${encodeURIComponent(_lastLogTs)}` : '/api/log?cat=vm&limit=50';
-        const res = await fetch(url);
-        const entries = await res.json();
-        const logEl = document.getElementById('install-log');
-        if (!logEl) return;
-        for (const e of entries) {
-          const line = document.createElement('div');
-          const time = new Date(e.ts).toLocaleTimeString();
-          const color = e.level === 'error' ? '#e74c3c' : e.level === 'warning' ? '#f39c12' : '#8a8a9a';
-          line.style.color = color;
-          line.style.borderBottom = '1px solid #1a1a2e';
-          line.style.padding = '2px 0';
-          line.textContent = `${time} ${e.msg}`;
-          logEl.appendChild(line);
-          _lastLogTs = e.ts;
-        }
-        if (entries.length > 0) {
-          logEl.scrollTop = logEl.scrollHeight;
-        }
-      } catch (e) {}
-      installLogTimer = setTimeout(pollInstallLog, 3000);
-    }
-    let installLogTimer = null;
-
-    function formatTime(seconds) {
-      if (seconds < 0) seconds = 0;
-      const m = Math.floor(seconds / 60), s = Math.round(seconds % 60);
-      return m > 0 ? `${m}m ${s}s` : `${s}s`;
-    }
-
-    async function pollInstallStatus() {
-      try {
-        const res = await fetch('/api/vm/install-status');
-        const data = await res.json();
-        const phase = data.phase;
-        const elapsed = data.elapsed_seconds;
-        const stepTimes = data.step_times || {};
-
-        document.getElementById('install-phase-label').textContent = phaseLabels[phase] || phase;
-
-        // Adaptive estimates based on actual completed phase durations
-        const estimates = getPhaseEstimates(stepTimes, elapsed);
-        const totalEstimate = getTotalEstimate(estimates);
-        const remaining = Math.max(0, totalEstimate - elapsed);
-
-        // Show total remaining time (or overtime)
-        if (phase === 'done') {
-          document.getElementById('install-elapsed').textContent = `Done in ${formatTime(elapsed)}`;
-        } else if (phase === 'error') {
-          document.getElementById('install-elapsed').textContent = '';
-        } else if (elapsed > totalEstimate) {
-          document.getElementById('install-elapsed').textContent = `+${formatTime(elapsed - totalEstimate)} over estimate`;
-        } else {
-          document.getElementById('install-elapsed').textContent = `~${formatTime(remaining)} remaining`;
-        }
-
-        // Progress bar: based on elapsed / total estimate
-        let progress;
-        if (phase === 'done') {
-          progress = 100;
-        } else if (phase === 'error') {
-          progress = 0;
-        } else {
-          progress = Math.min(99, Math.round((elapsed / Math.max(1, totalEstimate)) * 100));
-        }
-        document.getElementById('install-progress-bar').style.width = progress + '%';
-
-        // Phase-specific detail text
-        if (phase === 'installing') {
-          document.getElementById('install-detail').textContent =
-            'macOS is installing. The VM reboots automatically during this process.';
-        } else if (phase === 'setup_wizard') {
-          document.getElementById('install-detail').textContent =
-            'Automating macOS setup wizard (language, region, user account)...';
-        } else if (phase === 'setup_appleid') {
-          document.getElementById('install-detail').innerHTML =
-            'Sign into your Apple ID and enable Find My Mac in VNC below. Then enter your macOS password and click <b>Complete Setup</b>.';
-          document.getElementById('manual-setup-controls').style.display = 'flex';
-        } else if (phase === 'done') {
-          document.getElementById('install-detail').innerHTML =
-            'macOS is fully set up! Click <b>Complete Setup</b> to finalize and start tracking.';
-          document.getElementById('manual-setup-controls').style.display = 'flex';
-          return; // stop polling
-        } else if (phase === 'error') {
-          document.getElementById('install-detail').innerHTML =
-            (data.message || 'An error occurred. Check VNC for details.') +
-            '<br><button class="btn small" onclick="startVmSetup()" style="margin-top:8px">Retry</button>' +
-            '<button class="btn small danger" onclick="reinstallVm()" style="margin-top:8px;margin-left:8px">Reinstall</button>';
-          document.getElementById('install-progress-bar').style.background = '#e63946';
-          return; // stop polling
-        } else if (phase === 'formatting') {
-          document.getElementById('install-detail').textContent = 'Recovery loaded. Formatting disk and starting installer...';
-        }
-      } catch(e) {
-        // ignore polling errors
-      }
-      installPollTimer = setTimeout(pollInstallStatus, 5000);
-    }
-
-    function showManualSetup(wsPort) {
-      showAutoInstallProgress();
-      const el = document.getElementById('install-status');
-      el.innerHTML = `
-        <b style="color:#4cc9f0">Manual Setup</b>
-        <p style="color:#aaa;font-size:0.85em;margin-top:4px">Complete the macOS setup wizard, sign into Apple ID, enable Find My Mac and SSH. Then enter your password below.</p>
-      `;
-      document.getElementById('manual-setup-controls').style.display = 'flex';
-    }
-
-    async function completeVmSetup() {
-      const password = document.getElementById('vm-password').value;
-      if (!password) { alert('Enter the macOS user password'); return; }
-
-      const res = await fetch('/api/vm/complete-setup', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({password})
-      });
-      const data = await res.json();
-      if (data.error) { alert(data.error); return; }
-
-      document.getElementById('install-status').innerHTML = `
-        <b style="color:#4cc9f0;font-size:1.1em">VM setup complete!</b>
-        <p style="color:#aaa;font-size:0.85em;margin:4px 0">Extracting AirTag keys... Next: sign into your Apple ID.</p>
-        <button class="btn" onclick="showLoginForm()" style="margin-top:6px">Sign in with Apple ID</button>
-      `;
-      document.getElementById('manual-setup-controls').style.display = 'none';
-    }
-
-
-
-    async function stopVm() {
-      await fetch('/api/vm/stop', {method: 'POST'});
-      const overlay = document.getElementById('setup-overlay');
-      overlay.innerHTML = '<div class="setup-box" id="setup-content"></div>';
-      checkSetup();
-    }
-
-    // ========= APPLE ID LOGIN =========
-    function showLoginForm(error) {
-      const overlay = document.getElementById('setup-overlay');
-      overlay.innerHTML = '<div class="setup-box" id="setup-content"></div>';
-      overlay.classList.remove('hidden');
-      clearTimeout(installPollTimer); installPollTimer = null;
-      clearTimeout(installLogTimer); installLogTimer = null;
-      document.getElementById('setup-content').innerHTML = `
-        <h2>Sign in with Apple ID</h2>
-        <p>Needed to query the Find My network for AirTag locations. Stored locally on this server only.</p>
-        ${error ? `<div class="error">${error}</div>` : ''}
-        <input type="email" id="login-email" placeholder="Apple ID (email)" autocomplete="email">
-        <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
-        <button class="btn" onclick="doLogin()">Sign In</button>
-      `;
-    }
-
-    async function doLogin() {
-      const email = document.getElementById('login-email').value;
-      const password = document.getElementById('login-password').value;
-      if (!email || !password) return;
-
-      document.getElementById('setup-content').innerHTML = `<h2>Signing in…</h2><p>Authenticating with Apple.</p>`;
-
-      try {
-        const res = await fetch('/api/account/login', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({email, password})
-        });
-        const data = await res.json();
-
-        if (data.status === '2fa_required') {
-          pendingMethods = data.methods;
-          show2faForm();
-        } else if (data.status === 'logged_in') {
-          onLoginComplete();
-        } else {
-          showLoginForm(data.error || 'Login failed');
-        }
-      } catch (e) {
-        showLoginForm('Network error: ' + e.message);
-      }
-    }
-
-    function show2faForm(error) {
-      const method = pendingMethods[selectedMethod];
-      const hint = method.type === 'sms'
-        ? 'Enter the code sent to ' + method.phone
-        : 'Enter the code shown on your trusted device';
-
-      let methodsHtml = '';
-      if (pendingMethods.length > 1) {
-        methodsHtml = pendingMethods.map((m, i) => {
-          const label = m.type === 'sms' ? `SMS: ${m.phone}` : 'Trusted Device';
-          return `<div class="method-item ${i === selectedMethod ? 'selected' : ''}" onclick="selectedMethod=${i};show2faForm()">${label}</div>`;
-        }).join('');
-      }
-
-      document.getElementById('install-status').innerHTML = `
-        <b style="color:#4cc9f0;font-size:1.1em">Two-Factor Authentication</b>
-        <p style="color:#aaa;font-size:0.85em;margin:4px 0">${hint}</p>
-        ${methodsHtml}
-        ${error ? `<div class="error" style="color:#e74c3c;font-size:0.85em;margin-bottom:6px">${error}</div>` : ''}
-        <div style="display:flex;gap:8px;align-items:end">
-          <input type="text" id="2fa-code" placeholder="6-digit code" maxlength="6" inputmode="numeric" autocomplete="one-time-code" style="flex:1;max-width:200px;padding:8px 10px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee;font-size:0.9em">
-          <button class="btn" onclick="submit2fa()" style="height:36px">Verify</button>
-        </div>
-      `;
-      document.getElementById('2fa-code').focus();
-    }
-
-    async function submit2fa() {
-      const code = document.getElementById('2fa-code').value;
-      if (!code) return;
-
-      document.getElementById('install-status').innerHTML = `<b style="color:#4cc9f0">Verifying...</b>`;
-
-      try {
-        const res = await fetch('/api/account/2fa', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({code, method: selectedMethod})
-        });
-        const data = await res.json();
-
-        if (data.status === 'logged_in') {
-          onLoginComplete();
-        } else {
-          show2faForm(data.error || '2FA failed');
-        }
-      } catch (e) {
-        show2faForm('Network error: ' + e.message);
-      }
-    }
-
-    function onLoginComplete() {
-      document.getElementById('install-status').innerHTML = `
-        <b style="color:#4cc9f0;font-size:1.1em">All set!</b>
-        <p style="color:#aaa;font-size:0.85em">AirTag tracking is now active. Locations will be polled automatically.</p>
-      `;
-      setTimeout(() => {
-        document.getElementById('setup-overlay').classList.add('hidden');
-        loadTags();
-      }, 2000);
-    }
-
-    // ========= MAP / TAGS =========
-    async function loadTags() {
-      const [tagsRes, settingsRes] = await Promise.all([
-        fetch('/api/airtags'),
-        fetch('/api/settings'),
+    async function refreshStatus() {
+      const [accRes, vmRes, settingsRes, tagsRes] = await Promise.all([
+        fetch('/api/account/status'), fetch('/api/vm/status'),
+        fetch('/api/settings'), fetch('/api/airtags'),
       ]);
-      const tags = await tagsRes.json();
+      accountState = await accRes.json();
+      vmStateCache = await vmRes.json();
       const settings = await settingsRes.json();
-      const pollState = settings.state || {};
-      const panel = document.getElementById('tags');
-      panel.innerHTML = '';
+      const tags = await tagsRes.json();
 
+      const pollState = settings.state || {};
+      const mode = pollState.moving ? 'active' : 'idle';
+      const interval = Math.round((pollState.current_interval || settings.idle_interval) / 60);
+      document.getElementById('tags-status').innerHTML =
+        `${tags.length} tag${tags.length!==1?'s':''} · ${mode} · every ${interval}min`;
+
+      const accBadge = document.getElementById('badge-account');
+      accBadge.firstElementChild.className = 'dot ' + (accountState.configured ? 'green' : 'red');
+      accBadge.lastElementChild.textContent = 'Apple ID: ' + (accountState.configured ? 'connected' : 'sign in');
+
+      const vmBadge = document.getElementById('badge-vm');
+      if (!vmStateCache.enabled) {
+        vmBadge.style.display = 'none';
+      } else {
+        vmBadge.style.display = '';
+        let label = 'VM ', cls = 'gray';
+        if (!vmStateCache.provisioned)      { label += 'downloading'; cls = 'yellow'; }
+        else if (!vmStateCache.setup_complete) { label += 'needs setup'; cls = 'yellow'; }
+        else if (vmStateCache.vm_running)   { label += 'running';     cls = 'green'; }
+        else                                { label += 'ready';       cls = 'green'; }
+        vmBadge.firstElementChild.className = 'dot ' + cls;
+        vmBadge.lastElementChild.textContent = label;
+      }
+
+      renderTags(tags);
+      // If any panel is open, refresh its live content
+      if (!document.getElementById('vm-panel').classList.contains('hidden')) renderVmStatus();
+      if (!document.getElementById('account-panel').classList.contains('hidden')) renderAccount();
+    }
+
+    function renderTags(tags) {
       Object.values(markers).forEach(m => map.removeLayer(m));
       markers = {};
-
+      const panel = document.getElementById('tags');
+      panel.innerHTML = '';
       tags.forEach(tag => {
         const m = L.marker([tag.latitude, tag.longitude], { icon: tagIcon })
           .addTo(map)
           .bindPopup(`<b>${tag.airtag_name || tag.airtag_id}</b><br>${timeAgo(tag.timestamp)}`);
         markers[tag.airtag_id] = m;
-
         const card = document.createElement('div');
         card.className = 'tag-card' + (activeTag === tag.airtag_id ? ' active' : '');
         card.innerHTML = `
-          <div>
-            <div class="tag-name">${tag.airtag_name || tag.airtag_id}</div>
-            <div class="tag-time">${timeAgo(tag.timestamp)}</div>
-            <div class="tag-coords">${tag.latitude.toFixed(5)}, ${tag.longitude.toFixed(5)}</div>
-          </div>
-        `;
+          <div class="tag-name">${tag.airtag_name || tag.airtag_id}</div>
+          <div class="tag-time">${timeAgo(tag.timestamp)}</div>
+          <div class="tag-coords">${tag.latitude.toFixed(5)}, ${tag.longitude.toFixed(5)}</div>`;
         card.onclick = () => showHistory(tag.airtag_id);
         panel.appendChild(card);
       });
-
-      const mode = pollState.moving ? 'active' : 'idle';
-      const interval = Math.round((pollState.current_interval || settings.idle_interval) / 60);
-      const modeColor = pollState.moving ? '#2ecc71' : '#888';
-      document.getElementById('status').innerHTML =
-        `${tags.length} tag${tags.length !== 1 ? 's' : ''} &middot; <span style="color:${modeColor}">${mode}</span> &middot; every ${interval}min`;
-
       if (tags.length && !activeTag) {
-        map.fitBounds(tags.map(t => [t.latitude, t.longitude]), { padding: [30, 30] });
+        map.fitBounds(tags.map(t => [t.latitude, t.longitude]), { padding: [30,30] });
       }
     }
 
@@ -787,207 +360,305 @@
       activeTag = tagId;
       Object.values(historyLines).forEach(l => map.removeLayer(l));
       historyLines = {};
-
       const res = await fetch(`/api/airtags/${tagId}/history?limit=500`);
       const points = await res.json();
-
       if (points.length) {
         const latlngs = points.map(p => [p.latitude, p.longitude]).reverse();
-        historyLines[tagId] = L.polyline(latlngs, {
-          color: '#4cc9f0', weight: 3, opacity: 0.7
-        }).addTo(map);
-        map.fitBounds(historyLines[tagId].getBounds(), { padding: [30, 30] });
+        historyLines[tagId] = L.polyline(latlngs, { color: '#4cc9f0', weight: 3, opacity: 0.7 }).addTo(map);
+        map.fitBounds(historyLines[tagId].getBounds(), { padding: [30,30] });
       }
-      loadTags();
+      refreshStatus();
     }
 
-    async function pollNow() {
-      document.getElementById('status').textContent = 'Refreshing...';
-      await fetch('/api/poll', { method: 'POST' });
-      setTimeout(loadTags, 3000);
-    }
+    async function pollNow() { await fetch('/api/poll', {method:'POST'}); setTimeout(refreshStatus, 2000); }
+    async function syncKeys() { await fetch('/api/extract-keys', {method:'POST'}); setTimeout(refreshStatus, 3000); }
 
-    async function syncKeys() {
-      document.getElementById('status').textContent = 'Extracting keys...';
-      const res = await fetch('/api/extract-keys', { method: 'POST' });
-      const data = await res.json();
-      document.getElementById('status').textContent = data.message || data.status;
-      setTimeout(loadTags, 5000);
-    }
+    // ================ Account panel ================
+    let pendingMethods = [], selectedMethod = 0;
 
-    // ========= SETTINGS =========
-    function toggleSettings() {
-      const panel = document.getElementById('settings-panel');
-      panel.classList.toggle('hidden');
-      if (!panel.classList.contains('hidden')) {
-        loadPollingSettings();
-        loadAccountInfo();
-        loadKeysList();
-        loadVmInfo();
+    function renderAccount(error) {
+      const body = document.getElementById('account-body');
+      if (accountState.configured) {
+        body.innerHTML = `
+          <div class="section">
+            <h3>Connected</h3>
+            <p><span class="dot green"></span> Signed in. Tracking ${accountState.airtags} key${accountState.airtags!==1?'s':''}.</p>
+            <button class="btn small" onclick="showLoginForm()">Re-login</button>
+          </div>`;
+        return;
       }
+      showLoginForm(error);
     }
 
+    function showLoginForm(error) {
+      document.getElementById('account-body').innerHTML = `
+        <div class="section">
+          <h3>Sign in with Apple ID</h3>
+          <p>Needed to query the Find My network. Stored encrypted on this server only.</p>
+          ${error ? `<div class="error">${error}</div>` : ''}
+          <input type="email" id="login-email" placeholder="Apple ID (email)" autocomplete="email">
+          <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+          <button class="btn primary" onclick="doLogin()">Sign In</button>
+        </div>`;
+    }
+
+    async function doLogin() {
+      const email = document.getElementById('login-email').value;
+      const password = document.getElementById('login-password').value;
+      if (!email || !password) return;
+      document.getElementById('account-body').innerHTML = `<div class="section"><h3>Signing in…</h3><p>Authenticating with Apple.</p></div>`;
+      try {
+        const res = await fetch('/api/account/login', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({email, password}),
+        });
+        const data = await res.json();
+        if (data.status === '2fa_required') { pendingMethods = data.methods; show2faForm(); }
+        else if (data.status === 'logged_in') { await refreshStatus(); renderAccount(); }
+        else { showLoginForm(data.error || 'Login failed'); }
+      } catch (e) { showLoginForm('Network error: ' + e.message); }
+    }
+
+    function show2faForm(error) {
+      const method = pendingMethods[selectedMethod];
+      const hint = method.type === 'sms' ? 'Enter the code sent to ' + method.phone : 'Enter the code shown on your trusted device';
+      let methodsHtml = '';
+      if (pendingMethods.length > 1) {
+        methodsHtml = '<div style="margin:8px 0">' + pendingMethods.map((m, i) => {
+          const label = m.type === 'sms' ? `SMS: ${m.phone}` : 'Trusted Device';
+          return `<label class="check"><input type="radio" name="2fa-method" ${i===selectedMethod?'checked':''} onclick="selectedMethod=${i};show2faForm()"> ${label}</label>`;
+        }).join('') + '</div>';
+      }
+      document.getElementById('account-body').innerHTML = `
+        <div class="section">
+          <h3>Two-Factor Authentication</h3>
+          <p>${hint}</p>
+          ${methodsHtml}
+          ${error ? `<div class="error">${error}</div>` : ''}
+          <input type="text" id="2fa-code" placeholder="6-digit code" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+          <button class="btn primary" onclick="submit2fa()">Verify</button>
+        </div>`;
+      document.getElementById('2fa-code').focus();
+    }
+
+    async function submit2fa() {
+      const code = document.getElementById('2fa-code').value;
+      if (!code) return;
+      try {
+        const res = await fetch('/api/account/2fa', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({code, method: selectedMethod}),
+        });
+        const data = await res.json();
+        if (data.status === 'logged_in') { await refreshStatus(); renderAccount(); }
+        else show2faForm(data.error || '2FA failed');
+      } catch (e) { show2faForm('Network error: ' + e.message); }
+    }
+
+    // ================ VM panel ================
+    const VNC_URL = `//${location.hostname.replace('airtag','airtag-vnc')}/vnc.html?autoconnect=true&resize=scale&view_only=true`;
+    let vncLoaded = false;
+
+    function enterVmPanel() {
+      if (!vncLoaded) {
+        document.getElementById('vnc-iframe').src = VNC_URL;
+        vncLoaded = true;
+      }
+      renderVmStatus();
+    }
+
+    async function renderVmStatus() {
+      const summary = document.getElementById('vm-status-summary');
+      const controls = document.getElementById('vm-controls');
+      const phaseRow = document.getElementById('vm-phase-row');
+
+      if (!vmStateCache.enabled) {
+        summary.innerHTML = '<span class="dot gray"></span> VM not enabled on this server.';
+        controls.innerHTML = '';
+        phaseRow.style.display = 'none';
+        return;
+      }
+
+      let label, cls;
+      if (!vmStateCache.provisioned)        { label='Downloading macOS…'; cls='yellow'; }
+      else if (!vmStateCache.setup_complete){ label='Needs initial setup'; cls='yellow'; }
+      else if (vmStateCache.vm_running)     { label='Running';            cls='green'; }
+      else                                  { label='Ready';              cls='green'; }
+      summary.innerHTML = `<span class="dot ${cls}"></span> ${label}`;
+
+      // Install progress
+      let phase = null;
+      if (vmStateCache.vm_running || !vmStateCache.setup_complete) {
+        try {
+          const r = await fetch('/api/vm/install-status');
+          if (r.ok) {
+            const d = await r.json();
+            if (d.phase && d.phase !== 'idle') { phase = d; renderPhase(d); }
+          }
+        } catch(e) {}
+      }
+      phaseRow.style.display = phase ? '' : 'none';
+
+      // Controls
+      const btns = [];
+      if (!vmStateCache.vm_running) btns.push(`<button class="btn primary" onclick="vmStartSetup()">Start VM</button>`);
+      else btns.push(`<button class="btn" onclick="vmStop()">Stop VM</button>`);
+      btns.push(`<button class="btn danger" onclick="vmReinstall()">Reinstall macOS</button>`);
+      if (phase && phase.phase === 'setup_appleid') {
+        btns.push(`<input type="password" id="vm-pw" placeholder="macOS password" style="width:auto;flex:1;margin:0"><button class="btn sync" onclick="vmComplete()">Complete Setup</button>`);
+      }
+      controls.innerHTML = btns.join('');
+    }
+
+    const phaseLabels = {
+      booting:'Booting VM…', boot_picker:'Navigating boot menu…',
+      waiting_recovery:'Loading macOS Recovery…',
+      formatting:'Formatting disk & starting installer…',
+      installing:'Installing macOS…', setup_wizard:'Configuring macOS…',
+      setup_appleid:'Waiting for Apple ID sign-in…',
+      done:'Setup complete!', error:'Installation failed',
+    };
+    const defaultEst = { booting:15, boot_picker:15, formatting:100, installing:2700, setup_wizard:90, setup_appleid:300 };
+    const phaseOrder = ['booting','boot_picker','formatting','installing','setup_wizard','setup_appleid','done'];
+
+    function renderPhase(d) {
+      const phase = d.phase, elapsed = d.elapsed_seconds, st = d.step_times || {};
+      let actual=0, expected=0, est={};
+      const sorted = phaseOrder.filter(p=>p!=='done');
+      for (let i=0;i<sorted.length;i++) {
+        const p=sorted[i], np=sorted[i+1], s=st[p], ns=np?st[np]:undefined;
+        if (s!==undefined && ns!==undefined) { est[p]=ns-s; actual+=est[p]; expected+=defaultEst[p]||1; }
+        else { const scale = expected>0?actual/expected:1; est[p]=Math.round((defaultEst[p]||60)*Math.max(0.3,scale)); }
+      }
+      const total = Object.values(est).reduce((a,b)=>a+b,0);
+      document.getElementById('vm-phase-label').textContent = phaseLabels[phase] || phase;
+      const bar = document.getElementById('vm-progress');
+      const el = document.getElementById('vm-elapsed');
+      const det = document.getElementById('vm-phase-detail');
+      if (phase==='done') { bar.style.width='100%'; el.textContent=`Done in ${fmtTime(elapsed)}`; }
+      else if (phase==='error') { bar.style.background='#e63946'; el.textContent=''; }
+      else {
+        const p = Math.min(99, Math.round((elapsed / Math.max(1,total))*100));
+        bar.style.width = p + '%';
+        el.textContent = elapsed > total ? `+${fmtTime(elapsed-total)} over` : `~${fmtTime(total-elapsed)} left`;
+      }
+      det.textContent = {
+        installing: 'macOS is installing. The VM reboots automatically during this process.',
+        setup_wizard: 'Automating macOS setup wizard (language, region, user account)…',
+        setup_appleid: 'Sign in to Apple ID and enable Find My Mac in the VNC view, then enter your macOS password below.',
+        formatting: 'Recovery loaded. Formatting disk and starting installer…',
+        error: d.message || 'An error occurred. Check VNC for details.',
+      }[phase] || '';
+    }
+
+    function fmtTime(s) { s=Math.max(0,s|0); const m=Math.floor(s/60), r=s%60; return m?`${m}m ${r}s`:`${r}s`; }
+
+    async function vmStartSetup() { await fetch('/api/vm/start-setup', {method:'POST'}); setTimeout(refreshStatus, 1500); }
+    async function vmStop() { await fetch('/api/vm/stop', {method:'POST'}); setTimeout(refreshStatus, 1000); }
+    async function vmReinstall() {
+      if (!confirm('Wipe the macOS VM and start fresh install? All VM data will be lost.')) return;
+      await fetch('/api/vm/reinstall', {method:'POST'});
+      setTimeout(refreshStatus, 1500);
+    }
+    async function vmComplete() {
+      const pw = document.getElementById('vm-pw').value;
+      if (!pw) { alert('Enter macOS password'); return; }
+      const r = await fetch('/api/vm/complete-setup', {
+        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: pw})
+      });
+      const d = await r.json();
+      if (d.error) alert(d.error);
+      else setTimeout(refreshStatus, 2000);
+    }
+
+    function toggleVncInteract() {
+      const f = document.getElementById('vnc-iframe'), b = document.getElementById('vnc-interact');
+      if (f.src.includes('view_only=true')) { f.src = f.src.replace('view_only=true','view_only=false'); b.textContent='Interactive'; b.style.color='#4cc9f0'; }
+      else { f.src = f.src.replace('view_only=false','view_only=true'); b.textContent='View Only'; b.style.color='#aaa'; }
+    }
+
+    // ================ Settings panel ================
     async function loadPollingSettings() {
-      const res = await fetch('/api/settings');
-      const data = await res.json();
+      const data = await (await fetch('/api/settings')).json();
       document.getElementById('set-adaptive').checked = data.adaptive !== false;
-      document.getElementById('set-idle').value = Math.round(data.idle_interval / 60);
-      document.getElementById('set-active').value = Math.round(data.active_interval / 60);
+      document.getElementById('set-idle').value = Math.round(data.idle_interval/60);
+      document.getElementById('set-active').value = Math.round(data.active_interval/60);
       document.getElementById('set-threshold').value = data.movement_threshold;
       document.getElementById('set-cooldown').value = data.cooldown_polls;
-
-      const state = data.state;
-      const statusEl = document.getElementById('poll-status');
-      const mode = state.moving ? 'Active' : 'Idle';
-      const interval = Math.round(state.current_interval / 60);
-      const lastPoll = state.last_poll ? timeAgo(state.last_poll) : 'never';
-      statusEl.innerHTML = `<span class="dot ${state.moving ? 'green' : 'yellow'}"></span> ${mode} &mdash; polling every ${interval}min &mdash; last: ${lastPoll}`;
+      const s = data.state || {};
+      const mode = s.moving ? 'Active' : 'Idle';
+      const iv = Math.round((s.current_interval || data.idle_interval)/60);
+      const lp = s.last_poll ? timeAgo(s.last_poll) : 'never';
+      document.getElementById('poll-status').innerHTML =
+        `<span class="dot ${s.moving?'green':'yellow'}"></span> ${mode} · every ${iv}min · last: ${lp}`;
     }
 
     async function savePollingSettings() {
-      const settings = {
+      const body = {
         adaptive: document.getElementById('set-adaptive').checked,
-        idle_interval: parseInt(document.getElementById('set-idle').value) * 60,
-        active_interval: parseInt(document.getElementById('set-active').value) * 60,
+        idle_interval: parseInt(document.getElementById('set-idle').value)*60,
+        active_interval: parseInt(document.getElementById('set-active').value)*60,
         movement_threshold: parseInt(document.getElementById('set-threshold').value),
         cooldown_polls: parseInt(document.getElementById('set-cooldown').value),
       };
-      await fetch('/api/settings', {
-        method: 'PUT',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(settings),
-      });
+      await fetch('/api/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
       loadPollingSettings();
     }
 
-    async function loadAccountInfo() {
-      const res = await fetch('/api/account/status');
-      const data = await res.json();
-      const el = document.getElementById('account-info');
-      el.innerHTML = data.configured
-        ? `<span class="dot green"></span> Connected (${data.airtags} key${data.airtags !== 1 ? 's' : ''})`
-        : `<span class="dot red"></span> Not configured`;
-    }
-
-    async function loadVmInfo() {
-      const res = await fetch('/api/vm/status');
-      const data = await res.json();
-      const section = document.getElementById('vm-section');
-      if (!data.enabled) { section.style.display = 'none'; return; }
-      section.style.display = 'block';
-      const el = document.getElementById('vm-info');
-      if (!data.provisioned) {
-        el.innerHTML = '<span class="dot yellow"></span> Downloading macOS...';
-      } else if (!data.setup_complete) {
-        el.innerHTML = '<span class="dot yellow"></span> Needs initial setup';
-      } else {
-        el.innerHTML = `<span class="dot green"></span> Ready${data.vm_running ? ' (VM running)' : ''}`;
-      }
-    }
-
-    async function reinstallVm() {
-      if (!confirm('This will wipe the macOS VM and start a fresh install. All VM data will be lost. Are you sure?')) return;
-      try {
-        const res = await fetch('/api/vm/reinstall', {method: 'POST'});
-        const data = await res.json();
-        if (data.error) { alert(data.error); return; }
-        const sp = document.getElementById('settings-panel');
-        if (sp) sp.style.display = 'none';
-        // Show install progress view immediately — the backend will
-        // auto-start the VM after provisioning completes
-        showAutoInstallProgress();
-      } catch(e) { alert('Reinstall failed: ' + e.message); }
-    }
-
     async function loadKeysList() {
-      const res = await fetch('/api/keys');
-      const keys = await res.json();
+      const keys = await (await fetch('/api/keys')).json();
       const el = document.getElementById('keys-list');
-      if (!keys.length) {
-        el.innerHTML = '<div style="color:#666;padding:8px 0">No keys loaded.</div>';
-        return;
-      }
+      if (!keys.length) { el.innerHTML = '<div style="color:#666">No keys loaded.</div>'; return; }
       el.innerHTML = keys.map(k => `
         <div class="key-item">
-          <div>
-            <div class="key-name">${k.name}</div>
-            <div class="key-meta">${k.model || ''}</div>
-          </div>
+          <div><div>${k.name}</div><div class="key-meta">${k.model || ''}</div></div>
           <button class="btn small danger" onclick="deleteKey('${k.file.replace('.json','')}')">Remove</button>
-        </div>
-      `).join('');
+        </div>`).join('');
     }
-
     async function deleteKey(name) {
       if (!confirm(`Remove "${name}"?`)) return;
-      await fetch(`/api/keys/${name}`, {method: 'DELETE'});
+      await fetch(`/api/keys/${name}`, {method:'DELETE'});
       loadKeysList();
     }
 
-    // File upload
+    // File upload (drop zone)
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('key-file-input');
     dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
     dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-    dropZone.addEventListener('drop', e => {
-      e.preventDefault();
-      dropZone.classList.remove('dragover');
-      handleFiles(e.dataTransfer.files);
-    });
+    dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('dragover'); handleFiles(e.dataTransfer.files); });
     fileInput.addEventListener('change', () => handleFiles(fileInput.files));
-
     async function handleFiles(files) {
       for (const file of files) {
-        const form = new FormData();
-        form.append('file', file);
-        const res = await fetch('/api/keys/upload', {method: 'POST', body: form});
-        const data = await res.json();
-        if (data.error) alert(`Failed: ${data.error}`);
+        const fd = new FormData(); fd.append('file', file);
+        const r = await fetch('/api/keys/upload', {method:'POST', body: fd});
+        const d = await r.json(); if (d.error) alert('Failed: ' + d.error);
       }
-      loadKeysList();
-      loadTags();
+      loadKeysList(); refreshStatus();
     }
 
-    // ========= LOG =========
+    // ================ Log panel ================
     let logFilter = '';
-
-    function toggleLog() {
-      const panel = document.getElementById('log-panel');
-      panel.classList.toggle('hidden');
-      if (!panel.classList.contains('hidden')) refreshLog();
-    }
-
     function filterLog(el, cat) {
       logFilter = cat;
       document.querySelectorAll('.log-filters .chip').forEach(c => c.classList.remove('active'));
       el.classList.add('active');
       refreshLog();
     }
-
     async function refreshLog() {
       const url = logFilter ? `/api/log?cat=${logFilter}&limit=200` : '/api/log?limit=200';
-      const res = await fetch(url);
-      const entries = await res.json();
-      const el = document.getElementById('log-entries');
-      el.innerHTML = entries.reverse().map(e => {
+      const entries = await (await fetch(url)).json();
+      document.getElementById('log-entries').innerHTML = entries.reverse().map(e => {
         const ts = new Date(e.ts).toLocaleTimeString();
         return `<div class="log-entry ${e.level}">
-          <span class="log-ts">${ts}</span>
-          <span class="log-cat">${e.cat}</span>
-          <span class="log-msg">${e.msg}</span>
-        </div>`;
+          <span class="log-ts">${ts}</span><span class="log-cat">${e.cat}</span><span class="log-msg">${e.msg}</span></div>`;
       }).join('');
     }
+    setInterval(() => { if (!document.getElementById('log-panel').classList.contains('hidden')) refreshLog(); }, 5000);
 
-    // Auto-refresh log if open
-    setInterval(() => {
-      if (!document.getElementById('log-panel').classList.contains('hidden')) refreshLog();
-    }, 5000);
-
-    // ========= INIT =========
-    checkSetup();
-    loadTags();
-    setInterval(loadTags, 60000);
+    // ================ Init ================
+    refreshStatus();
+    setInterval(refreshStatus, 10000);
   </script>
 </body>
 </html>
