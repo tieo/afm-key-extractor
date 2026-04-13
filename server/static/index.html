@@ -237,6 +237,15 @@
   <aside class="panel hidden" id="vm-panel">
     <div class="panel-header"><h2>macOS VM</h2><button class="btn small ghost" onclick="togglePanel('vm')">Close</button></div>
     <div class="panel-body">
+      <div class="vnc-wrap" id="vnc-wrap">
+        <iframe id="vnc-iframe" allow="fullscreen" allowfullscreen></iframe>
+        <button class="vnc-toggle" id="vnc-interact" onclick="toggleVncInteract()">View Only</button>
+        <div id="vnc-overlay" style="position:absolute;inset:0;background:rgba(0,0,0,0.85);color:#4cc9f0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:10px;z-index:3;font-size:0.9em;text-align:center;padding:20px">
+          <div class="spinner" style="width:32px;height:32px;border:3px solid #16213e;border-top-color:#4cc9f0;border-radius:50%;animation:spin 1s linear infinite"></div>
+          <div id="vnc-overlay-label">Starting VM…</div>
+          <div id="vnc-overlay-elapsed" style="color:#888;font-size:0.82em"></div>
+        </div>
+      </div>
       <div class="section" id="vm-status-section">
         <div id="vm-status-summary" style="display:flex;align-items:center;gap:8px;margin-bottom:6px"></div>
         <div id="vm-phase-row" style="display:none">
@@ -249,12 +258,9 @@
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px" id="vm-controls"></div>
       </div>
-      <div class="vnc-wrap" id="vnc-wrap">
-        <iframe id="vnc-iframe" allow="fullscreen" allowfullscreen></iframe>
-        <button class="vnc-toggle" id="vnc-interact" onclick="toggleVncInteract()">View Only</button>
-      </div>
     </div>
   </aside>
+  <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
 
   <!-- Settings panel -->
   <aside class="panel hidden" id="settings-panel">
@@ -607,6 +613,9 @@
       else                                  { label='Ready';              cls='green'; }
       summary.innerHTML = `<span class="dot ${cls}"></span> ${label}`;
 
+      // Hide boot overlay once VM is actually running
+      if (vmStateCache.vm_running && vmOverlayTimer) hideVmOverlay();
+
       // Install progress
       let phase = null;
       if (vmStateCache.vm_running || !vmStateCache.setup_complete) {
@@ -686,7 +695,35 @@
         } catch (e) { toast('Network error: '+e.message, 'error'); return false; }
       });
     }
-    async function vmStartSetup(ev) { await vmAction('/api/vm/start-setup', 'Starting VM', ev?.target); }
+    let vmStartTime = null, vmOverlayTimer = null;
+    function showVmOverlay(label) {
+      document.getElementById('vnc-overlay-label').textContent = label;
+      document.getElementById('vnc-overlay').style.display = 'flex';
+      vmStartTime = Date.now();
+      clearInterval(vmOverlayTimer);
+      vmOverlayTimer = setInterval(() => {
+        const s = Math.round((Date.now()-vmStartTime)/1000);
+        document.getElementById('vnc-overlay-elapsed').textContent = `${s}s elapsed`;
+      }, 1000);
+    }
+    function hideVmOverlay() {
+      document.getElementById('vnc-overlay').style.display = 'none';
+      clearInterval(vmOverlayTimer); vmOverlayTimer = null;
+    }
+    async function vmStartSetup(ev) {
+      showVmOverlay('Starting VM — booting macOS…');
+      // ensure VNC iframe is loaded so boot screen appears as soon as QEMU is ready
+      enterVmPanel();
+      const ok = await vmAction('/api/vm/start-setup', 'Starting VM', ev?.target);
+      if (!ok) hideVmOverlay();
+      else {
+        // Reload VNC iframe after 3s so it connects to the freshly-started QEMU
+        setTimeout(() => {
+          const f = document.getElementById('vnc-iframe');
+          if (f.src) f.src = f.src;
+        }, 3000);
+      }
+    }
     async function vmStop(ev)       { await vmAction('/api/vm/stop', 'Stopping VM', ev?.target); }
     async function vmReinstall(ev) {
       if (!confirm('Wipe the macOS VM and start fresh install? All VM data will be lost.')) return;
