@@ -631,27 +631,19 @@
     }
 
     // ========= APPLE ID LOGIN =========
-    async function showLoginForm(error) {
-      // Auto-start VM if not running so the VNC viewer has something to show
-      if (vmState && vmState.enabled && !vmState.vm_running) {
-        await fetch('/api/vm/start-setup', {method: 'POST'});
-      }
-      // Ensure the unified layout is up, but don't start install pollers
-      if (!document.getElementById('install-status')) {
-        showAutoInstallProgress();
-        clearTimeout(installPollTimer);
-        installPollTimer = null;
-      }
-      const el = document.getElementById('install-status');
-      el.innerHTML = `
-        <b style="color:#4cc9f0;font-size:1.1em">Sign in with Apple ID</b>
-        <p style="color:#aaa;font-size:0.85em;margin:4px 0">Needed to query the Find My network for AirTag locations. Stored locally on this server only.</p>
-        ${error ? `<div class="error" style="color:#e74c3c;font-size:0.85em;margin-bottom:6px">${error}</div>` : ''}
-        <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap">
-          <input type="email" id="login-email" placeholder="Apple ID (email)" autocomplete="email" style="flex:1;min-width:180px;padding:8px 10px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee;font-size:0.9em">
-          <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" style="flex:1;min-width:180px;padding:8px 10px;border-radius:6px;border:1px solid #333;background:#0f3460;color:#eee;font-size:0.9em">
-          <button class="btn" onclick="doLogin()" style="height:36px;flex-shrink:0">Sign In</button>
-        </div>
+    function showLoginForm(error) {
+      const overlay = document.getElementById('setup-overlay');
+      overlay.innerHTML = '<div class="setup-box" id="setup-content"></div>';
+      overlay.classList.remove('hidden');
+      clearTimeout(installPollTimer); installPollTimer = null;
+      clearTimeout(installLogTimer); installLogTimer = null;
+      document.getElementById('setup-content').innerHTML = `
+        <h2>Sign in with Apple ID</h2>
+        <p>Needed to query the Find My network for AirTag locations. Stored locally on this server only.</p>
+        ${error ? `<div class="error">${error}</div>` : ''}
+        <input type="email" id="login-email" placeholder="Apple ID (email)" autocomplete="email">
+        <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+        <button class="btn" onclick="doLogin()">Sign In</button>
       `;
     }
 
@@ -660,7 +652,7 @@
       const password = document.getElementById('login-password').value;
       if (!email || !password) return;
 
-      document.getElementById('install-status').innerHTML = `<b style="color:#4cc9f0">Signing in...</b><p style="color:#aaa;font-size:0.85em">Authenticating with Apple.</p>`;
+      document.getElementById('setup-content').innerHTML = `<h2>Signing in…</h2><p>Authenticating with Apple.</p>`;
 
       try {
         const res = await fetch('/api/account/login', {
