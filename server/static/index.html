@@ -17,12 +17,23 @@
 
     /* Toolbar */
     .toolbar {
-      display: flex; align-items: center; gap: 8px; padding: 10px 14px;
-      padding-top: calc(10px + env(safe-area-inset-top));
-      background: #0f3460; flex-wrap: wrap; flex-shrink: 0;
+      display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+      padding-top: calc(8px + env(safe-area-inset-top));
+      background: #0f3460; flex-shrink: 0;
     }
-    .toolbar h1 { font-size: 1em; flex: 1 1 auto; white-space: nowrap; }
-    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    .toolbar h1 { font-size: 0.95em; margin-right: 6px; white-space: nowrap; }
+    .actions { display: flex; gap: 6px; flex: 1; justify-content: flex-end; flex-wrap: nowrap; }
+
+    /* Toast */
+    #toast {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      background: #16213e; border: 1px solid #4cc9f0; color: #eee;
+      padding: 10px 16px; border-radius: 8px; z-index: 10000; font-size: 0.9em;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.6); max-width: 90%;
+      opacity: 0; pointer-events: none; transition: opacity 0.2s;
+    }
+    #toast.show { opacity: 1; }
+    #toast.error { border-color: #e63946; }
 
     /* Buttons */
     .btn {
@@ -159,16 +170,15 @@
 </head>
 <body>
   <header class="toolbar">
-    <h1>AirTag Tracker</h1>
+    <h1>AirTags</h1>
     <div class="actions">
-      <button class="btn sync" onclick="syncKeys()">Sync</button>
-      <button class="btn" onclick="pollNow()">Refresh</button>
-      <button class="btn ghost" onclick="togglePanel('log')">Log</button>
-      <button class="btn ghost" onclick="togglePanel('account')">Account</button>
-      <button class="btn ghost" onclick="togglePanel('vm')">VM</button>
-      <button class="btn ghost" onclick="togglePanel('settings')">Settings</button>
+      <button class="btn sync small" onclick="pollNow(this)" title="Fetch latest AirTag locations from Apple now">Refresh</button>
+      <button class="btn small" onclick="syncKeys(this)" title="Extract AirTag keys from macOS VM Keychain">Sync Keys</button>
+      <button class="btn ghost small" onclick="togglePanel('log')" title="Activity log">Log</button>
+      <button class="btn ghost small" onclick="togglePanel('settings')" title="Polling &amp; keys">Settings</button>
     </div>
   </header>
+  <div id="toast"></div>
 
   <div class="status-bar" id="status-bar">
     <span id="tags-status">…</span>
@@ -370,8 +380,43 @@
       refreshStatus();
     }
 
-    async function pollNow() { await fetch('/api/poll', {method:'POST'}); setTimeout(refreshStatus, 2000); }
-    async function syncKeys() { await fetch('/api/extract-keys', {method:'POST'}); setTimeout(refreshStatus, 3000); }
+    let toastTimer = null;
+    function toast(msg, kind) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = (kind === 'error' ? 'error ' : '') + 'show';
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
+    }
+    async function busy(btn, label, fn) {
+      const orig = btn ? btn.textContent : null;
+      if (btn) { btn.disabled = true; btn.textContent = label; }
+      try { return await fn(); }
+      finally { if (btn) { btn.disabled = false; btn.textContent = orig; } }
+    }
+
+    async function pollNow(btn) {
+      await busy(btn, 'Refreshing…', async () => {
+        try {
+          const r = await fetch('/api/poll', {method:'POST'});
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || d.error) toast(d.error || 'Refresh failed', 'error');
+          else toast('Locations refreshed');
+        } catch (e) { toast('Network error: '+e.message, 'error'); }
+        await refreshStatus();
+      });
+    }
+    async function syncKeys(btn) {
+      await busy(btn, 'Syncing…', async () => {
+        try {
+          const r = await fetch('/api/extract-keys', {method:'POST'});
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || d.error) toast(d.error || 'Sync failed', 'error');
+          else toast(`Synced ${d.count ?? ''} key${d.count===1?'':'s'}`.trim());
+        } catch (e) { toast('Network error: '+e.message, 'error'); }
+        await refreshStatus();
+      });
+    }
 
     // ================ Account panel ================
     let pendingMethods = [], selectedMethod = 0;
@@ -501,9 +546,9 @@
 
       // Controls
       const btns = [];
-      if (!vmStateCache.vm_running) btns.push(`<button class="btn primary" onclick="vmStartSetup()">Start VM</button>`);
-      else btns.push(`<button class="btn" onclick="vmStop()">Stop VM</button>`);
-      btns.push(`<button class="btn danger" onclick="vmReinstall()">Reinstall macOS</button>`);
+      if (!vmStateCache.vm_running) btns.push(`<button class="btn primary" onclick="vmStartSetup(event)">Start VM</button>`);
+      else btns.push(`<button class="btn" onclick="vmStop(event)">Stop VM</button>`);
+      btns.push(`<button class="btn danger" onclick="vmReinstall(event)">Reinstall macOS</button>`);
       if (phase && phase.phase === 'setup_appleid') {
         btns.push(`<input type="password" id="vm-pw" placeholder="macOS password" style="width:auto;flex:1;margin:0"><button class="btn sync" onclick="vmComplete()">Complete Setup</button>`);
       }
@@ -553,12 +598,23 @@
 
     function fmtTime(s) { s=Math.max(0,s|0); const m=Math.floor(s/60), r=s%60; return m?`${m}m ${r}s`:`${r}s`; }
 
-    async function vmStartSetup() { await fetch('/api/vm/start-setup', {method:'POST'}); setTimeout(refreshStatus, 1500); }
-    async function vmStop() { await fetch('/api/vm/stop', {method:'POST'}); setTimeout(refreshStatus, 1000); }
-    async function vmReinstall() {
+    async function vmAction(url, label, btn) {
+      return busy(btn, label + '…', async () => {
+        try {
+          const r = await fetch(url, {method:'POST'});
+          const d = await r.json().catch(() => ({}));
+          if (!r.ok || d.error) { toast(d.error || (label+' failed'), 'error'); return false; }
+          toast(label + ' started');
+          await refreshStatus();
+          return true;
+        } catch (e) { toast('Network error: '+e.message, 'error'); return false; }
+      });
+    }
+    async function vmStartSetup(ev) { await vmAction('/api/vm/start-setup', 'Starting VM', ev?.target); }
+    async function vmStop(ev)       { await vmAction('/api/vm/stop', 'Stopping VM', ev?.target); }
+    async function vmReinstall(ev) {
       if (!confirm('Wipe the macOS VM and start fresh install? All VM data will be lost.')) return;
-      await fetch('/api/vm/reinstall', {method:'POST'});
-      setTimeout(refreshStatus, 1500);
+      await vmAction('/api/vm/reinstall', 'Reinstalling', ev?.target);
     }
     async function vmComplete() {
       const pw = document.getElementById('vm-pw').value;
