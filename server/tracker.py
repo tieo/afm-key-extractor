@@ -663,6 +663,24 @@ def vm_start_setup():
         _systemctl("start", "airtag-novnc")
         emit("info", "vm", f"VM started, noVNC proxy active on port {VNC_WS_PORT}")
 
+        # OpenCore's boot-entry NVRAM is wiped on each boot (snapshot=on), so
+        # OpenCore shows its picker every time. Send Enter after a short delay
+        # to accept the default entry and boot macOS without operator input.
+        def _auto_boot_opencore():
+            import threading, time as _t
+            def worker():
+                _t.sleep(6)
+                try:
+                    from wizard.driver import Driver, UnixTransport
+                    qmp = UnixTransport("/tmp/airtag-vm-qmp.sock")
+                    mon = UnixTransport("/tmp/airtag-vm-monitor.sock")
+                    Driver(qmp, mon).key("ret", post_delay=0.3)
+                    emit("info", "vm", "Sent Enter to OpenCore picker")
+                except Exception as e:
+                    emit("warning", "vm", f"OpenCore auto-boot keypress failed: {e}")
+            threading.Thread(target=worker, daemon=True).start()
+        _auto_boot_opencore()
+
         if use_golden:
             try:
                 pw_path = DATA_DIR / "vm-password"

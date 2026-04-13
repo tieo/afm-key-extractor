@@ -49,36 +49,58 @@
     .btn.small { padding: 6px 10px; font-size: 0.82em; }
     .btn:disabled { opacity: 0.5; cursor: default; }
 
-    /* Status bar with badges */
+    /* Status bar with badges — single row, same baseline */
     .status-bar {
-      display: flex; gap: 8px; padding: 6px 14px; background: #16213e;
-      font-size: 0.82em; color: #aaa; flex-wrap: wrap; align-items: center;
-      flex-shrink: 0;
+      display: flex; gap: 8px; padding: 8px 14px; background: #16213e;
+      font-size: 0.82em; color: #aaa; align-items: center;
+      flex-shrink: 0; overflow-x: auto;
     }
+    .status-bar::-webkit-scrollbar { display: none; }
+    .status-bar > * { flex-shrink: 0; }
+    #tags-status { color: #aaa; }
     .badge {
       display: inline-flex; align-items: center; gap: 6px;
-      padding: 3px 9px; border-radius: 10px; background: #0f3460;
+      padding: 4px 10px; border-radius: 12px; background: #0f3460;
       border: 1px solid #1a2f56; cursor: pointer; user-select: none;
+      height: 26px; line-height: 1; white-space: nowrap;
     }
     .badge:hover { border-color: #4cc9f0; }
     .badge .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
     .dot.green { background: #2ecc71; } .dot.red { background: #e74c3c; }
     .dot.yellow { background: #f1c40f; } .dot.gray { background: #666; }
 
-    /* Map + tags */
-    #map { flex: 1 1 auto; min-height: 45vh; width: 100%; }
-    .tags-panel {
-      padding: 10px 14px; max-height: 28vh; overflow-y: auto;
-      background: #16213e; flex-shrink: 0;
+    /* Main — keys list */
+    .main {
+      flex: 1 1 auto; padding: 12px 14px; overflow-y: auto;
+      display: flex; flex-direction: column; gap: 10px;
     }
-    .tag-card {
-      padding: 10px 12px; background: #0f3460; border-radius: 8px;
-      margin-bottom: 6px; cursor: pointer; border: 1px solid transparent;
+    .cta-banner {
+      background: linear-gradient(90deg,#4361ee,#3a0ca3);
+      padding: 12px 14px; border-radius: 10px; cursor: pointer;
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
     }
-    .tag-card.active { border-color: #4cc9f0; }
-    .tag-name { font-weight: 500; font-size: 0.95em; }
-    .tag-time { color: #888; font-size: 0.78em; }
-    .tag-coords { color: #666; font-size: 0.75em; font-family: monospace; }
+    .cta-banner .cta-text { font-size: 0.9em; line-height: 1.3; }
+    .cta-banner .cta-arrow { font-size: 1.3em; opacity: 0.8; }
+    .section-title { font-size: 0.78em; color: #888; text-transform: uppercase; letter-spacing: 0.05em; margin: 8px 0 4px; }
+    .key-card {
+      padding: 12px 14px; background: #16213e; border-radius: 10px;
+      cursor: pointer; border: 1px solid transparent; transition: border 0.1s;
+      display: flex; align-items: center; gap: 12px;
+    }
+    .key-card:hover { border-color: #4cc9f0; }
+    .key-card .key-icon {
+      width: 36px; height: 36px; border-radius: 50%; background: #0f3460;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      font-size: 1.1em;
+    }
+    .key-card .key-body { flex: 1; min-width: 0; }
+    .key-card .key-name { font-weight: 500; font-size: 0.95em; }
+    .key-card .key-meta { color: #888; font-size: 0.78em; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .key-card .key-status { font-size: 0.75em; color: #666; white-space: nowrap; }
+    .empty-state { color: #888; text-align: center; padding: 20px; font-size: 0.9em; }
+
+    /* Detail panel map */
+    #detail-map { width: 100%; height: 40vh; border-radius: 8px; background: #0a0a1a; margin-top: 8px; }
 
     /* Slide-in panels — same pattern for log / settings / vm / account */
     .panel {
@@ -181,13 +203,29 @@
   <div id="toast"></div>
 
   <div class="status-bar" id="status-bar">
-    <span id="tags-status">…</span>
     <span class="badge" id="badge-account" onclick="togglePanel('account')"><span class="dot gray"></span><span>Account</span></span>
     <span class="badge" id="badge-vm" onclick="togglePanel('vm')"><span class="dot gray"></span><span>VM</span></span>
+    <span id="tags-status">…</span>
   </div>
 
-  <div id="map"></div>
-  <div class="tags-panel" id="tags"></div>
+  <main class="main">
+    <div id="cta-banner" class="cta-banner" style="display:none" onclick="handleCta()">
+      <div class="cta-text" id="cta-text">…</div><div class="cta-arrow">›</div>
+    </div>
+    <div class="section-title">AirTag Keys</div>
+    <div id="keys-main">Loading…</div>
+  </main>
+
+  <!-- Key detail panel -->
+  <aside class="panel hidden" id="detail-panel">
+    <div class="panel-header"><h2 id="detail-title">Key</h2><button class="btn small ghost" onclick="togglePanel('detail')">Close</button></div>
+    <div class="panel-body">
+      <div class="section">
+        <div id="detail-meta" style="font-size:0.85em;color:#aaa"></div>
+        <div id="detail-map"></div>
+      </div>
+    </div>
+  </aside>
 
   <!-- Account panel -->
   <aside class="panel hidden" id="account-panel">
@@ -265,14 +303,18 @@
 
   <script src="https://unpkg.com/leaflet@1.9/dist/leaflet.js"></script>
   <script>
-    // ================ Map ================
-    const map = L.map('map').setView([51.1, 10.4], 6);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OSM', maxZoom: 19 }).addTo(map);
+    // ================ Map (lazy, in detail panel) ================
+    let detailMap = null, detailMarker = null, detailLine = null;
     const tagIcon = L.divIcon({
       html: '<div style="background:#4cc9f0;width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 6px rgba(0,0,0,.4)"></div>',
       iconSize: [14, 14], className: ''
     });
-    let markers = {}, historyLines = {}, activeTag = null;
+    function ensureDetailMap() {
+      if (detailMap) return detailMap;
+      detailMap = L.map('detail-map').setView([51.1, 10.4], 6);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OSM', maxZoom: 19 }).addTo(detailMap);
+      return detailMap;
+    }
 
     function timeAgo(ts) {
       const d = (Date.now() - new Date(ts).getTime()) / 1000;
@@ -283,7 +325,7 @@
     }
 
     // ================ Panels ================
-    const PANELS = ['log','account','vm','settings'];
+    const PANELS = ['log','account','vm','settings','detail'];
     function togglePanel(name) {
       const el = document.getElementById(name + '-panel');
       const wasHidden = el.classList.contains('hidden');
@@ -302,21 +344,24 @@
     let accountState = { configured: false, airtags: 0 };
     let vmStateCache = { enabled: false };
 
+    let keysCache = [], tagsCache = [];
+
     async function refreshStatus() {
-      const [accRes, vmRes, settingsRes, tagsRes] = await Promise.all([
+      const [accRes, vmRes, settingsRes, tagsRes, keysRes] = await Promise.all([
         fetch('/api/account/status'), fetch('/api/vm/status'),
-        fetch('/api/settings'), fetch('/api/airtags'),
+        fetch('/api/settings'), fetch('/api/airtags'), fetch('/api/keys'),
       ]);
       accountState = await accRes.json();
       vmStateCache = await vmRes.json();
       const settings = await settingsRes.json();
-      const tags = await tagsRes.json();
+      tagsCache = await tagsRes.json();
+      keysCache = await keysRes.json();
 
       const pollState = settings.state || {};
       const mode = pollState.moving ? 'active' : 'idle';
       const interval = Math.round((pollState.current_interval || settings.idle_interval) / 60);
       document.getElementById('tags-status').innerHTML =
-        `${tags.length} tag${tags.length!==1?'s':''} · ${mode} · every ${interval}min`;
+        `${keysCache.length} key${keysCache.length!==1?'s':''} · ${mode} · every ${interval}min`;
 
       const accBadge = document.getElementById('badge-account');
       accBadge.firstElementChild.className = 'dot ' + (accountState.configured ? 'green' : 'red');
@@ -336,48 +381,79 @@
         vmBadge.lastElementChild.textContent = label;
       }
 
-      renderTags(tags);
-      // If any panel is open, refresh its live content
+      renderKeysMain();
+      renderCta();
       if (!document.getElementById('vm-panel').classList.contains('hidden')) renderVmStatus();
       if (!document.getElementById('account-panel').classList.contains('hidden')) renderAccount();
     }
 
-    function renderTags(tags) {
-      Object.values(markers).forEach(m => map.removeLayer(m));
-      markers = {};
-      const panel = document.getElementById('tags');
-      panel.innerHTML = '';
-      tags.forEach(tag => {
-        const m = L.marker([tag.latitude, tag.longitude], { icon: tagIcon })
-          .addTo(map)
-          .bindPopup(`<b>${tag.airtag_name || tag.airtag_id}</b><br>${timeAgo(tag.timestamp)}`);
-        markers[tag.airtag_id] = m;
-        const card = document.createElement('div');
-        card.className = 'tag-card' + (activeTag === tag.airtag_id ? ' active' : '');
-        card.innerHTML = `
-          <div class="tag-name">${tag.airtag_name || tag.airtag_id}</div>
-          <div class="tag-time">${timeAgo(tag.timestamp)}</div>
-          <div class="tag-coords">${tag.latitude.toFixed(5)}, ${tag.longitude.toFixed(5)}</div>`;
-        card.onclick = () => showHistory(tag.airtag_id);
-        panel.appendChild(card);
-      });
-      if (tags.length && !activeTag) {
-        map.fitBounds(tags.map(t => [t.latitude, t.longitude]), { padding: [30,30] });
+    function renderCta() {
+      const banner = document.getElementById('cta-banner');
+      const text = document.getElementById('cta-text');
+      let msg = null, action = null;
+      if (!accountState.configured) {
+        msg = 'Sign in to Apple ID to start tracking'; action = () => togglePanel('account');
+      } else if (vmStateCache.enabled && !vmStateCache.setup_complete) {
+        msg = 'Finish macOS VM setup to extract AirTag keys'; action = () => togglePanel('vm');
+      } else if (keysCache.length === 0) {
+        msg = vmStateCache.enabled ? 'Sync keys from the VM keychain' : 'Upload AirTag .json keys';
+        action = vmStateCache.enabled ? () => syncKeys() : () => togglePanel('settings');
       }
+      if (msg) { text.textContent = msg; banner.style.display = ''; banner._action = action; }
+      else banner.style.display = 'none';
+    }
+    function handleCta() { const b = document.getElementById('cta-banner'); if (b._action) b._action(); }
+
+    function renderKeysMain() {
+      const el = document.getElementById('keys-main');
+      if (!keysCache.length) {
+        el.innerHTML = `<div class="empty-state">No AirTag keys yet.<br>Upload a .json in Settings, or Sync from the VM.</div>`;
+        return;
+      }
+      const tagById = {};
+      tagsCache.forEach(t => tagById[t.airtag_id] = t);
+      el.innerHTML = keysCache.map(k => {
+        const id = k.file ? k.file.replace('.json','') : k.name;
+        const t = tagById[id] || tagById[k.name];
+        const locLabel = t ? `${timeAgo(t.timestamp)} · ${t.latitude.toFixed(3)}, ${t.longitude.toFixed(3)}` : 'no recent location';
+        const dot = t ? 'green' : 'gray';
+        return `<div class="key-card" onclick='openKeyDetail(${JSON.stringify(id)})'>
+          <div class="key-icon">📍</div>
+          <div class="key-body">
+            <div class="key-name">${k.name}</div>
+            <div class="key-meta">${locLabel}</div>
+          </div>
+          <div class="key-status"><span class="dot ${dot}"></span></div>
+        </div>`;
+      }).join('');
     }
 
-    async function showHistory(tagId) {
-      activeTag = tagId;
-      Object.values(historyLines).forEach(l => map.removeLayer(l));
-      historyLines = {};
-      const res = await fetch(`/api/airtags/${tagId}/history?limit=500`);
-      const points = await res.json();
-      if (points.length) {
-        const latlngs = points.map(p => [p.latitude, p.longitude]).reverse();
-        historyLines[tagId] = L.polyline(latlngs, { color: '#4cc9f0', weight: 3, opacity: 0.7 }).addTo(map);
-        map.fitBounds(historyLines[tagId].getBounds(), { padding: [30,30] });
-      }
-      refreshStatus();
+    async function openKeyDetail(id) {
+      const key = keysCache.find(k => (k.file||'').replace('.json','') === id || k.name === id);
+      if (!key) return;
+      document.getElementById('detail-title').textContent = key.name;
+      PANELS.forEach(n => document.getElementById(n+'-panel')?.classList.add('hidden'));
+      document.getElementById('detail-panel').classList.remove('hidden');
+      const meta = document.getElementById('detail-meta');
+      const t = tagsCache.find(x => x.airtag_id === id);
+      meta.innerHTML = t
+        ? `Last seen <b>${timeAgo(t.timestamp)}</b><br>${t.latitude.toFixed(5)}, ${t.longitude.toFixed(5)}`
+        : 'No recent location reports.';
+      setTimeout(() => {
+        const m = ensureDetailMap(); m.invalidateSize();
+        if (detailMarker) { m.removeLayer(detailMarker); detailMarker = null; }
+        if (detailLine) { m.removeLayer(detailLine); detailLine = null; }
+        if (t) {
+          detailMarker = L.marker([t.latitude, t.longitude], { icon: tagIcon }).addTo(m);
+          m.setView([t.latitude, t.longitude], 14);
+          fetch(`/api/airtags/${id}/history?limit=500`).then(r => r.json()).then(pts => {
+            if (!pts.length) return;
+            const latlngs = pts.map(p => [p.latitude, p.longitude]).reverse();
+            detailLine = L.polyline(latlngs, { color: '#4cc9f0', weight: 3, opacity: 0.7 }).addTo(m);
+            m.fitBounds(detailLine.getBounds(), { padding: [30,30] });
+          });
+        }
+      }, 50);
     }
 
     let toastTimer = null;
