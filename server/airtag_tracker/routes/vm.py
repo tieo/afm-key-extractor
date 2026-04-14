@@ -5,6 +5,7 @@ from __future__ import annotations
 from flask import Blueprint, jsonify
 
 from .. import vm as vmmgr
+from .. import vm_apple_signin
 
 bp = Blueprint("vm", __name__)
 
@@ -44,3 +45,26 @@ def bake_golden():
 @bp.route("/api/vm/reset-to-golden", methods=["POST"])
 def reset_to_golden():
     return _action(vmmgr.reset_to_golden)
+
+
+@bp.route("/api/vm/apple-signin/start", methods=["POST"])
+def apple_signin_start():
+    try:
+        return jsonify(vm_apple_signin.start())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@bp.route("/api/vm/apple-signin/status")
+def apple_signin_status():
+    return jsonify(vm_apple_signin.status())
+
+
+@bp.route("/api/vm/apple-signin/2fa", methods=["POST"])
+def apple_signin_2fa():
+    from flask import request
+    code = (request.get_json(silent=True) or {}).get("code", "")
+    try:
+        return jsonify(vm_apple_signin.submit_2fa(code))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400

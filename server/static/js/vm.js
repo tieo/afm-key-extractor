@@ -1,6 +1,6 @@
 // macOS VM panel — VNC iframe + controls.
 
-import { postJSON, toast, busy } from "./api.js";
+import { postJSON, getJSON, toast, busy } from "./api.js";
 import { state, refreshStatus } from "./state.js";
 
 const VNC_URL = `//${location.hostname.replace("airtag", "airtag-vnc")}/vnc.html?autoconnect=true&resize=scale&view_only=true`;
@@ -45,6 +45,7 @@ export function renderVmStatus() {
     }));
   } else {
     controls.append(button("Stop VM", "", (ev) => vmAction("/api/vm/stop", "Stopping VM", ev.currentTarget)));
+    controls.append(button("Sign Apple ID into VM", "primary", (ev) => startAppleSignin(ev.currentTarget)));
   }
   controls.append(button("Bake golden image", "danger", (ev) => {
     if (!confirm("Bake the current VM disk as the golden image? The VM must be fully set up.")) return;
@@ -96,6 +97,44 @@ function hideVmOverlay() {
   document.getElementById("vnc-overlay").style.display = "none";
   clearInterval(vmOverlayTimer);
   vmOverlayTimer = null;
+}
+
+let signinPoll = null;
+
+async function startAppleSignin(btn) {
+  return busy(btn, "Starting…", async () => {
+    const { ok, data } = await postJSON("/api/vm/apple-signin/start");
+    if (!ok || data.error) { toast(data.error || "Failed to start", "error"); return false; }
+    toast("Apple ID sign-in started");
+    pollSignin();
+    return true;
+  });
+}
+
+async function pollSignin() {
+  if (signinPoll) clearInterval(signinPoll);
+  const tick = async () => {
+    const { ok, data } = await getJSON("/api/vm/apple-signin/status");
+    if (!ok) return;
+    const summary = document.getElementById("vm-status-summary");
+    if (summary) summary.innerHTML = `<span class="dot yellow"></span> Apple sign-in: ${data.state}${data.error ? " — " + data.error : ""}`;
+    if (data.state === "awaiting_2fa") { clearInterval(signinPoll); signinPoll = null; prompt2fa(); }
+    else if (data.state === "signed_in" || data.state === "failed" || data.state === "idle") {
+      clearInterval(signinPoll); signinPoll = null; await refreshStatus();
+    }
+  };
+  await tick();
+  signinPoll = setInterval(tick, 3000);
+}
+
+function prompt2fa() {
+  const code = window.prompt("Enter the 2FA code Apple just sent:");
+  if (!code) return;
+  postJSON("/api/vm/apple-signin/2fa", { code }).then(({ ok, data }) => {
+    if (!ok || data.error) { toast(data.error || "2FA failed", "error"); return; }
+    toast("2FA submitted");
+    pollSignin();
+  });
 }
 
 export function toggleVncInteract() {

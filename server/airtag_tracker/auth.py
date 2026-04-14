@@ -7,7 +7,7 @@ import threading
 from findmy import AppleAccount, LocalAnisetteProvider
 from findmy.reports import LoginState, SyncSmsSecondFactor
 
-from . import account_storage
+from . import account_storage, apple_creds
 from .config import ANISETTE_PATH
 from .events import emit
 
@@ -38,6 +38,10 @@ def begin(email: str, password: str) -> dict:
     ani = LocalAnisetteProvider(libs_path=str(ANISETTE_PATH))
     acc = AppleAccount(ani)
     state = acc.login(email, password)
+
+    # Stash creds in RAM for the VM sign-in flow; cleared once the VM
+    # sign-in succeeds or the user aborts.
+    apple_creds.set_(email, password)
 
     with _lock:
         if state == LoginState.REQUIRE_2FA:

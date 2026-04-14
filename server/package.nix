@@ -1,4 +1,4 @@
-{ python3Packages, python3, lib, fetchPypi, tesseract }:
+{ python3Packages, python3, lib, fetchPypi, tesseract, sshpass, openssh }:
 
 let
   anisette = python3Packages.buildPythonPackage rec {
@@ -61,7 +61,7 @@ in python3Packages.buildPythonApplication {
     if [ -d wizard ]; then cp -r wizard $out/lib/airtag-tracker/; fi
     cat > $out/bin/airtag-tracker <<WRAPPER
     #!/bin/sh
-    export PATH=${tesseract}/bin:\$PATH
+    export PATH=${tesseract}/bin:${sshpass}/bin:${openssh}/bin:\$PATH
     exec ${pythonEnv}/bin/python3 $out/lib/airtag-tracker/tracker.py "\$@"
     WRAPPER
     chmod +x $out/bin/airtag-tracker
