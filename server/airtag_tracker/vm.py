@@ -239,7 +239,7 @@ def bake_golden() -> dict:
 def trigger_key_extraction() -> dict:
     emit("info", "vm", "Key extraction triggered")
     result = sp.run(
-        ["systemctl", "start", "--no-block", "airtag-extract-keys"],
+        [systemd.SUDO, systemd.SYSTEMCTL, "start", "--no-block", "airtag-extract-keys"],
         capture_output=True, text=True, timeout=5,
     )
     if result.returncode != 0:
