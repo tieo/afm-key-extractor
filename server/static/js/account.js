@@ -5,19 +5,22 @@ import { state, refreshStatus } from "./state.js";
 
 let pendingMethods = [];
 let selectedMethod = 0;
+let awaiting2fa = false;
 
 export function renderAccount(error) {
   const body = document.getElementById("account-body");
   if (state.account.configured) {
+    awaiting2fa = false;
     body.innerHTML = `
       <div class="section">
         <h3>Connected</h3>
         <p><span class="dot green"></span> Signed in. Tracking ${state.account.airtags} key${state.account.airtags !== 1 ? "s" : ""}.</p>
         <button class="btn small" data-action="relogin">Re-login</button>
       </div>`;
-    body.querySelector('[data-action="relogin"]').addEventListener("click", () => showLoginForm());
+    body.querySelector('[data-action="relogin"]').addEventListener("click", () => { awaiting2fa = false; showLoginForm(); });
     return;
   }
+  if (awaiting2fa) return;
   showLoginForm(error);
 }
 
@@ -43,9 +46,9 @@ async function doLogin() {
     `<div class="section"><h3>Signing in…</h3><p>Authenticating with Apple.</p></div>`;
   try {
     const { data } = await postJSON("/api/account/login", { email, password });
-    if (data.status === "2fa_required") { pendingMethods = data.methods; selectedMethod = 0; show2faForm(); }
-    else if (data.status === "logged_in") { await refreshStatus(); renderAccount(); }
-    else showLoginForm(data.error || "Login failed");
+    if (data.status === "2fa_required") { pendingMethods = data.methods; selectedMethod = 0; awaiting2fa = true; show2faForm(); }
+    else if (data.status === "logged_in") { awaiting2fa = false; await refreshStatus(); renderAccount(); }
+    else { awaiting2fa = false; showLoginForm(data.error || "Login failed"); }
   } catch (e) { showLoginForm("Network error: " + e.message); }
 }
 
@@ -83,7 +86,7 @@ async function submit2fa() {
   if (!code) return;
   try {
     const { data } = await postJSON("/api/account/2fa", { code, method: selectedMethod });
-    if (data.status === "logged_in") { await refreshStatus(); renderAccount(); }
+    if (data.status === "logged_in") { awaiting2fa = false; await refreshStatus(); renderAccount(); }
     else show2faForm(data.error || "2FA failed");
   } catch (e) { show2faForm("Network error: " + e.message); }
 }
