@@ -123,6 +123,11 @@ def type_text(text: str, **kw) -> None:
         c.type_text(text, **kw)
 
 
+def send_chord(keys: list[str], **kw) -> None:
+    with qmp() as c:
+        c.send_chord(keys, **kw)
+
+
 def screendump(output_path: str, monitor_path: str = MONITOR_SOCK) -> None:
     """Ask the HMP monitor to dump the framebuffer to `output_path` (PPM)."""
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

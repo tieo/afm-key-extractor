@@ -96,7 +96,7 @@ def _scp_from(remote: str, local: Path, timeout: int = 60) -> sp.CompletedProces
     )
 
 
-def _wait_ssh(deadline_s: int = 180) -> None:
+def _wait_ssh(deadline_s: int = 300) -> None:
     emit("info", "extract", f"Waiting for VM SSH (up to {deadline_s}s)")
     t0 = time.time()
     while time.time() - t0 < deadline_s:

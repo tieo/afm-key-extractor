@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from . import qmp, vm_password
+from .config import VM_SSH_ENABLED_MARKER
 from .events import emit
 
 
@@ -61,6 +62,40 @@ def _login_screen_visible() -> bool:
         return any(kw in text for kw in MATCH_KEYWORDS)
 
 
+def _enable_ssh(password: str) -> None:
+    """One-time: open Terminal via Spotlight, run `sudo systemsetup
+    -setremotelogin on`, answer the password prompt. Marker file makes
+    this idempotent across reboots."""
+    if VM_SSH_ENABLED_MARKER.exists():
+        return
+    emit("info", "vm", "Enabling Remote Login in macOS (one-time)")
+    try:
+        time.sleep(25)  # let the desktop settle after login
+        # Spotlight → Terminal.
+        qmp.send_chord(["meta_l", "spc"])
+        time.sleep(1.2)
+        qmp.type_text("Terminal")
+        time.sleep(0.8)
+        qmp.send_keys(["ret"])
+        time.sleep(3.5)
+        # Run the command. A trailing newline is sent via Return so the
+        # shell line-edits cleanly even if auto-complete chimes in.
+        qmp.type_text("sudo systemsetup -setremotelogin on")
+        qmp.send_keys(["ret"])
+        time.sleep(1.5)
+        # sudo now prompts "Password:" — type it.
+        qmp.type_text(password)
+        qmp.send_keys(["ret"])
+        time.sleep(3.0)
+        # Close the Terminal window.
+        qmp.send_chord(["meta_l", "q"])
+        VM_SSH_ENABLED_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        VM_SSH_ENABLED_MARKER.write_text("1")
+        emit("info", "vm", "Remote Login enable sequence sent")
+    except Exception as e:
+        emit("warning", "vm", f"Enable-SSH sequence failed: {e}")
+
+
 def _worker() -> None:
     password = vm_password.get()
     if not password:
@@ -78,6 +113,8 @@ def _worker() -> None:
                 emit("info", "vm", "Auto-login keystrokes sent")
             except Exception as e:
                 emit("error", "vm", f"Auto-login type failed: {e}")
+                return
+            _enable_ssh(password)
             return
         time.sleep(POLL_INTERVAL_S)
     emit("warning", "vm", f"Auto-login gave up after {MAX_WAIT_S:.0f}s (login window never detected)")
