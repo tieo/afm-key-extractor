@@ -1,4 +1,4 @@
-{ python3Packages, python3, lib, fetchPypi }:
+{ python3Packages, python3, lib, fetchPypi, tesseract }:
 
 let
   anisette = python3Packages.buildPythonPackage rec {
@@ -39,7 +39,7 @@ let
     pythonImportsCheck = [ "findmy" ];
   };
 
-  pythonEnv = python3.withPackages (ps: [ ps.flask findmy ]);
+  pythonEnv = python3.withPackages (ps: [ ps.flask ps.pillow ps.pytesseract findmy ]);
 
 in python3Packages.buildPythonApplication {
   pname = "airtag-tracker";
@@ -61,6 +61,7 @@ in python3Packages.buildPythonApplication {
     if [ -d wizard ]; then cp -r wizard $out/lib/airtag-tracker/; fi
     cat > $out/bin/airtag-tracker <<WRAPPER
     #!/bin/sh
+    export PATH=${tesseract}/bin:\$PATH
     exec ${pythonEnv}/bin/python3 $out/lib/airtag-tracker/tracker.py "\$@"
     WRAPPER
     chmod +x $out/bin/airtag-tracker

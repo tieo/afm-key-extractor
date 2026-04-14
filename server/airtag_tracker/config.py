@@ -21,7 +21,7 @@ STATIC_DIR = Path(__file__).parent.parent / "static"
 VM_ENABLED = os.environ.get("AIRTAG_VM_ENABLED", "false") == "true"
 VM_DIR = Path(os.environ.get("AIRTAG_VM_DIR", "/var/lib/airtag-tracker/osx-kvm"))
 VNC_WS_PORT = int(os.environ.get("AIRTAG_VNC_WS_PORT", "6901"))
-VM_PASSWORD = os.environ.get("AIRTAG_VM_PASSWORD", "airtag")
+VM_USERNAME = os.environ.get("AIRTAG_VM_USERNAME", "airtag")
 
 QMP_SOCK = "/tmp/airtag-vm-qmp.sock"
 MONITOR_SOCK = "/tmp/airtag-vm-monitor.sock"

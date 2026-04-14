@@ -13,14 +13,13 @@ import threading
 import time
 from pathlib import Path
 
-from . import qmp, systemd
+from . import login_autotyper, qmp, systemd, vm_password
 from .config import (
     DATA_DIR,
     MONITOR_SOCK,
     QMP_SOCK,
     VM_DIR,
     VM_ENABLED,
-    VM_PASSWORD,
     VM_PASSWORD_PATH,
     VM_PID_FILE,
     VNC_WS_PORT,
@@ -117,14 +116,6 @@ def _restore_golden_if_available() -> bool:
     return True
 
 
-def _write_vm_password() -> None:
-    try:
-        VM_PASSWORD_PATH.write_text(VM_PASSWORD)
-        VM_PASSWORD_PATH.chmod(0o600)
-    except Exception as e:
-        emit("warning", "vm", f"Failed to write vm-password: {e}")
-
-
 def _auto_boot_opencore() -> None:
     """Defeat the OpenCore picker.
 
@@ -167,8 +158,11 @@ def start() -> dict:
         raise VmError(str(e))
 
     _auto_boot_opencore()
-    if use_golden:
-        _write_vm_password()
+    # Only attempt login-typing if we have a stored password (i.e. the
+    # VM has been through Setup Assistant at least once). Fresh installs
+    # hit the wizard path instead.
+    if vm_password.get():
+        login_autotyper.start()
     return {"status": "started", "vnc_ws_port": VNC_WS_PORT}
 
 

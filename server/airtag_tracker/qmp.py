@@ -10,6 +10,32 @@ from contextlib import contextmanager
 from .config import MONITOR_SOCK, QMP_SOCK
 
 
+_UNSHIFTED = {
+    " ": "spc", "-": "minus", "=": "equal", "/": "slash", ".": "dot",
+    ",": "comma", ";": "semicolon", "'": "apostrophe", "[": "bracket_left",
+    "]": "bracket_right", "\\": "backslash", "`": "grave_accent",
+}
+_SHIFTED = {
+    ":": "semicolon", '"': "apostrophe", "_": "minus", "?": "slash",
+    "|": "backslash", "+": "equal", "<": "comma", ">": "dot",
+    "{": "bracket_left", "}": "bracket_right", "~": "grave_accent",
+    "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6",
+    "&": "7", "*": "8", "(": "9", ")": "0",
+}
+
+
+def _ascii_to_chord(ch: str) -> list[str]:
+    if ch.isupper():
+        return ["shift", ch.lower()]
+    if ch.isalnum():
+        return [ch]
+    if ch in _UNSHIFTED:
+        return [_UNSHIFTED[ch]]
+    if ch in _SHIFTED:
+        return ["shift", _SHIFTED[ch]]
+    raise ValueError(f"unmapped character for QMP send-key: {ch!r}")
+
+
 class QmpError(Exception):
     pass
 
@@ -54,6 +80,22 @@ class QmpClient:
             self._recv_json()
             time.sleep(gap_s)
 
+    def send_chord(self, keys: list[str], hold_ms: int = 120) -> None:
+        self._send({
+            "execute": "send-key",
+            "arguments": {
+                "keys": [{"type": "qcode", "data": k} for k in keys],
+                "hold-time": hold_ms,
+            },
+        })
+        self._recv_json()
+
+    def type_text(self, text: str, gap_s: float = 0.04) -> None:
+        for ch in text:
+            chord = _ascii_to_chord(ch)
+            self.send_chord(chord)
+            time.sleep(gap_s)
+
     def close(self) -> None:
         try:
             self._sock.close()
@@ -74,6 +116,11 @@ def send_keys(keys: list[str], **kw) -> None:
     """One-shot convenience wrapper."""
     with qmp() as c:
         c.send_keys(keys, **kw)
+
+
+def type_text(text: str, **kw) -> None:
+    with qmp() as c:
+        c.type_text(text, **kw)
 
 
 def screendump(output_path: str, monitor_path: str = MONITOR_SOCK) -> None:
