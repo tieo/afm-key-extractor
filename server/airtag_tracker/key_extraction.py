@@ -10,12 +10,15 @@ started it) stops the VM. All of it over the already-forwarded port
 
 from __future__ import annotations
 
+import plistlib
 import subprocess as sp
+import tarfile
 import tempfile
 import threading
 import time
-from importlib.resources import files
 from pathlib import Path
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from . import plist_conversion, qmp, vm, vm_password
 from .config import DATA_DIR, VM_SSH_ENABLED_MARKER
@@ -96,32 +99,53 @@ def _scp_from(remote: str, local: Path, timeout: int = 60) -> sp.CompletedProces
     )
 
 
+def _decrypt(record_path: Path, key: bytes) -> dict:
+    with record_path.open("rb") as f:
+        enc = plistlib.load(f)
+    if isinstance(enc, list) and len(enc) >= 3:
+        nonce, tag, ct = enc[0], enc[1], enc[2]
+    else:
+        nonce = enc.get("Nonce") or enc.get("nonce")
+        tag = enc.get("Tag") or enc.get("tag")
+        ct = enc.get("Ciphertext") or enc.get("ciphertext")
+    pt = AESGCM(key).decrypt(nonce, ct + tag, None)
+    return plistlib.loads(pt)
+
+
 def _ssh_up(timeout: int = 8) -> bool:
     r = _ssh("echo ready", timeout=timeout)
     return r.returncode == 0 and "ready" in r.stdout
 
 
 def _enable_remote_login(password: str) -> None:
-    """Drive Spotlight → Terminal → `sudo launchctl load -w
-    /System/Library/LaunchDaemons/ssh.plist` via QMP keystrokes.
-    launchctl works without Full Disk Access (which modern macOS requires
-    for `systemsetup -setremotelogin on`)."""
+    """Drive Spotlight → Terminal → pipe password to `sudo -S launchctl
+    load` via QMP keystrokes. Uses `sudo -S` (password via stdin) because
+    typed input to sudo's tty prompt gets mangled by QMP send-key timing,
+    but piping through `echo` works reliably. `launchctl load` avoids the
+    Full Disk Access requirement that `systemsetup -setremotelogin` has."""
     emit("info", "extract", "SSH not up — enabling Remote Login via keystrokes")
-    qmp.send_keys(["esc"])  # dismiss anything that might be open
-    time.sleep(0.5)
-    qmp.send_chord(["meta_l", "spc"])
-    time.sleep(1.5)
-    qmp.type_text("Terminal")
-    time.sleep(1.2)
-    qmp.send_keys(["ret"])
-    time.sleep(6.0)  # Terminal launch can be slow on first run
-    qmp.type_text("sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist")
-    qmp.send_keys(["ret"])
-    time.sleep(2.5)
-    qmp.type_text(password)
-    qmp.send_keys(["ret"])
-    time.sleep(4.0)
-    qmp.send_chord(["meta_l", "q"])
+    # Dismiss anything and break out of any stuck shell continuations.
+    with qmp.qmp() as c:
+        c.send_chord(["ctrl_l", "c"]); time.sleep(0.4)
+        c.send_chord(["ctrl_l", "c"]); time.sleep(0.4)
+        c.send_keys(["esc"]); time.sleep(0.5)
+        c.send_chord(["meta_l", "spc"]); time.sleep(1.8)
+        c.type_text("Terminal", gap_s=0.12); time.sleep(1.0)
+        c.send_keys(["ret"]); time.sleep(7.0)  # Terminal first-launch is slow
+        # Clear in case zsh got stuck in continuation mode earlier.
+        c.send_chord(["ctrl_l", "c"]); time.sleep(0.3)
+        c.type_text("clear", gap_s=0.12); c.send_keys(["ret"]); time.sleep(0.4)
+        cmd = (
+            f"echo {password} | sudo -S launchctl load -w "
+            f"/System/Library/LaunchDaemons/ssh.plist 2>&1"
+        )
+        c.type_text(cmd, gap_s=0.12); c.send_keys(["ret"]); time.sleep(4.0)
+        kick = (
+            f"echo {password} | sudo -S launchctl kickstart -k "
+            f"system/com.openssh.sshd 2>&1"
+        )
+        c.type_text(kick, gap_s=0.12); c.send_keys(["ret"]); time.sleep(3.0)
+        c.send_chord(["meta_l", "q"])
     emit("info", "extract", "Remote Login keystroke sequence sent")
 
 
@@ -165,49 +189,70 @@ def _run() -> None:
         if not pw:
             raise RuntimeError("VM password not available")
 
-        # Upload the decryptor into the VM.
-        decryptor = files("airtag_tracker.scripts").joinpath("airtag_decryptor.py")
-        with tempfile.TemporaryDirectory() as td:
-            local = Path(td) / "airtag_decryptor.py"
-            local.write_bytes(decryptor.read_bytes())
-            r = _scp_to(local, "/tmp/airtag_decryptor.py")
-            if r.returncode != 0:
-                raise RuntimeError(f"scp decryptor failed: {r.stderr.strip()}")
-
-        emit("info", "extract", "Running decryptor inside VM")
-        # Unlock the keychain then dump plists. security + python3 are
-        # both preinstalled on macOS.
-        pw_escaped = pw.replace("'", "'\\''")
+        emit("info", "extract", "Extracting BeaconStore key + records from VM")
+        # All shell — macOS Command Line Tools (python3) aren't installed
+        # and requiring CLT would turn this into an interactive multi-GB
+        # download. The AES-GCM decryption happens server-side.
+        pw_esc = pw.replace("'", "'\\''")
         cmd = (
             f"set -e; "
-            f"security unlock-keychain -p '{pw_escaped}' "
+            f"security unlock-keychain -p '{pw_esc}' "
             f"~/Library/Keychains/login.keychain-db; "
-            f"rm -rf /tmp/airtag-export; "
-            f"python3 /tmp/airtag_decryptor.py --rename-legacy "
-            f"--path=/tmp/airtag-export"
+            f"security find-generic-password -l BeaconStore -w "
+            f"> /tmp/beacon-key.hex; "
+            f"cd ~/Library/com.apple.icloud.searchpartyd && "
+            f"tar czf /tmp/airtag-records.tar.gz "
+            f"OwnedBeacons BeaconNamingRecord 2>/dev/null || "
+            f"tar czf /tmp/airtag-records.tar.gz OwnedBeacons"
         )
-        r = _ssh(cmd, timeout=120)
+        r = _ssh(cmd, timeout=60)
         if r.returncode != 0:
             raise RuntimeError(
-                f"decryptor failed (rc={r.returncode}): "
+                f"VM extract failed (rc={r.returncode}): "
                 f"{(r.stderr or r.stdout).strip()[:500]}"
             )
-        if r.stdout.strip():
-            emit("info", "extract", r.stdout.strip()[:500])
 
-        emit("info", "extract", "Copying plists back")
+        emit("info", "extract", "Copying records to server")
         with tempfile.TemporaryDirectory() as td:
             local = Path(td)
-            r = _scp_from("/tmp/airtag-export/OwnedBeacons", local)
+            r = _scp_from("/tmp/beacon-key.hex", local / "key.hex")
             if r.returncode != 0:
-                raise RuntimeError(f"scp plists failed: {r.stderr.strip()}")
-            plist_dir = local / "OwnedBeacons"
-            if not plist_dir.exists() or not any(plist_dir.glob("*.plist")):
-                emit("warning", "extract", "No plists came back — no AirTags paired?")
+                raise RuntimeError(f"scp key failed: {r.stderr.strip()}")
+            r = _scp_from("/tmp/airtag-records.tar.gz", local / "records.tar.gz")
+            if r.returncode != 0:
+                raise RuntimeError(f"scp records failed: {r.stderr.strip()}")
+
+            key = bytes.fromhex((local / "key.hex").read_text().strip())
+            with tarfile.open(local / "records.tar.gz") as tf:
+                tf.extractall(local)
+            owned = local / "OwnedBeacons"
+            if not owned.exists() or not any(owned.glob("*.record")):
+                emit("warning", "extract", "No beacon records — no AirTags paired?")
                 return
+
+            plist_dir = local / "_decrypted" / "OwnedBeacons"
+            plist_dir.mkdir(parents=True, exist_ok=True)
+            for rec in owned.glob("*.record"):
+                try:
+                    (plist_dir / f"{rec.stem}.plist").write_bytes(
+                        plistlib.dumps(_decrypt(rec, key))
+                    )
+                except Exception as e:
+                    emit("warning", "extract", f"decrypt {rec.stem}: {e}")
+
+            naming_dir = local / "_decrypted" / "BeaconNamingRecord"
+            named = local / "BeaconNamingRecord"
+            if named.exists():
+                naming_dir.mkdir(parents=True, exist_ok=True)
+                for rec in named.glob("*.record"):
+                    try:
+                        (naming_dir / f"{rec.stem}.plist").write_bytes(
+                            plistlib.dumps(_decrypt(rec, key))
+                        )
+                    except Exception:
+                        pass
+
             KEYS_DIR.mkdir(parents=True, exist_ok=True)
-            naming_dir = local / "BeaconNamingRecord"
-            _scp_from("/tmp/airtag-export/BeaconNamingRecord", local)  # best-effort
             count = plist_conversion.convert_dir(
                 plist_dir, KEYS_DIR,
                 naming_dir=naming_dir if naming_dir.exists() else None,
