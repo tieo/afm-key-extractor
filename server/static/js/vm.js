@@ -39,6 +39,10 @@ export function renderVmStatus() {
   if (!state.vm.vm_running) {
     controls.append(button("Start VM (auto-boot)", "primary", (ev) => vmStartSetup(ev.currentTarget)));
     controls.append(button("Start (manual)", "", (ev) => vmAction("/api/vm/start-manual", "Starting VM", ev.currentTarget)));
+    controls.append(button("Reset to golden", "danger", (ev) => {
+      if (!confirm("Overwrite the VM disk with the golden snapshot? All session state since the last bake will be lost.")) return;
+      vmAction("/api/vm/reset-to-golden", "Resetting to golden", ev.currentTarget);
+    }));
   } else {
     controls.append(button("Stop VM", "", (ev) => vmAction("/api/vm/stop", "Stopping VM", ev.currentTarget)));
   }

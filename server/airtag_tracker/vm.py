@@ -138,16 +138,25 @@ def _auto_boot_opencore() -> None:
 
 
 def start() -> dict:
-    """Boot the VM with OpenCore auto-pick. Restores golden image if present."""
+    """Boot the existing VM disk with OpenCore auto-pick.
+
+    Never wipes state — ``mac_hdd_ng.img`` is booted as-is so session
+    state (logins, preferences, extracted keys) survives across reboots.
+    If the main disk is missing but a golden image exists, seed from
+    golden as a one-time bootstrap. To deliberately reset to golden,
+    call ``reset_to_golden()``.
+    """
     if not VM_ENABLED:
         raise VmError("VM not enabled")
-    if not MAC_HDD.exists():
-        raise VmError("VM not provisioned yet. Waiting for auto-provision.")
     if is_running():
         return {"status": "already_running", "vnc_ws_port": VNC_WS_PORT}
 
-    use_golden = _restore_golden_if_available()
-    emit("info", "vm", f"Starting VM (golden: {use_golden})")
+    seeded = False
+    if not MAC_HDD.exists():
+        if not _restore_golden_if_available():
+            raise VmError("VM not provisioned yet. Waiting for auto-provision.")
+        seeded = True
+    emit("info", "vm", f"Starting VM (seeded from golden: {seeded})")
 
     try:
         _launch_qemu()
@@ -191,6 +200,19 @@ def stop() -> dict:
         VM_PID_FILE.unlink(missing_ok=True)
     systemd.ctl("stop", "airtag-novnc")
     return {"status": "stopped"}
+
+
+def reset_to_golden() -> dict:
+    """Overwrite ``mac_hdd_ng.img`` with the golden snapshot (destructive)."""
+    if not VM_ENABLED:
+        raise VmError("VM not enabled")
+    if is_running():
+        raise VmError("VM still running — stop it first")
+    if not GOLDEN_HDD.exists():
+        raise VmError("No golden image to restore from — bake one first")
+    emit("info", "vm", f"Resetting {MAC_HDD.name} from golden snapshot")
+    shutil.copy2(GOLDEN_HDD, MAC_HDD)
+    return {"status": "reset", "path": str(MAC_HDD)}
 
 
 def bake_golden() -> dict:

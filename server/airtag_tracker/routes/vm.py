@@ -39,3 +39,8 @@ def stop():
 @bp.route("/api/vm/bake-golden", methods=["POST"])
 def bake_golden():
     return _action(vmmgr.bake_golden)
+
+
+@bp.route("/api/vm/reset-to-golden", methods=["POST"])
+def reset_to_golden():
+    return _action(vmmgr.reset_to_golden)
