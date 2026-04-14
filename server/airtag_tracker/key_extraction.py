@@ -17,8 +17,8 @@ import time
 from importlib.resources import files
 from pathlib import Path
 
-from . import plist_conversion, vm, vm_password
-from .config import DATA_DIR
+from . import plist_conversion, qmp, vm, vm_password
+from .config import DATA_DIR, VM_SSH_ENABLED_MARKER
 from .events import emit
 
 VM_USER = "airtag"
@@ -96,14 +96,53 @@ def _scp_from(remote: str, local: Path, timeout: int = 60) -> sp.CompletedProces
     )
 
 
+def _ssh_up(timeout: int = 8) -> bool:
+    r = _ssh("echo ready", timeout=timeout)
+    return r.returncode == 0 and "ready" in r.stdout
+
+
+def _enable_remote_login(password: str) -> None:
+    """Drive Spotlight → Terminal → `sudo systemsetup -setremotelogin on`
+    via QMP keystrokes. Called only when SSH isn't already up."""
+    emit("info", "extract", "SSH not up — enabling Remote Login via keystrokes")
+    time.sleep(3)
+    qmp.send_chord(["meta_l", "spc"])
+    time.sleep(1.2)
+    qmp.type_text("Terminal")
+    time.sleep(1.0)
+    qmp.send_keys(["ret"])
+    time.sleep(4.0)
+    qmp.type_text("sudo systemsetup -setremotelogin on")
+    qmp.send_keys(["ret"])
+    time.sleep(2.0)
+    qmp.type_text(password)
+    qmp.send_keys(["ret"])
+    time.sleep(4.0)
+    qmp.send_chord(["meta_l", "q"])
+    emit("info", "extract", "Remote Login keystroke sequence sent")
+
+
 def _wait_ssh(deadline_s: int = 300) -> None:
     emit("info", "extract", f"Waiting for VM SSH (up to {deadline_s}s)")
     t0 = time.time()
+    tried_enable = VM_SSH_ENABLED_MARKER.exists()
     while time.time() - t0 < deadline_s:
-        r = _ssh("echo ready", timeout=8)
-        if r.returncode == 0 and "ready" in r.stdout:
+        if _ssh_up():
+            if not VM_SSH_ENABLED_MARKER.exists():
+                VM_SSH_ENABLED_MARKER.parent.mkdir(parents=True, exist_ok=True)
+                VM_SSH_ENABLED_MARKER.write_text("1")
             emit("info", "extract", "VM SSH is up")
             return
+        # If SSH hasn't come up 45s after login, assume Remote Login is
+        # off and run the enable sequence (once per run).
+        if not tried_enable and time.time() - t0 > 45:
+            pw = vm_password.get() or ""
+            if pw:
+                try:
+                    _enable_remote_login(pw)
+                except Exception as e:
+                    emit("warning", "extract", f"enable-ssh keystrokes failed: {e}")
+            tried_enable = True
         time.sleep(3)
     raise RuntimeError("VM SSH never came up")
 
