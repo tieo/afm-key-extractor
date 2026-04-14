@@ -54,9 +54,11 @@ in python3Packages.buildPythonApplication {
   ];
 
   installPhase = ''
-    mkdir -p $out/bin $out/lib/airtag-tracker/static
+    mkdir -p $out/bin $out/lib/airtag-tracker
     cp tracker.py $out/lib/airtag-tracker/
-    cp -r static/* $out/lib/airtag-tracker/static/
+    cp -r airtag_tracker $out/lib/airtag-tracker/
+    cp -r static $out/lib/airtag-tracker/
+    if [ -d wizard ]; then cp -r wizard $out/lib/airtag-tracker/; fi
     cat > $out/bin/airtag-tracker <<WRAPPER
     #!/bin/sh
     exec ${pythonEnv}/bin/python3 $out/lib/airtag-tracker/tracker.py "\$@"

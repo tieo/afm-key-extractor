@@ -5,220 +5,36 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>AirTag Tracker</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9/dist/leaflet.css">
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { overflow-x: hidden; }
-    body {
-      font-family: -apple-system, system-ui, sans-serif;
-      background: #1a1a2e; color: #eee;
-      display: flex; flex-direction: column;
-      min-height: 100vh; min-height: 100dvh;
-    }
-
-    /* Toolbar */
-    .toolbar {
-      display: flex; align-items: center; gap: 8px; padding: 8px 12px;
-      padding-top: calc(8px + env(safe-area-inset-top));
-      background: #0f3460; flex-shrink: 0;
-    }
-    .toolbar h1 { font-size: 0.95em; margin-right: 6px; white-space: nowrap; }
-    .actions { display: flex; gap: 6px; flex: 1; justify-content: flex-end; flex-wrap: nowrap; }
-
-    /* Toast */
-    #toast {
-      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-      background: #16213e; border: 1px solid #4cc9f0; color: #eee;
-      padding: 10px 16px; border-radius: 8px; z-index: 10000; font-size: 0.9em;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.6); max-width: 90%;
-      opacity: 0; pointer-events: none; transition: opacity 0.2s;
-    }
-    #toast.show { opacity: 1; }
-    #toast.error { border-color: #e63946; }
-
-    /* Buttons */
-    .btn {
-      padding: 8px 12px; border-radius: 6px; border: 1px solid #333;
-      background: #16213e; color: #eee; cursor: pointer; font-size: 0.9em;
-      white-space: nowrap;
-    }
-    .btn:hover { border-color: #4cc9f0; }
-    .btn.primary { background: #4361ee; border-color: #4361ee; color: #fff; }
-    .btn.sync { background: #4cc9f0; border-color: #4cc9f0; color: #000; }
-    .btn.danger { background: #2a1822; border-color: #e63946; color: #e63946; }
-    .btn.ghost { background: transparent; }
-    .btn.small { padding: 6px 10px; font-size: 0.82em; }
-    .btn:disabled { opacity: 0.5; cursor: default; }
-
-    /* Status bar with badges — single row, same baseline */
-    .status-bar {
-      display: flex; gap: 8px; padding: 8px 14px; background: #16213e;
-      font-size: 0.82em; color: #aaa; align-items: center;
-      flex-shrink: 0; overflow-x: auto;
-    }
-    .status-bar::-webkit-scrollbar { display: none; }
-    .status-bar > * { flex-shrink: 0; }
-    #tags-status { color: #aaa; height: 26px; line-height: 26px; display: inline-flex; align-items: center; }
-    .badge {
-      display: inline-flex; align-items: center; gap: 6px;
-      padding: 4px 10px; border-radius: 12px; background: #0f3460;
-      border: 1px solid #1a2f56; cursor: pointer; user-select: none;
-      height: 26px; line-height: 1; white-space: nowrap;
-    }
-    .badge:hover { border-color: #4cc9f0; }
-    .badge .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
-    .dot.green { background: #2ecc71; } .dot.red { background: #e74c3c; }
-    .dot.yellow { background: #f1c40f; } .dot.gray { background: #666; }
-
-    /* Main — keys list */
-    .main {
-      flex: 1 1 auto; padding: 12px 14px; overflow-y: auto;
-      display: flex; flex-direction: column; gap: 10px;
-    }
-    .cta-banner {
-      background: linear-gradient(90deg,#4361ee,#3a0ca3);
-      padding: 12px 14px; border-radius: 10px; cursor: pointer;
-      display: flex; align-items: center; justify-content: space-between; gap: 10px;
-    }
-    .cta-banner .cta-text { font-size: 0.9em; line-height: 1.3; }
-    .cta-banner .cta-arrow { font-size: 1.3em; opacity: 0.8; }
-    .section-title { font-size: 0.78em; color: #888; text-transform: uppercase; letter-spacing: 0.05em; margin: 8px 0 4px; }
-    .key-card {
-      padding: 12px 14px; background: #16213e; border-radius: 10px;
-      cursor: pointer; border: 1px solid transparent; transition: border 0.1s;
-      display: flex; align-items: center; gap: 12px;
-    }
-    .key-card:hover { border-color: #4cc9f0; }
-    .key-card .key-icon {
-      width: 36px; height: 36px; border-radius: 50%; background: #0f3460;
-      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
-      font-size: 1.1em;
-    }
-    .key-card .key-body { flex: 1; min-width: 0; }
-    .key-card .key-name { font-weight: 500; font-size: 0.95em; }
-    .key-card .key-meta { color: #888; font-size: 0.78em; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .key-card .key-status { font-size: 0.75em; color: #666; white-space: nowrap; }
-    .empty-state { color: #888; text-align: center; padding: 20px; font-size: 0.9em; }
-
-    /* Detail panel map */
-    #detail-map { width: 100%; height: 40vh; border-radius: 8px; background: #0a0a1a; margin-top: 8px; }
-
-    /* Slide-in panels — same pattern for log / settings / vm / account */
-    .panel {
-      position: fixed; top: 0; right: 0; width: 100%; max-width: 520px;
-      height: 100vh; height: 100dvh; background: #1a1a2e; z-index: 9000;
-      box-shadow: -4px 0 20px rgba(0,0,0,0.5);
-      padding: 16px; padding-top: calc(16px + env(safe-area-inset-top));
-      display: flex; flex-direction: column; gap: 12px;
-      transform: translateX(0); transition: transform 0.2s ease;
-      overflow-y: auto;
-    }
-    .panel.hidden { transform: translateX(110%); pointer-events: none; }
-    .panel-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
-    .panel-header h2 { font-size: 1.1em; }
-    .panel-body { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; min-height: 0; }
-    .section {
-      background: #16213e; border-radius: 10px; padding: 14px;
-    }
-    .section h3 { font-size: 0.95em; margin-bottom: 10px; color: #4cc9f0; }
-    .section p { color: #aaa; font-size: 0.85em; margin-bottom: 8px; line-height: 1.4; }
-
-    /* Form inputs */
-    input[type=email], input[type=password], input[type=text], input[type=number] {
-      width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #333;
-      background: #0f3460; color: #eee; font-size: 0.95em; margin-bottom: 8px;
-    }
-    input::placeholder { color: #666; }
-    .error { color: #e74c3c; font-size: 0.85em; margin: 6px 0; }
-    .info { color: #4cc9f0; font-size: 0.85em; margin: 6px 0; }
-    label.check { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 0.9em; }
-    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    @media (max-width: 500px) { .grid2 { grid-template-columns: 1fr; } }
-
-    /* VM panel — VNC iframe */
-    .vnc-wrap {
-      position: relative; width: 100%; flex: 1 1 auto;
-      min-height: 40vh; background: #000; border-radius: 8px; overflow: hidden;
-    }
-    .vnc-wrap iframe { width: 100%; height: 100%; border: 0; display: block; }
-    .vnc-wrap .vnc-toggle {
-      position: absolute; top: 6px; right: 6px; z-index: 2;
-      background: rgba(0,0,0,0.7); border: 1px solid #555; color: #aaa;
-      padding: 4px 10px; border-radius: 4px; font-size: 0.75em; cursor: pointer;
-    }
-
-    /* Progress bar */
-    .progress {
-      background: #0a0a1a; border-radius: 6px; height: 8px; overflow: hidden; margin: 6px 0;
-    }
-    .progress > div {
-      height: 100%; background: linear-gradient(90deg,#4361ee,#4cc9f0);
-      width: 0%; transition: width 1s ease;
-    }
-
-    /* Log list */
-    .log-filters { display: flex; gap: 6px; flex-wrap: wrap; }
-    .chip {
-      padding: 3px 10px; border-radius: 12px; font-size: 0.82em; cursor: pointer;
-      background: #16213e; border: 1px solid #333;
-    }
-    .chip.active { border-color: #4cc9f0; color: #4cc9f0; }
-    #log-entries { font-family: monospace; font-size: 0.78em; flex: 1; overflow-y: auto; background: #0a0a1a; border-radius: 6px; padding: 8px; }
-    .log-entry { padding: 2px 0; border-bottom: 1px solid #111; display: flex; gap: 8px; flex-wrap: wrap; }
-    .log-ts { color: #555; white-space: nowrap; }
-    .log-cat { color: #4361ee; min-width: 60px; }
-    .log-msg { color: #ccc; word-break: break-word; flex: 1; min-width: 0; }
-    .log-entry.error .log-msg { color: #e74c3c; }
-    .log-entry.warning .log-msg { color: #f1c40f; }
-
-    /* Drop zone for key upload */
-    .drop-zone {
-      border: 2px dashed #4361ee; border-radius: 8px; padding: 20px;
-      text-align: center; color: #888; cursor: pointer; margin-top: 8px;
-    }
-    .drop-zone.dragover { border-color: #4cc9f0; color: #4cc9f0; }
-
-    .key-item {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 8px 0; border-bottom: 1px solid #0f3460;
-    }
-    .key-meta { font-size: 0.78em; color: #888; }
-
-    @media (max-width: 600px) {
-      .toolbar h1 { font-size: 0.95em; }
-      .btn { padding: 7px 10px; font-size: 0.85em; }
-      .btn.small { padding: 5px 8px; font-size: 0.78em; }
-    }
-  </style>
+  <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
   <header class="toolbar">
     <h1>AirTags</h1>
     <div class="actions">
-      <button class="btn sync small" onclick="pollNow(this)" title="Fetch latest AirTag locations from Apple now">Refresh</button>
-      <button class="btn small" onclick="syncKeys(this)" title="Extract AirTag keys from macOS VM Keychain">Sync Keys</button>
-      <button class="btn ghost small" onclick="togglePanel('log')" title="Activity log">Log</button>
-      <button class="btn ghost small" onclick="togglePanel('settings')" title="Polling &amp; keys">Settings</button>
+      <button class="btn sync small" data-action="poll-now" title="Fetch latest AirTag locations from Apple now">Refresh</button>
+      <button class="btn small" data-action="sync-keys" title="Extract AirTag keys from macOS VM Keychain">Sync Keys</button>
+      <button class="btn ghost small" data-action="open-log" title="Activity log">Log</button>
+      <button class="btn ghost small" data-action="open-settings" title="Polling &amp; keys">Settings</button>
     </div>
   </header>
   <div id="toast"></div>
 
   <div class="status-bar" id="status-bar">
-    <span class="badge" id="badge-account" onclick="togglePanel('account')"><span class="dot gray"></span><span>Account</span></span>
-    <span class="badge" id="badge-vm" onclick="togglePanel('vm')"><span class="dot gray"></span><span>VM</span></span>
+    <span class="badge" id="badge-account" data-action="open-account"><span class="dot gray"></span><span>Account</span></span>
+    <span class="badge" id="badge-vm" data-action="open-vm"><span class="dot gray"></span><span>VM</span></span>
     <span id="tags-status">…</span>
   </div>
 
   <main class="main">
-    <div id="cta-banner" class="cta-banner" style="display:none" onclick="handleCta()">
+    <div id="cta-banner" class="cta-banner" style="display:none" data-action="cta">
       <div class="cta-text" id="cta-text">…</div><div class="cta-arrow">›</div>
     </div>
     <div class="section-title">AirTag Keys</div>
     <div id="keys-main">Loading…</div>
   </main>
 
-  <!-- Key detail panel -->
   <aside class="panel hidden" id="detail-panel">
-    <div class="panel-header"><h2 id="detail-title">Key</h2><button class="btn small ghost" onclick="togglePanel('detail')">Close</button></div>
+    <div class="panel-header"><h2 id="detail-title">Key</h2><button class="btn small ghost" data-action="close-detail">Close</button></div>
     <div class="panel-body">
       <div class="section">
         <div id="detail-meta" style="font-size:0.85em;color:#aaa"></div>
@@ -227,608 +43,75 @@
     </div>
   </aside>
 
-  <!-- Account panel -->
   <aside class="panel hidden" id="account-panel">
-    <div class="panel-header"><h2>Apple ID</h2><button class="btn small ghost" onclick="togglePanel('account')">Close</button></div>
+    <div class="panel-header"><h2>Apple ID</h2><button class="btn small ghost" data-action="close-account">Close</button></div>
     <div class="panel-body" id="account-body"></div>
   </aside>
 
-  <!-- VM panel — always has VNC iframe + install progress + controls -->
   <aside class="panel hidden" id="vm-panel">
-    <div class="panel-header"><h2>macOS VM</h2><button class="btn small ghost" onclick="togglePanel('vm')">Close</button></div>
+    <div class="panel-header"><h2>macOS VM</h2><button class="btn small ghost" data-action="close-vm">Close</button></div>
     <div class="panel-body">
       <div class="vnc-wrap" id="vnc-wrap">
         <iframe id="vnc-iframe" allow="fullscreen" allowfullscreen></iframe>
-        <button class="vnc-toggle" id="vnc-interact" onclick="toggleVncInteract()">View Only</button>
-        <div id="vnc-overlay" style="position:absolute;inset:0;background:rgba(0,0,0,0.85);color:#4cc9f0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:10px;z-index:3;font-size:0.9em;text-align:center;padding:20px">
-          <div class="spinner" style="width:32px;height:32px;border:3px solid #16213e;border-top-color:#4cc9f0;border-radius:50%;animation:spin 1s linear infinite"></div>
+        <button class="vnc-toggle" id="vnc-interact" data-action="toggle-vnc-interact">View Only</button>
+        <div class="vnc-overlay" id="vnc-overlay">
+          <div class="spinner"></div>
           <div id="vnc-overlay-label">Starting VM…</div>
           <div id="vnc-overlay-elapsed" style="color:#888;font-size:0.82em"></div>
-          <div style="color:#888;font-size:0.78em;max-width:280px;line-height:1.4">Takes ~30s to reach the desktop. The VM runs on the server — safe to close this page.</div>
+          <div style="color:#888;font-size:0.78em;max-width:280px;line-height:1.4">
+            Takes ~30s to reach the desktop. The VM runs on the server — safe to close this page.
+          </div>
         </div>
       </div>
-      <div class="section" id="vm-status-section">
+      <div class="section">
         <div id="vm-status-summary" style="display:flex;align-items:center;gap:8px;margin-bottom:6px"></div>
-        <div id="vm-phase-row" style="display:none">
-          <div style="display:flex;justify-content:space-between;font-size:0.85em">
-            <b id="vm-phase-label">…</b>
-            <span id="vm-elapsed" style="color:#888"></span>
-          </div>
-          <div class="progress"><div id="vm-progress"></div></div>
-          <div id="vm-phase-detail" style="color:#aaa;font-size:0.82em"></div>
-        </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px" id="vm-controls"></div>
       </div>
     </div>
   </aside>
-  <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
 
-  <!-- Settings panel -->
   <aside class="panel hidden" id="settings-panel">
-    <div class="panel-header"><h2>Settings</h2><button class="btn small ghost" onclick="togglePanel('settings')">Close</button></div>
+    <div class="panel-header"><h2>Settings</h2><button class="btn small ghost" data-action="close-settings">Close</button></div>
     <div class="panel-body">
       <div class="section">
         <h3>Polling</h3>
         <div id="poll-status" style="margin-bottom:8px;font-size:0.82em"></div>
-        <label class="check"><input type="checkbox" id="set-adaptive" onchange="savePollingSettings()"> Adaptive polling (faster when moving)</label>
+        <label class="check"><input type="checkbox" id="set-adaptive" data-action="save-polling"> Adaptive polling (faster when moving)</label>
         <div class="grid2">
           <div><label style="font-size:0.78em;color:#888">Idle (min)</label><input type="number" id="set-idle" min="1" max="1440"></div>
           <div><label style="font-size:0.78em;color:#888">Active (min)</label><input type="number" id="set-active" min="1" max="60"></div>
           <div><label style="font-size:0.78em;color:#888">Threshold (m)</label><input type="number" id="set-threshold" min="1" max="10000"></div>
           <div><label style="font-size:0.78em;color:#888">Cooldown polls</label><input type="number" id="set-cooldown" min="1" max="100"></div>
         </div>
-        <button class="btn small" onclick="savePollingSettings()">Save</button>
+        <button class="btn small" data-action="save-polling">Save</button>
       </div>
 
       <div class="section">
         <h3>AirTag Keys</h3>
         <div id="keys-list">Loading…</div>
-        <div class="drop-zone" id="drop-zone" onclick="document.getElementById('key-file-input').click()">
-          Drop .json key files here or tap to upload
-        </div>
+        <div class="drop-zone" id="drop-zone">Drop .json key files here or tap to upload</div>
         <input type="file" id="key-file-input" accept=".json" multiple style="display:none">
       </div>
     </div>
   </aside>
 
-  <!-- Log panel -->
   <aside class="panel hidden" id="log-panel">
-    <div class="panel-header"><h2>Activity Log</h2><button class="btn small ghost" onclick="togglePanel('log')">Close</button></div>
+    <div class="panel-header"><h2>Activity Log</h2><button class="btn small ghost" data-action="close-log">Close</button></div>
     <div class="panel-body">
       <div class="log-filters">
-        <span class="chip active" data-cat="" onclick="filterLog(this,'')">All</span>
-        <span class="chip" data-cat="poll" onclick="filterLog(this,'poll')">Poll</span>
-        <span class="chip" data-cat="movement" onclick="filterLog(this,'movement')">Move</span>
-        <span class="chip" data-cat="vm" onclick="filterLog(this,'vm')">VM</span>
-        <span class="chip" data-cat="account" onclick="filterLog(this,'account')">Account</span>
-        <span class="chip" data-cat="keys" onclick="filterLog(this,'keys')">Keys</span>
-        <span class="chip" data-cat="system" onclick="filterLog(this,'system')">System</span>
+        <span class="chip active" data-cat="">All</span>
+        <span class="chip" data-cat="poll">Poll</span>
+        <span class="chip" data-cat="movement">Move</span>
+        <span class="chip" data-cat="vm">VM</span>
+        <span class="chip" data-cat="account">Account</span>
+        <span class="chip" data-cat="keys">Keys</span>
+        <span class="chip" data-cat="system">System</span>
       </div>
       <div id="log-entries"></div>
     </div>
   </aside>
 
   <script src="https://unpkg.com/leaflet@1.9/dist/leaflet.js"></script>
-  <script>
-    // ================ Map (lazy, in detail panel) ================
-    let detailMap = null, detailMarker = null, detailLine = null;
-    const tagIcon = L.divIcon({
-      html: '<div style="background:#4cc9f0;width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 6px rgba(0,0,0,.4)"></div>',
-      iconSize: [14, 14], className: ''
-    });
-    function ensureDetailMap() {
-      if (detailMap) return detailMap;
-      detailMap = L.map('detail-map').setView([51.1, 10.4], 6);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '&copy; OSM', maxZoom: 19 }).addTo(detailMap);
-      return detailMap;
-    }
-
-    function timeAgo(ts) {
-      const d = (Date.now() - new Date(ts).getTime()) / 1000;
-      if (d < 60) return 'just now';
-      if (d < 3600) return Math.floor(d/60)+'m ago';
-      if (d < 86400) return Math.floor(d/3600)+'h ago';
-      return Math.floor(d/86400)+'d ago';
-    }
-
-    // ================ Panels ================
-    const PANELS = ['log','account','vm','settings','detail'];
-    function togglePanel(name) {
-      const el = document.getElementById(name + '-panel');
-      const wasHidden = el.classList.contains('hidden');
-      // Close all others
-      PANELS.forEach(n => document.getElementById(n+'-panel').classList.add('hidden'));
-      if (wasHidden) {
-        el.classList.remove('hidden');
-        if (name === 'log') refreshLog();
-        if (name === 'account') renderAccount();
-        if (name === 'vm') enterVmPanel();
-        if (name === 'settings') { loadPollingSettings(); loadKeysList(); }
-      }
-    }
-
-    // ================ Status ================
-    let accountState = { configured: false, airtags: 0 };
-    let vmStateCache = { enabled: false };
-
-    let keysCache = [], tagsCache = [];
-
-    async function refreshStatus() {
-      const [accRes, vmRes, settingsRes, tagsRes, keysRes] = await Promise.all([
-        fetch('/api/account/status'), fetch('/api/vm/status'),
-        fetch('/api/settings'), fetch('/api/airtags'), fetch('/api/keys'),
-      ]);
-      accountState = await accRes.json();
-      vmStateCache = await vmRes.json();
-      const settings = await settingsRes.json();
-      tagsCache = await tagsRes.json();
-      keysCache = await keysRes.json();
-
-      const pollState = settings.state || {};
-      const mode = pollState.moving ? 'active' : 'idle';
-      const interval = Math.round((pollState.current_interval || settings.idle_interval) / 60);
-      document.getElementById('tags-status').innerHTML =
-        `${keysCache.length} key${keysCache.length!==1?'s':''} · ${mode} · every ${interval}min`;
-
-      const accBadge = document.getElementById('badge-account');
-      accBadge.firstElementChild.className = 'dot ' + (accountState.configured ? 'green' : 'red');
-      accBadge.lastElementChild.textContent = 'Apple ID: ' + (accountState.configured ? 'connected' : 'sign in');
-
-      const vmBadge = document.getElementById('badge-vm');
-      if (!vmStateCache.enabled) {
-        vmBadge.style.display = 'none';
-      } else {
-        vmBadge.style.display = '';
-        let label = 'VM ', cls = 'gray';
-        if (!vmStateCache.provisioned)      { label += 'downloading'; cls = 'yellow'; }
-        else if (!vmStateCache.setup_complete) { label += 'needs setup'; cls = 'yellow'; }
-        else if (vmStateCache.vm_running)   { label += 'running';     cls = 'green'; }
-        else                                { label += 'ready';       cls = 'green'; }
-        vmBadge.firstElementChild.className = 'dot ' + cls;
-        vmBadge.lastElementChild.textContent = label;
-      }
-
-      renderKeysMain();
-      renderCta();
-      if (!document.getElementById('vm-panel').classList.contains('hidden')) renderVmStatus();
-      if (!document.getElementById('account-panel').classList.contains('hidden')) renderAccount();
-    }
-
-    function renderCta() {
-      const banner = document.getElementById('cta-banner');
-      const text = document.getElementById('cta-text');
-      let msg = null, action = null;
-      if (!accountState.configured) {
-        msg = 'Sign in to Apple ID to start tracking'; action = () => togglePanel('account');
-      } else if (vmStateCache.enabled && !vmStateCache.setup_complete) {
-        msg = 'Finish macOS VM setup to extract AirTag keys'; action = () => togglePanel('vm');
-      } else if (keysCache.length === 0) {
-        msg = vmStateCache.enabled ? 'Sync keys from the VM keychain' : 'Upload AirTag .json keys';
-        action = vmStateCache.enabled ? () => syncKeys() : () => togglePanel('settings');
-      }
-      if (msg) { text.textContent = msg; banner.style.display = ''; banner._action = action; }
-      else banner.style.display = 'none';
-    }
-    function handleCta() { const b = document.getElementById('cta-banner'); if (b._action) b._action(); }
-
-    function renderKeysMain() {
-      const el = document.getElementById('keys-main');
-      if (!keysCache.length) {
-        el.innerHTML = `<div class="empty-state">No AirTag keys yet.<br>Upload a .json in Settings, or Sync from the VM.</div>`;
-        return;
-      }
-      const tagById = {};
-      tagsCache.forEach(t => tagById[t.airtag_id] = t);
-      el.innerHTML = keysCache.map(k => {
-        const id = k.file ? k.file.replace('.json','') : k.name;
-        const t = tagById[id] || tagById[k.name];
-        const locLabel = t ? `${timeAgo(t.timestamp)} · ${t.latitude.toFixed(3)}, ${t.longitude.toFixed(3)}` : 'no recent location';
-        const dot = t ? 'green' : 'gray';
-        return `<div class="key-card" onclick='openKeyDetail(${JSON.stringify(id)})'>
-          <div class="key-icon">📍</div>
-          <div class="key-body">
-            <div class="key-name">${k.name}</div>
-            <div class="key-meta">${locLabel}</div>
-          </div>
-          <div class="key-status"><span class="dot ${dot}"></span></div>
-        </div>`;
-      }).join('');
-    }
-
-    async function openKeyDetail(id) {
-      const key = keysCache.find(k => (k.file||'').replace('.json','') === id || k.name === id);
-      if (!key) return;
-      document.getElementById('detail-title').textContent = key.name;
-      PANELS.forEach(n => document.getElementById(n+'-panel')?.classList.add('hidden'));
-      document.getElementById('detail-panel').classList.remove('hidden');
-      const meta = document.getElementById('detail-meta');
-      const t = tagsCache.find(x => x.airtag_id === id);
-      meta.innerHTML = t
-        ? `Last seen <b>${timeAgo(t.timestamp)}</b><br>${t.latitude.toFixed(5)}, ${t.longitude.toFixed(5)}`
-        : 'No recent location reports.';
-      setTimeout(() => {
-        const m = ensureDetailMap(); m.invalidateSize();
-        if (detailMarker) { m.removeLayer(detailMarker); detailMarker = null; }
-        if (detailLine) { m.removeLayer(detailLine); detailLine = null; }
-        if (t) {
-          detailMarker = L.marker([t.latitude, t.longitude], { icon: tagIcon }).addTo(m);
-          m.setView([t.latitude, t.longitude], 14);
-          fetch(`/api/airtags/${id}/history?limit=500`).then(r => r.json()).then(pts => {
-            if (!pts.length) return;
-            const latlngs = pts.map(p => [p.latitude, p.longitude]).reverse();
-            detailLine = L.polyline(latlngs, { color: '#4cc9f0', weight: 3, opacity: 0.7 }).addTo(m);
-            m.fitBounds(detailLine.getBounds(), { padding: [30,30] });
-          });
-        }
-      }, 50);
-    }
-
-    let toastTimer = null;
-    function toast(msg, kind) {
-      const el = document.getElementById('toast');
-      el.textContent = msg;
-      el.className = (kind === 'error' ? 'error ' : '') + 'show';
-      clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
-    }
-    async function busy(btn, label, fn) {
-      const orig = btn ? btn.textContent : null;
-      if (btn) { btn.disabled = true; btn.textContent = label; }
-      try { return await fn(); }
-      finally { if (btn) { btn.disabled = false; btn.textContent = orig; } }
-    }
-
-    async function pollNow(btn) {
-      await busy(btn, 'Refreshing…', async () => {
-        try {
-          const r = await fetch('/api/poll', {method:'POST'});
-          const d = await r.json().catch(() => ({}));
-          if (!r.ok || d.error) toast(d.error || 'Refresh failed', 'error');
-          else toast('Locations refreshed');
-        } catch (e) { toast('Network error: '+e.message, 'error'); }
-        await refreshStatus();
-      });
-    }
-    async function syncKeys(btn) {
-      await busy(btn, 'Syncing…', async () => {
-        try {
-          const r = await fetch('/api/extract-keys', {method:'POST'});
-          const d = await r.json().catch(() => ({}));
-          if (!r.ok || d.error) toast(d.error || 'Sync failed', 'error');
-          else toast(`Synced ${d.count ?? ''} key${d.count===1?'':'s'}`.trim());
-        } catch (e) { toast('Network error: '+e.message, 'error'); }
-        await refreshStatus();
-      });
-    }
-
-    // ================ Account panel ================
-    let pendingMethods = [], selectedMethod = 0;
-
-    function renderAccount(error) {
-      const body = document.getElementById('account-body');
-      if (accountState.configured) {
-        body.innerHTML = `
-          <div class="section">
-            <h3>Connected</h3>
-            <p><span class="dot green"></span> Signed in. Tracking ${accountState.airtags} key${accountState.airtags!==1?'s':''}.</p>
-            <button class="btn small" onclick="showLoginForm()">Re-login</button>
-          </div>`;
-        return;
-      }
-      showLoginForm(error);
-    }
-
-    function showLoginForm(error) {
-      document.getElementById('account-body').innerHTML = `
-        <div class="section">
-          <h3>Sign in with Apple ID</h3>
-          <p>Needed to query the Find My network. Stored encrypted on this server only.</p>
-          ${error ? `<div class="error">${error}</div>` : ''}
-          <input type="email" id="login-email" placeholder="Apple ID (email)" autocomplete="email">
-          <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
-          <button class="btn primary" onclick="doLogin()">Sign In</button>
-        </div>`;
-    }
-
-    async function doLogin() {
-      const email = document.getElementById('login-email').value;
-      const password = document.getElementById('login-password').value;
-      if (!email || !password) return;
-      document.getElementById('account-body').innerHTML = `<div class="section"><h3>Signing in…</h3><p>Authenticating with Apple.</p></div>`;
-      try {
-        const res = await fetch('/api/account/login', {
-          method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({email, password}),
-        });
-        const data = await res.json();
-        if (data.status === '2fa_required') { pendingMethods = data.methods; show2faForm(); }
-        else if (data.status === 'logged_in') { await refreshStatus(); renderAccount(); }
-        else { showLoginForm(data.error || 'Login failed'); }
-      } catch (e) { showLoginForm('Network error: ' + e.message); }
-    }
-
-    function show2faForm(error) {
-      const method = pendingMethods[selectedMethod];
-      const hint = method.type === 'sms' ? 'Enter the code sent to ' + method.phone : 'Enter the code shown on your trusted device';
-      let methodsHtml = '';
-      if (pendingMethods.length > 1) {
-        methodsHtml = '<div style="margin:8px 0">' + pendingMethods.map((m, i) => {
-          const label = m.type === 'sms' ? `SMS: ${m.phone}` : 'Trusted Device';
-          return `<label class="check"><input type="radio" name="2fa-method" ${i===selectedMethod?'checked':''} onclick="selectedMethod=${i};show2faForm()"> ${label}</label>`;
-        }).join('') + '</div>';
-      }
-      document.getElementById('account-body').innerHTML = `
-        <div class="section">
-          <h3>Two-Factor Authentication</h3>
-          <p>${hint}</p>
-          ${methodsHtml}
-          ${error ? `<div class="error">${error}</div>` : ''}
-          <input type="text" id="2fa-code" placeholder="6-digit code" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
-          <button class="btn primary" onclick="submit2fa()">Verify</button>
-        </div>`;
-      document.getElementById('2fa-code').focus();
-    }
-
-    async function submit2fa() {
-      const code = document.getElementById('2fa-code').value;
-      if (!code) return;
-      try {
-        const res = await fetch('/api/account/2fa', {
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({code, method: selectedMethod}),
-        });
-        const data = await res.json();
-        if (data.status === 'logged_in') { await refreshStatus(); renderAccount(); }
-        else show2faForm(data.error || '2FA failed');
-      } catch (e) { show2faForm('Network error: ' + e.message); }
-    }
-
-    // ================ VM panel ================
-    const VNC_URL = `//${location.hostname.replace('airtag','airtag-vnc')}/vnc.html?autoconnect=true&resize=scale&view_only=true`;
-    let vncLoaded = false;
-
-    function enterVmPanel() {
-      if (!vncLoaded) {
-        document.getElementById('vnc-iframe').src = VNC_URL;
-        vncLoaded = true;
-      }
-      renderVmStatus();
-    }
-
-    async function renderVmStatus() {
-      const summary = document.getElementById('vm-status-summary');
-      const controls = document.getElementById('vm-controls');
-      const phaseRow = document.getElementById('vm-phase-row');
-
-      if (!vmStateCache.enabled) {
-        summary.innerHTML = '<span class="dot gray"></span> VM not enabled on this server.';
-        controls.innerHTML = '';
-        phaseRow.style.display = 'none';
-        return;
-      }
-
-      let label, cls;
-      if (!vmStateCache.provisioned)        { label='Downloading macOS…'; cls='yellow'; }
-      else if (!vmStateCache.setup_complete){ label='Needs initial setup'; cls='yellow'; }
-      else if (vmStateCache.vm_running)     { label='Running';            cls='green'; }
-      else                                  { label='Ready';              cls='green'; }
-      summary.innerHTML = `<span class="dot ${cls}"></span> ${label}`;
-
-      // Hide boot overlay once VM is actually running
-      if (vmStateCache.vm_running && vmOverlayTimer) hideVmOverlay();
-
-      // Install progress
-      let phase = null;
-      if (vmStateCache.vm_running || !vmStateCache.setup_complete) {
-        try {
-          const r = await fetch('/api/vm/install-status');
-          if (r.ok) {
-            const d = await r.json();
-            if (d.phase && d.phase !== 'idle') { phase = d; renderPhase(d); }
-          }
-        } catch(e) {}
-      }
-      phaseRow.style.display = phase ? '' : 'none';
-
-      // Controls
-      const btns = [];
-      if (!vmStateCache.vm_running) btns.push(`<button class="btn primary" onclick="vmStartSetup(event)">Start VM</button>`);
-      else btns.push(`<button class="btn" onclick="vmStop(event)">Stop VM</button>`);
-      btns.push(`<button class="btn danger" onclick="vmReinstall(event)">Reinstall macOS</button>`);
-      if (phase && phase.phase === 'setup_appleid') {
-        btns.push(`<input type="password" id="vm-pw" placeholder="macOS password" style="width:auto;flex:1;margin:0"><button class="btn sync" onclick="vmComplete()">Complete Setup</button>`);
-      }
-      controls.innerHTML = btns.join('');
-    }
-
-    const phaseLabels = {
-      booting:'Booting VM…', boot_picker:'Navigating boot menu…',
-      waiting_recovery:'Loading macOS Recovery…',
-      formatting:'Formatting disk & starting installer…',
-      installing:'Installing macOS…', setup_wizard:'Configuring macOS…',
-      setup_appleid:'Waiting for Apple ID sign-in…',
-      done:'Setup complete!', error:'Installation failed',
-    };
-    const defaultEst = { booting:15, boot_picker:15, formatting:100, installing:2700, setup_wizard:90, setup_appleid:300 };
-    const phaseOrder = ['booting','boot_picker','formatting','installing','setup_wizard','setup_appleid','done'];
-
-    function renderPhase(d) {
-      const phase = d.phase, elapsed = d.elapsed_seconds, st = d.step_times || {};
-      let actual=0, expected=0, est={};
-      const sorted = phaseOrder.filter(p=>p!=='done');
-      for (let i=0;i<sorted.length;i++) {
-        const p=sorted[i], np=sorted[i+1], s=st[p], ns=np?st[np]:undefined;
-        if (s!==undefined && ns!==undefined) { est[p]=ns-s; actual+=est[p]; expected+=defaultEst[p]||1; }
-        else { const scale = expected>0?actual/expected:1; est[p]=Math.round((defaultEst[p]||60)*Math.max(0.3,scale)); }
-      }
-      const total = Object.values(est).reduce((a,b)=>a+b,0);
-      document.getElementById('vm-phase-label').textContent = phaseLabels[phase] || phase;
-      const bar = document.getElementById('vm-progress');
-      const el = document.getElementById('vm-elapsed');
-      const det = document.getElementById('vm-phase-detail');
-      if (phase==='done') { bar.style.width='100%'; el.textContent=`Done in ${fmtTime(elapsed)}`; }
-      else if (phase==='error') { bar.style.background='#e63946'; el.textContent=''; }
-      else {
-        const p = Math.min(99, Math.round((elapsed / Math.max(1,total))*100));
-        bar.style.width = p + '%';
-        el.textContent = elapsed > total ? `+${fmtTime(elapsed-total)} over` : `~${fmtTime(total-elapsed)} left`;
-      }
-      det.textContent = {
-        installing: 'macOS is installing. The VM reboots automatically during this process.',
-        setup_wizard: 'Automating macOS setup wizard (language, region, user account)…',
-        setup_appleid: 'Sign in to Apple ID and enable Find My Mac in the VNC view, then enter your macOS password below.',
-        formatting: 'Recovery loaded. Formatting disk and starting installer…',
-        error: d.message || 'An error occurred. Check VNC for details.',
-      }[phase] || '';
-    }
-
-    function fmtTime(s) { s=Math.max(0,s|0); const m=Math.floor(s/60), r=s%60; return m?`${m}m ${r}s`:`${r}s`; }
-
-    async function vmAction(url, label, btn) {
-      return busy(btn, label + '…', async () => {
-        try {
-          const r = await fetch(url, {method:'POST'});
-          const d = await r.json().catch(() => ({}));
-          if (!r.ok || d.error) { toast(d.error || (label+' failed'), 'error'); return false; }
-          toast(label + '…');
-          await refreshStatus();
-          return true;
-        } catch (e) { toast('Network error: '+e.message, 'error'); return false; }
-      });
-    }
-    let vmStartTime = null, vmOverlayTimer = null;
-    function showVmOverlay(label) {
-      document.getElementById('vnc-overlay-label').textContent = label;
-      document.getElementById('vnc-overlay').style.display = 'flex';
-      vmStartTime = Date.now();
-      clearInterval(vmOverlayTimer);
-      vmOverlayTimer = setInterval(() => {
-        const s = Math.round((Date.now()-vmStartTime)/1000);
-        document.getElementById('vnc-overlay-elapsed').textContent = `${s}s elapsed`;
-      }, 1000);
-    }
-    function hideVmOverlay() {
-      document.getElementById('vnc-overlay').style.display = 'none';
-      clearInterval(vmOverlayTimer); vmOverlayTimer = null;
-    }
-    async function vmStartSetup(ev) {
-      showVmOverlay('Starting VM — booting macOS…');
-      // ensure VNC iframe is loaded so boot screen appears as soon as QEMU is ready
-      enterVmPanel();
-      const ok = await vmAction('/api/vm/start-setup', 'Starting VM', ev?.target);
-      if (!ok) hideVmOverlay();
-      else {
-        // Reload VNC iframe after 3s so it connects to the freshly-started QEMU
-        setTimeout(() => {
-          const f = document.getElementById('vnc-iframe');
-          if (f.src) f.src = f.src;
-        }, 3000);
-      }
-    }
-    async function vmStop(ev)       { await vmAction('/api/vm/stop', 'Stopping VM', ev?.target); }
-    async function vmReinstall(ev) {
-      if (!confirm('Wipe the macOS VM and start fresh install? All VM data will be lost.')) return;
-      await vmAction('/api/vm/reinstall', 'Reinstalling', ev?.target);
-    }
-    async function vmComplete() {
-      const pw = document.getElementById('vm-pw').value;
-      if (!pw) { alert('Enter macOS password'); return; }
-      const r = await fetch('/api/vm/complete-setup', {
-        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: pw})
-      });
-      const d = await r.json();
-      if (d.error) alert(d.error);
-      else setTimeout(refreshStatus, 2000);
-    }
-
-    function toggleVncInteract() {
-      const f = document.getElementById('vnc-iframe'), b = document.getElementById('vnc-interact');
-      if (f.src.includes('view_only=true')) { f.src = f.src.replace('view_only=true','view_only=false'); b.textContent='Interactive'; b.style.color='#4cc9f0'; }
-      else { f.src = f.src.replace('view_only=false','view_only=true'); b.textContent='View Only'; b.style.color='#aaa'; }
-    }
-
-    // ================ Settings panel ================
-    async function loadPollingSettings() {
-      const data = await (await fetch('/api/settings')).json();
-      document.getElementById('set-adaptive').checked = data.adaptive !== false;
-      document.getElementById('set-idle').value = Math.round(data.idle_interval/60);
-      document.getElementById('set-active').value = Math.round(data.active_interval/60);
-      document.getElementById('set-threshold').value = data.movement_threshold;
-      document.getElementById('set-cooldown').value = data.cooldown_polls;
-      const s = data.state || {};
-      const mode = s.moving ? 'Active' : 'Idle';
-      const iv = Math.round((s.current_interval || data.idle_interval)/60);
-      const lp = s.last_poll ? timeAgo(s.last_poll) : 'never';
-      document.getElementById('poll-status').innerHTML =
-        `<span class="dot ${s.moving?'green':'yellow'}"></span> ${mode} · every ${iv}min · last: ${lp}`;
-    }
-
-    async function savePollingSettings() {
-      const body = {
-        adaptive: document.getElementById('set-adaptive').checked,
-        idle_interval: parseInt(document.getElementById('set-idle').value)*60,
-        active_interval: parseInt(document.getElementById('set-active').value)*60,
-        movement_threshold: parseInt(document.getElementById('set-threshold').value),
-        cooldown_polls: parseInt(document.getElementById('set-cooldown').value),
-      };
-      await fetch('/api/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-      loadPollingSettings();
-    }
-
-    async function loadKeysList() {
-      const keys = await (await fetch('/api/keys')).json();
-      const el = document.getElementById('keys-list');
-      if (!keys.length) { el.innerHTML = '<div style="color:#666">No keys loaded.</div>'; return; }
-      el.innerHTML = keys.map(k => `
-        <div class="key-item">
-          <div><div>${k.name}</div><div class="key-meta">${k.model || ''}</div></div>
-          <button class="btn small danger" onclick="deleteKey('${k.file.replace('.json','')}')">Remove</button>
-        </div>`).join('');
-    }
-    async function deleteKey(name) {
-      if (!confirm(`Remove "${name}"?`)) return;
-      await fetch(`/api/keys/${name}`, {method:'DELETE'});
-      loadKeysList();
-    }
-
-    // File upload (drop zone)
-    const dropZone = document.getElementById('drop-zone');
-    const fileInput = document.getElementById('key-file-input');
-    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
-    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-    dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('dragover'); handleFiles(e.dataTransfer.files); });
-    fileInput.addEventListener('change', () => handleFiles(fileInput.files));
-    async function handleFiles(files) {
-      for (const file of files) {
-        const fd = new FormData(); fd.append('file', file);
-        const r = await fetch('/api/keys/upload', {method:'POST', body: fd});
-        const d = await r.json(); if (d.error) alert('Failed: ' + d.error);
-      }
-      loadKeysList(); refreshStatus();
-    }
-
-    // ================ Log panel ================
-    let logFilter = '';
-    function filterLog(el, cat) {
-      logFilter = cat;
-      document.querySelectorAll('.log-filters .chip').forEach(c => c.classList.remove('active'));
-      el.classList.add('active');
-      refreshLog();
-    }
-    async function refreshLog() {
-      const url = logFilter ? `/api/log?cat=${logFilter}&limit=200` : '/api/log?limit=200';
-      const entries = await (await fetch(url)).json();
-      document.getElementById('log-entries').innerHTML = entries.reverse().map(e => {
-        const ts = new Date(e.ts).toLocaleTimeString();
-        return `<div class="log-entry ${e.level}">
-          <span class="log-ts">${ts}</span><span class="log-cat">${e.cat}</span><span class="log-msg">${e.msg}</span></div>`;
-      }).join('');
-    }
-    setInterval(() => { if (!document.getElementById('log-panel').classList.contains('hidden')) refreshLog(); }, 5000);
-
-    // ================ Init ================
-    refreshStatus();
-    setInterval(refreshStatus, 10000);
-  </script>
+  <script type="module" src="/js/init.js"></script>
 </body>
 </html>
