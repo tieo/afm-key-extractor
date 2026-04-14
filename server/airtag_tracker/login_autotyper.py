@@ -26,13 +26,21 @@ MATCH_KEYWORDS = ("password", "enter password")
 
 
 def _ocr(ppm_path: Path) -> str:
+    """Read text from a QEMU framebuffer dump.
+
+    macOS login is white text on a dark desktop; tesseract needs the
+    image inverted to a dark-on-light page, and PSM 11 ('sparse text')
+    handles the scattered labels much better than the default layout
+    analysis.
+    """
     try:
         import pytesseract
-        from PIL import Image
+        from PIL import Image, ImageOps
     except ImportError as e:
         raise RuntimeError(f"OCR dependencies missing: {e}") from e
     with Image.open(ppm_path) as img:
-        return pytesseract.image_to_string(img).lower()
+        inverted = ImageOps.invert(img.convert("L"))
+        return pytesseract.image_to_string(inverted, config="--psm 11").lower()
 
 
 def _login_screen_visible() -> bool:
