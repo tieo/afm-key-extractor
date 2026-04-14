@@ -193,24 +193,33 @@ def _run() -> None:
         # All shell — macOS Command Line Tools (python3) aren't installed
         # and requiring CLT would turn this into an interactive multi-GB
         # download. The AES-GCM decryption happens server-side.
+        # Script echoes one of: EMPTY (no AirTags paired), OK.
         pw_esc = pw.replace("'", "'\\''")
         cmd = (
-            f"set -e; "
             f"security unlock-keychain -p '{pw_esc}' "
-            f"~/Library/Keychains/login.keychain-db; "
-            f"security find-generic-password -l BeaconStore -w "
-            f"> /tmp/beacon-key.hex; "
-            f"cd ~/Library/com.apple.icloud.searchpartyd && "
+            f"~/Library/Keychains/login.keychain-db >/dev/null 2>&1; "
+            f"SPD=~/Library/com.apple.icloud.searchpartyd; "
+            f"if [ ! -d \"$SPD/OwnedBeacons\" ] || "
+            f"[ -z \"$(ls -A $SPD/OwnedBeacons 2>/dev/null)\" ]; then "
+            f"  echo EMPTY; exit 0; "
+            f"fi; "
+            f"KEY=$(security find-generic-password -l BeaconStore -w 2>/dev/null); "
+            f"if [ -z \"$KEY\" ]; then echo NO_KEY; exit 2; fi; "
+            f"echo \"$KEY\" > /tmp/beacon-key.hex; "
+            f"cd \"$SPD\" && "
             f"tar czf /tmp/airtag-records.tar.gz "
-            f"OwnedBeacons BeaconNamingRecord 2>/dev/null || "
-            f"tar czf /tmp/airtag-records.tar.gz OwnedBeacons"
+            f"OwnedBeacons $(test -d BeaconNamingRecord && echo BeaconNamingRecord) && "
+            f"echo OK"
         )
         r = _ssh(cmd, timeout=60)
-        if r.returncode != 0:
+        if r.returncode != 0 or "OK" not in r.stdout and "EMPTY" not in r.stdout:
             raise RuntimeError(
                 f"VM extract failed (rc={r.returncode}): "
-                f"{(r.stderr or r.stdout).strip()[:500]}"
+                f"{(r.stdout + r.stderr).strip()[:500]}"
             )
+        if "EMPTY" in r.stdout:
+            emit("info", "extract", "No AirTags paired in VM yet — nothing to extract")
+            return
 
         emit("info", "extract", "Copying records to server")
         with tempfile.TemporaryDirectory() as td:
