@@ -237,15 +237,6 @@ def bake_golden() -> dict:
 
 
 def trigger_key_extraction() -> dict:
+    from . import key_extraction
     emit("info", "vm", "Key extraction triggered")
-    result = sp.run(
-        [systemd.SUDO, systemd.SYSTEMCTL, "start", "--no-block", "airtag-extract-keys"],
-        capture_output=True, text=True, timeout=5,
-    )
-    if result.returncode != 0:
-        msg = result.stderr.strip()
-        emit("error", "vm", f"Failed to start extraction: {msg}")
-        raise VmError(msg)
-    emit("info", "vm", "Key extraction service started, VM booting")
-    systemd.tail_journal_async("airtag-extract-keys", "vm")
-    return {"status": "started", "message": "Key extraction started. This takes a few minutes."}
+    return key_extraction.start()

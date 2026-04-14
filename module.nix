@@ -4,7 +4,6 @@ self:
 let
   cfg = config.services.airtag-tracker;
   package = self.packages.${pkgs.system}.server;
-  extractorPkg = self.packages.${pkgs.system}.key-extractor;
   provisionPkg = self.packages.${pkgs.system}.provision-vm;
 in {
   options.services.airtag-tracker = {
@@ -107,9 +106,6 @@ in {
         commands = [
           { command = "/run/current-system/sw/bin/systemctl start airtag-novnc"; options = [ "NOPASSWD" ]; }
           { command = "/run/current-system/sw/bin/systemctl stop airtag-novnc"; options = [ "NOPASSWD" ]; }
-          { command = "/run/current-system/sw/bin/systemctl start airtag-extract-keys"; options = [ "NOPASSWD" ]; }
-          { command = "/run/current-system/sw/bin/systemctl start --no-block airtag-extract-keys"; options = [ "NOPASSWD" ]; }
-          { command = "/run/current-system/sw/bin/systemctl stop airtag-extract-keys"; options = [ "NOPASSWD" ]; }
           { command = "/run/current-system/sw/bin/systemctl start airtag-provision-vm"; options = [ "NOPASSWD" ]; }
           { command = "/run/current-system/sw/bin/systemctl restart airtag-provision-vm"; options = [ "NOPASSWD" ]; }
           { command = "/run/current-system/sw/bin/systemctl restart --no-block airtag-provision-vm"; options = [ "NOPASSWD" ]; }
@@ -141,26 +137,6 @@ in {
           Type = "simple";
           ExecStart = "${pkgs.python3Packages.websockify}/bin/websockify --web ${pkgs.novnc}/share/webapps/novnc 127.0.0.1:${toString cfg.vm.websocketPort} localhost:${toString cfg.vm.vncPort}";
           Restart = "on-failure";
-        };
-      };
-
-      # Periodic key extraction — boots VM, extracts new keys, shuts down.
-      systemd.services.airtag-extract-keys = {
-        description = "Extract AirTag keys from macOS VM";
-        unitConfig.ConditionPathExists = [
-          "${cfg.vm.vmDir}/mac_hdd_ng.img"
-          "${cfg.dataDir}/vm-password"
-        ];
-        serviceConfig = {
-          Type = "oneshot";
-          User = "airtag-tracker";
-          Group = "airtag-tracker";
-          ExecStart = "${extractorPkg}/bin/airtag-extract-keys";
-          Environment = [
-            "AIRTAG_VM_DIR=${cfg.vm.vmDir}"
-            "AIRTAG_DATA_DIR=${cfg.dataDir}"
-          ];
-          TimeoutStartSec = "15min";
         };
       };
 

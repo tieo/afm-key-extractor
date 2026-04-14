@@ -49,35 +49,31 @@ def plist_to_findmy_json(plist_path, naming_dir=None):
     }
 
 
-def main():
-    if len(sys.argv) < 3:
-        print(f"Usage: {sys.argv[0]} <plist_dir> <output_dir>")
-        sys.exit(1)
-
-    plist_dir = Path(sys.argv[1])
-    output_dir = Path(sys.argv[2])
+def convert_dir(plist_dir: Path, output_dir: Path, naming_dir: Path | None = None) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    naming_dir = plist_dir.parent / "BeaconNamingRecord"
-    if not naming_dir.exists():
-        naming_dir = None
-
     count = 0
     for plist_file in plist_dir.glob("*.plist"):
         try:
             data = plist_to_findmy_json(plist_file, naming_dir)
-            # Use a sanitized name for the file
             safe_name = data["name"].replace(" ", "_").replace("/", "_")
             out_path = output_dir / f"{safe_name}.json"
             with open(out_path, "w") as f:
                 json.dump(data, f, indent=2)
-            print(f"  Converted: {data['name']} -> {out_path.name}")
             count += 1
-        except Exception as e:
-            print(f"  Failed: {plist_file.stem}: {e}")
-
-    print(f"\nConverted {count} AirTag(s) to {output_dir}")
+        except Exception:
+            continue
+    return count
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) < 3:
+        print(f"Usage: {sys.argv[0]} <plist_dir> <output_dir>")
+        sys.exit(1)
+    plist_dir = Path(sys.argv[1])
+    output_dir = Path(sys.argv[2])
+    naming_dir = plist_dir.parent / "BeaconNamingRecord"
+    count = convert_dir(
+        plist_dir, output_dir,
+        naming_dir=naming_dir if naming_dir.exists() else None,
+    )
+    print(f"Converted {count} AirTag(s) to {output_dir}")

@@ -15,7 +15,6 @@
       pkgs = nixpkgs.legacyPackages.${system};
     in {
       server = pkgs.callPackage ./server/package.nix {};
-      key-extractor = pkgs.callPackage ./extractor/package.nix {};
       provision-vm = pkgs.callPackage ./extractor/provision-package.nix {};
     });
   };
