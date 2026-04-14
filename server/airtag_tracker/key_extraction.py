@@ -102,19 +102,22 @@ def _ssh_up(timeout: int = 8) -> bool:
 
 
 def _enable_remote_login(password: str) -> None:
-    """Drive Spotlight → Terminal → `sudo systemsetup -setremotelogin on`
-    via QMP keystrokes. Called only when SSH isn't already up."""
+    """Drive Spotlight → Terminal → `sudo launchctl load -w
+    /System/Library/LaunchDaemons/ssh.plist` via QMP keystrokes.
+    launchctl works without Full Disk Access (which modern macOS requires
+    for `systemsetup -setremotelogin on`)."""
     emit("info", "extract", "SSH not up — enabling Remote Login via keystrokes")
-    time.sleep(3)
+    qmp.send_keys(["esc"])  # dismiss anything that might be open
+    time.sleep(0.5)
     qmp.send_chord(["meta_l", "spc"])
-    time.sleep(1.2)
+    time.sleep(1.5)
     qmp.type_text("Terminal")
-    time.sleep(1.0)
+    time.sleep(1.2)
     qmp.send_keys(["ret"])
-    time.sleep(4.0)
-    qmp.type_text("sudo systemsetup -setremotelogin on")
+    time.sleep(6.0)  # Terminal launch can be slow on first run
+    qmp.type_text("sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist")
     qmp.send_keys(["ret"])
-    time.sleep(2.0)
+    time.sleep(2.5)
     qmp.type_text(password)
     qmp.send_keys(["ret"])
     time.sleep(4.0)
@@ -135,7 +138,7 @@ def _wait_ssh(deadline_s: int = 300) -> None:
             return
         # If SSH hasn't come up 45s after login, assume Remote Login is
         # off and run the enable sequence (once per run).
-        if not tried_enable and time.time() - t0 > 45:
+        if not tried_enable and time.time() - t0 > 75:
             pw = vm_password.get() or ""
             if pw:
                 try:
