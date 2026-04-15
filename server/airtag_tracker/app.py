@@ -48,5 +48,18 @@ def run() -> None:
         emit("info", "vm", "VM provisioning is running, streaming logs")
         systemd.tail_journal_async("airtag-provision-vm", "vm")
 
+    if VM_ENABLED:
+        import threading
+        from . import vm as vmmgr
+        def _autostart():
+            try:
+                st = vmmgr.status()
+                if st.get("setup_complete") and not st.get("vm_running"):
+                    emit("info", "vm", "Auto-starting VM on server startup")
+                    vmmgr.start()
+            except Exception as e:
+                emit("warning", "vm", f"VM autostart failed: {e}")
+        threading.Thread(target=_autostart, daemon=True, name="vm-autostart").start()
+
     polling.start_background()
     app.run(host="127.0.0.1", port=PORT)
