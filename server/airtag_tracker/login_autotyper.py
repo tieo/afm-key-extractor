@@ -74,25 +74,35 @@ def _worker() -> None:
 
     time.sleep(START_DELAY_S)
     deadline = time.time() + MAX_WAIT_S
+    attempts = 0
     while time.time() < deadline:
         if _login_screen_visible():
-            emit("info", "vm", "Login window detected via OCR — typing password")
+            attempts += 1
+            emit("info", "vm", f"Login window detected (attempt {attempts}) — typing password")
             try:
-                # Click the password field first — macOS sometimes lands
-                # focus on the Shut Down button instead of the field.
-                # We don't know exact coords, but pressing Return on the
-                # username tile moves focus to the field reliably.
-                qmp.send_keys(["ret"])
-                time.sleep(0.6)
+                # With a single user account, macOS focuses the password
+                # field on boot — type directly and submit. Sending a
+                # leading Return submits an empty password, which triggers
+                # the "shake" rejection animation and can race with typing.
                 qmp.type_text(password)
+                time.sleep(0.3)
                 qmp.send_keys(["ret"])
-                emit("info", "vm", "Auto-login keystrokes sent")
             except Exception as e:
                 emit("error", "vm", f"Auto-login type failed: {e}")
                 return
-            return
+            # Wait for login screen to disappear (= success). If it stays
+            # visible, macOS rejected the password — retry after cooldown.
+            t_check = time.time() + 15
+            while time.time() < t_check:
+                time.sleep(2.0)
+                if not _login_screen_visible():
+                    emit("info", "vm", f"Auto-login succeeded after {attempts} attempt(s)")
+                    return
+            emit("warning", "vm", f"Login screen still visible after attempt {attempts} — retrying")
+            time.sleep(3.0)
+            continue
         time.sleep(POLL_INTERVAL_S)
-    emit("warning", "vm", f"Auto-login gave up after {MAX_WAIT_S:.0f}s (login window never detected)")
+    emit("warning", "vm", f"Auto-login gave up after {MAX_WAIT_S:.0f}s ({attempts} attempts)")
 
 
 def start() -> None:
