@@ -77,11 +77,23 @@ def start(email: str | None = None, password: str | None = None) -> dict:
     global _state, _error, _thread, _2fa_code, _sms_phone
     if email and password:
         apple_creds.set_(email, password)
-    creds = apple_creds.get()
-    if not creds:
-        raise RuntimeError("needs_password")
     if not vm.is_running():
         raise RuntimeError("VM is not running")
+    # Creds are only required when we actually have to drive a fresh
+    # sign-in. If the VM is already signed into iCloud (marker or live
+    # check), the worker just runs the post-signin tasks (dismiss
+    # prompts, enable Find My Mac, trigger extraction) and doesn't need
+    # a password.
+    creds = apple_creds.get()
+    if not creds:
+        already = VM_ICLOUD_SIGNED_IN_MARKER.exists()
+        if not already:
+            try:
+                already = _is_signed_in()
+            except Exception:
+                already = False
+        if not already:
+            raise RuntimeError("needs_password")
     with _lock:
         if _state in ("running", "awaiting_2fa"):
             return {"state": _state}
@@ -172,6 +184,12 @@ def _is_find_my_mac_on() -> bool:
 # Sign-in flow
 # ---------------------------------------------------------------------------
 
+APPLE_ID_LANDED_KEYWORDS = SIGNIN_PANE_KEYWORDS + (
+    # Post-signin account view shows these instead of the sign-in sheet.
+    "icloud", "family sharing", "media & purchases", "sign out",
+)
+
+
 def _open_apple_id_pane() -> None:
     last = ""
     for bundle, anchor in APPLE_ID_URLS:
@@ -180,9 +198,9 @@ def _open_apple_id_pane() -> None:
         except Exception as e:
             last = str(e)
             continue
-        if vm_ui.wait_for_text(SIGNIN_PANE_KEYWORDS, deadline_s=20):
+        if vm_ui.wait_for_text(APPLE_ID_LANDED_KEYWORDS, deadline_s=20):
             return
-        last = f"{bundle} opened but sign-in sheet never rendered"
+        last = f"{bundle} opened but Apple ID pane never rendered"
     raise RuntimeError(f"could not open Apple ID pane: {last[:200]}")
 
 
@@ -382,9 +400,14 @@ def _enable_find_my_mac(deadline_s: int = 60) -> None:
         emit("info", "vm", "Find My Mac already enabled")
         return
     emit("info", "vm", "Enabling Find My Mac")
-    vm_ui.open_settings_pane(
-        "com.apple.preferences.AppleIDPrefPane", "iCloud", settle_s=5.0,
-    )
+    # The correct Ventura pane is com.apple.systempreferences.AppleIDSettings;
+    # the old com.apple.preferences.AppleIDPrefPane bundle doesn't navigate
+    # and leaves Settings parked on whatever it was last on.
+    _open_apple_id_pane()
+    # Open iCloud subpane by clicking the row in the account overview.
+    if not vm_ui.click_text("iCloud", tries=3):
+        raise RuntimeError("could not locate 'iCloud' row in Apple ID pane")
+    time.sleep(1.5)
     if not vm_ui.click_text("Show", "All", tries=3):
         emit("warning", "vm", "Could not click 'Show All' — Find My row may still be visible")
     time.sleep(1.0)
@@ -412,15 +435,15 @@ def _enable_find_my_mac(deadline_s: int = 60) -> None:
 def _worker() -> None:
     try:
         creds = apple_creds.get()
-        if not creds:
-            raise RuntimeError("credentials vanished")
-        email, password = creds
 
         emit("info", "vm", "Apple ID sign-in: waiting for VM SSH")
         _wait_ssh()
         _wait_desktop()
 
         if not _is_signed_in():
+            if not creds:
+                raise RuntimeError("credentials vanished")
+            email, password = creds
             emit("info", "vm", "Apple ID sign-in: opening System Settings pane")
             _open_apple_id_pane()
 
