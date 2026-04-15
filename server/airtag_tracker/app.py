@@ -50,13 +50,19 @@ def run() -> None:
 
     if VM_ENABLED:
         import threading
-        from . import vm as vmmgr
+        from . import apple_creds, vm as vmmgr, vm_apple_signin
         def _autostart():
             try:
                 st = vmmgr.status()
                 if st.get("setup_complete") and not st.get("vm_running"):
                     emit("info", "vm", "Auto-starting VM on server startup")
                     vmmgr.start()
+                if apple_creds.get():
+                    emit("info", "vm", "Cached Apple creds found — auto-triggering sign-in")
+                    try:
+                        vm_apple_signin.start()
+                    except Exception as e:
+                        emit("warning", "vm", f"auto sign-in trigger failed: {e}")
             except Exception as e:
                 emit("warning", "vm", f"VM autostart failed: {e}")
         threading.Thread(target=_autostart, daemon=True, name="vm-autostart").start()
