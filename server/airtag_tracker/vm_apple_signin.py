@@ -321,6 +321,55 @@ def _wait_signed_in(deadline_s: int = 180) -> None:
 # Find My Mac
 # ---------------------------------------------------------------------------
 
+POST_SIGNIN_DISMISSIBLE = (
+    # Passcode/"Enter your Mac password" sheet — can always be Later/Cancelled.
+    "enter your mac password", "enter the password",
+    # iCloud Drive merge sheet.
+    "merge", "keep a copy", "don't merge",
+    # Freeform/Reminders upgrade nag.
+    "upgrade", "later",
+    # Messages in iCloud enable nag.
+    "messages in icloud",
+    # Photos import nag.
+    "import", "not now",
+)
+
+
+def _dismiss_post_signin_prompts(deadline_s: int = 45) -> None:
+    """Dismiss modal sheets that pop after a fresh iCloud sign-in.
+
+    Strategy: for up to ``deadline_s``, poll OCR; when a known
+    dismissible-sheet keyword appears, prefer clicking 'Later' /
+    'Not Now' / 'Cancel' (non-destructive), else press Escape. Exit
+    once two consecutive polls see no matches.
+    """
+    emit("info", "vm", "Dismissing post-signin dialogs")
+    clean_rounds = 0
+    t0 = time.time()
+    while time.time() - t0 < deadline_s:
+        text = vm_ui.screen_text()
+        matched = [kw for kw in POST_SIGNIN_DISMISSIBLE if kw in text]
+        if not matched:
+            clean_rounds += 1
+            if clean_rounds >= 2:
+                return
+            time.sleep(2)
+            continue
+        clean_rounds = 0
+        # Prefer a dedicated dismiss button (non-destructive) before Escape.
+        clicked = False
+        for label_pair in (("Later",), ("Not", "Now"), ("Cancel",), ("Don't", "Merge")):
+            if vm_ui.click_text(*label_pair, tries=1, settle_s=1.0):
+                clicked = True
+                break
+        if not clicked:
+            with qmp.qmp() as c:
+                c.send_keys(["esc"])
+            time.sleep(1.0)
+        time.sleep(1.5)
+    emit("warning", "vm", "Post-signin dialogs not fully cleared within deadline")
+
+
 def _enable_find_my_mac(deadline_s: int = 60) -> None:
     """Navigate to iCloud → Find My Mac and toggle it on.
 
@@ -402,6 +451,11 @@ def _worker() -> None:
                 _wait_signed_in()
         else:
             emit("info", "vm", "VM already signed into iCloud")
+
+        try:
+            _dismiss_post_signin_prompts()
+        except Exception as e:
+            emit("warning", "vm", f"post-signin dismiss failed: {e}")
 
         try:
             _enable_find_my_mac()
