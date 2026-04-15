@@ -140,9 +140,11 @@ def _is_signed_in() -> bool:
 
 def _is_find_my_mac_on() -> bool:
     """Authoritative FMM check via `defaults`. Avoids OCR entirely."""
+    # In MobileMeAccounts plist, `Enabled = 1;` precedes `Name = "FIND_MY_MAC";`
+    # by one line inside each service dict.
     r = vm_ui.ssh(
         "defaults read MobileMeAccounts Accounts 2>/dev/null "
-        "| grep -A1 FIND_MY_MAC | grep -c 'Enabled = 1'",
+        "| grep -B1 FIND_MY_MAC | grep -c 'Enabled = 1'",
         timeout=10,
     )
     try:

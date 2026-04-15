@@ -111,14 +111,18 @@ def open_settings_pane(bundle_id: str, anchor: str | None = None, settle_s: floa
     url = f"x-apple.systempreferences:{bundle_id}"
     if anchor:
         url += f"?{anchor}"
-    ssh("killall 'System Settings' 2>/dev/null; true", timeout=10)
-    time.sleep(1.0)
-    r = ssh(f"open {shlex.quote(url)}", timeout=15)
-    if r.returncode != 0:
-        raise RuntimeError(
-            f"open {url!r} failed: {(r.stderr or r.stdout).strip()[:200]}"
-        )
-    time.sleep(settle_s)
+    # RBSRequestErrorDomain Code=5 ("cannot launch") is a launchservices
+    # race that resolves after a fresh killall + short wait. Retry 3×.
+    last = ""
+    for attempt in range(3):
+        ssh("killall 'System Settings' 2>/dev/null; true", timeout=10)
+        time.sleep(2.0 if attempt == 0 else 3.0)
+        r = ssh(f"open {shlex.quote(url)}", timeout=15)
+        if r.returncode == 0:
+            time.sleep(settle_s)
+            return
+        last = (r.stderr or r.stdout).strip()
+    raise RuntimeError(f"open {url!r} failed after 3 attempts: {last[:200]}")
 
 
 # ---------------------------------------------------------------------------
