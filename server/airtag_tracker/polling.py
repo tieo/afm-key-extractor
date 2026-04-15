@@ -6,19 +6,16 @@ import threading
 import time
 from datetime import UTC, datetime
 
-from findmy import LocalAnisetteProvider
-
 from . import account_storage, db, keys, settings
 from .config import ANISETTE_PATH
 from .events import emit
 
 
 def _get_account():
-    ani = LocalAnisetteProvider(libs_path=str(ANISETTE_PATH))
     if not account_storage.exists():
         return None
     try:
-        acc = account_storage.load(ani)
+        acc = account_storage.load(str(ANISETTE_PATH))
         if acc is not None:
             emit("info", "account", "Restored Apple account session")
         return acc

@@ -38,12 +38,14 @@ def save(acc: AppleAccount) -> None:
     ACCOUNT_ENC_PATH.chmod(0o600)
 
 
-def load(anisette) -> AppleAccount | None:
+def load(anisette_libs_path) -> AppleAccount | None:
     if ACCOUNT_ENC_PATH.exists():
         data = json.loads(_fernet().decrypt(ACCOUNT_ENC_PATH.read_bytes()))
-        return AppleAccount.from_json(data, anisette=anisette)
+        return AppleAccount.from_json(data, anisette_libs_path=anisette_libs_path)
     if ACCOUNT_PATH.exists():
-        acc = AppleAccount.from_json(str(ACCOUNT_PATH), anisette=anisette)
+        acc = AppleAccount.from_json(
+            str(ACCOUNT_PATH), anisette_libs_path=anisette_libs_path
+        )
         save(acc)
         ACCOUNT_PATH.unlink()
         emit("info", "account", "Migrated plaintext account.json → encrypted account.enc")
