@@ -78,3 +78,11 @@ def apple_signin_2fa():
         return jsonify(vm_apple_signin.submit_2fa(code))
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+
+
+@bp.route("/api/vm/apple-signin/request-sms", methods=["POST"])
+def apple_signin_request_sms():
+    try:
+        return jsonify(vm_apple_signin.request_sms())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400

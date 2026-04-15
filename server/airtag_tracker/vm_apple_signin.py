@@ -31,6 +31,8 @@ _state: State = "idle"
 _error: str | None = None
 _2fa_code: str | None = None
 _2fa_event = threading.Event()
+_sms_event = threading.Event()
+_sms_phone: str | None = None
 _thread: threading.Thread | None = None
 
 # URL schemes that open the Apple ID sign-in pane directly. The first
@@ -53,15 +55,26 @@ def status() -> dict:
     with _lock:
         state = _state
         error = _error
+        phone = _sms_phone
     return {
         "state": state,
         "error": error,
+        "sms_phone": phone,
         "signed_in_cached": VM_ICLOUD_SIGNED_IN_MARKER.exists(),
     }
 
 
+def request_sms() -> dict:
+    """Ask the worker to drive the 'Didn't receive code → SMS' flow."""
+    with _lock:
+        if _state != "awaiting_2fa":
+            raise RuntimeError(f"not awaiting 2fa (state={_state})")
+    _sms_event.set()
+    return {"requested": True}
+
+
 def start(email: str | None = None, password: str | None = None) -> dict:
-    global _state, _error, _thread, _2fa_code
+    global _state, _error, _thread, _2fa_code, _sms_phone
     if email and password:
         apple_creds.set_(email, password)
     creds = apple_creds.get()
@@ -75,7 +88,9 @@ def start(email: str | None = None, password: str | None = None) -> dict:
         _state = "running"
         _error = None
         _2fa_code = None
+        _sms_phone = None
         _2fa_event.clear()
+        _sms_event.clear()
     _thread = threading.Thread(target=_worker, daemon=True, name="apple-signin")
     _thread.start()
     return {"state": _state}
@@ -240,6 +255,50 @@ def _wait_for_2fa_or_signed_in(deadline_s: int = 180) -> str:
     raise RuntimeError("timed out waiting for 2FA or signed-in state")
 
 
+def _extract_masked_phone() -> str | None:
+    """Scan OCR text for an Apple-style masked phone number.
+
+    Apple shows things like '+49 •••• ••12 34' or '(•••) •••-1234'
+    on the SMS-sent sheet. OCR often turns •/● into '.', '-', '*', or
+    just drops them, so match the *tail digits* with any garbage in
+    between a leading '+' or digit.
+    """
+    import re
+    text = vm_ui.screen_text()
+    for pat in (
+        r"\+\d[\d\s\-\.\*•●x]{3,}\d{2,4}",
+        r"[\*•●\.x]{2,}[\s\-]?\d{2,4}",
+    ):
+        m = re.search(pat, text)
+        if m:
+            return m.group(0).strip()
+    return None
+
+
+def _request_sms_code() -> str | None:
+    """Drive the three-click 'didn't receive → trusted devices → Send Code' path.
+
+    Returns the masked phone OCR'd from the 'code sent' sheet, or None
+    if any step failed (caller logs a warning but keeps waiting for a code)."""
+    emit("info", "vm", "Apple ID sign-in: requesting SMS code")
+    if not vm_ui.click_text("receive", "code", tries=3):
+        emit("warning", "vm", "SMS flow: 'Didn't receive a verification code?' not found")
+        return None
+    time.sleep(1.5)
+    if not vm_ui.click_text("get", "devices", tries=3):
+        emit("warning", "vm", "SMS flow: 'Can't get to your trusted devices?' not found")
+        return None
+    time.sleep(1.5)
+    if not vm_ui.click_text("Send", "Code", tries=3):
+        emit("warning", "vm", "SMS flow: 'Send Code' button not found")
+        return None
+    time.sleep(2.5)
+    phone = _extract_masked_phone()
+    if phone:
+        emit("info", "vm", f"Apple ID sign-in: SMS sent to {phone}")
+    return phone
+
+
 def _type_2fa(code: str) -> None:
     with qmp.qmp() as c:
         c.type_text(code, gap_s=0.15)
@@ -323,10 +382,20 @@ def _worker() -> None:
             outcome = _wait_for_2fa_or_signed_in()
 
             if outcome == "2fa":
+                global _sms_phone
                 _set_state("awaiting_2fa")
                 emit("info", "vm", "Apple ID sign-in: awaiting 2FA code from browser")
-                if not _2fa_event.wait(timeout=300):
-                    raise RuntimeError("2FA code not supplied within 5 min")
+                deadline = time.time() + 600
+                while time.time() < deadline:
+                    if _2fa_event.wait(timeout=1.0):
+                        break
+                    if _sms_event.is_set():
+                        _sms_event.clear()
+                        phone = _request_sms_code()
+                        with _lock:
+                            _sms_phone = phone
+                else:
+                    raise RuntimeError("2FA code not supplied within 10 min")
                 _set_state("running")
                 emit("info", "vm", "Apple ID sign-in: typing 2FA code")
                 _type_2fa(_2fa_code or "")

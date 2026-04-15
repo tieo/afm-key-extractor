@@ -185,22 +185,57 @@ async function pollSignin() {
     if (!ok) return;
     const summary = document.getElementById("vm-status-summary");
     if (summary) summary.innerHTML = `<span class="dot yellow"></span> Apple sign-in: ${data.state}${data.error ? " — " + data.error : ""}`;
-    if (data.state === "awaiting_2fa") { clearInterval(signinPoll); signinPoll = null; prompt2fa(); }
-    else if (data.state === "signed_in" || data.state === "failed" || data.state === "idle") {
-      clearInterval(signinPoll); signinPoll = null; await refreshStatus();
+    if (data.state === "awaiting_2fa") {
+      render2faForm(data.sms_phone);
+    } else if (data.state === "signed_in" || data.state === "failed" || data.state === "idle") {
+      clearInterval(signinPoll); signinPoll = null;
+      const f = document.getElementById("vm-2fa-form"); if (f) f.remove();
+      await refreshStatus();
     }
   };
   await tick();
   signinPoll = setInterval(tick, 3000);
 }
 
-function prompt2fa() {
-  const code = window.prompt("Enter the 2FA code Apple just sent:");
+function render2faForm(smsPhone) {
+  let form = document.getElementById("vm-2fa-form");
+  const controls = document.getElementById("vm-controls");
+  if (!controls) return;
+  if (!form) {
+    form = document.createElement("div");
+    form.id = "vm-2fa-form";
+    form.className = "section";
+    form.innerHTML = `
+      <h4>Apple 2FA</h4>
+      <p class="vm-2fa-hint">Enter the 6-digit code Apple sent to your trusted device, or request an SMS code.</p>
+      <input type="text" id="vm-2fa-code" placeholder="6-digit code" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+      <button class="btn primary" data-action="vm-submit-2fa">Verify</button>
+      <button class="btn" data-action="vm-request-sms">Send SMS code</button>
+      <div class="vm-2fa-phone" id="vm-2fa-phone"></div>`;
+    controls.prepend(form);
+    form.querySelector('[data-action="vm-submit-2fa"]').addEventListener("click", submitVm2fa);
+    form.querySelector('[data-action="vm-request-sms"]').addEventListener("click", requestVmSms);
+    document.getElementById("vm-2fa-code").focus();
+  }
+  const phoneDiv = document.getElementById("vm-2fa-phone");
+  if (phoneDiv) phoneDiv.textContent = smsPhone ? `SMS sent to ${smsPhone}` : "";
+}
+
+async function submitVm2fa() {
+  const code = document.getElementById("vm-2fa-code").value.trim();
   if (!code) return;
-  postJSON("/api/vm/apple-signin/2fa", { code }).then(({ ok, data }) => {
-    if (!ok || data.error) { toast(data.error || "2FA failed", "error"); return; }
-    toast("2FA submitted");
-    pollSignin();
+  const { ok, data } = await postJSON("/api/vm/apple-signin/2fa", { code });
+  if (!ok || data.error) { toast(data.error || "2FA failed", "error"); return; }
+  toast("2FA submitted");
+}
+
+async function requestVmSms(ev) {
+  const btn = ev.currentTarget;
+  return busy(btn, "Requesting…", async () => {
+    const { ok, data } = await postJSON("/api/vm/apple-signin/request-sms");
+    if (!ok || data.error) { toast(data.error || "Request failed", "error"); return false; }
+    toast("SMS requested — check your phone");
+    return true;
   });
 }
 
