@@ -149,6 +149,23 @@ def _wait_ssh(deadline_s: int = 120) -> None:
     raise RuntimeError("VM SSH never came up")
 
 
+def _wait_desktop(deadline_s: int = 300) -> None:
+    """Wait until a user is logged in to the desktop.
+
+    `open` (and System Settings) require an active GUI session. sshd
+    runs before login, so SSH reachability isn't enough — we need
+    Dock.app to be running, which only happens post-login.
+    """
+    emit("info", "vm", "Apple ID sign-in: waiting for desktop (post-login)")
+    t0 = time.time()
+    while time.time() - t0 < deadline_s:
+        r = _ssh("pgrep -x Dock >/dev/null && echo up", timeout=8)
+        if r.returncode == 0 and "up" in r.stdout:
+            return
+        time.sleep(4)
+    raise RuntimeError("desktop never came up (login auto-type may have failed)")
+
+
 def _is_signed_in() -> bool:
     r = _ssh(
         "defaults read MobileMeAccounts Accounts 2>/dev/null "
@@ -199,17 +216,18 @@ def _screen_matches(keywords: tuple[str, ...]) -> bool:
 
 def _open_apple_id_pane() -> None:
     """Navigate System Settings to the Apple ID sign-in pane."""
-    # Close anything stuck on the screen, then fire the URL scheme.
     with qmp.qmp() as c:
         c.send_chord(["meta_l", "q"]); time.sleep(0.5)
+    last_err = ""
     for url in APPLE_ID_URLS:
-        r = _ssh(f"open {url!r}", timeout=15)
+        r = _ssh(f"open {url!r} 2>&1", timeout=15)
         if r.returncode == 0:
-            break
-    else:
-        raise RuntimeError("could not open Apple ID pane via URL scheme")
-    # Give System Settings time to actually render the sheet.
-    time.sleep(6.0)
+            time.sleep(6.0)
+            return
+        last_err = (r.stdout + r.stderr).strip()
+    raise RuntimeError(
+        f"could not open Apple ID pane via URL scheme: {last_err[:200]}"
+    )
 
 
 def _type_credentials(email: str, password: str) -> None:
@@ -277,6 +295,7 @@ def _worker() -> None:
 
         emit("info", "vm", "Apple ID sign-in: waiting for VM SSH")
         _wait_ssh()
+        _wait_desktop()
 
         if _is_signed_in():
             emit("info", "vm", "VM already signed into iCloud — skipping")

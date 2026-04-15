@@ -31,7 +31,17 @@ export function renderVmStatus() {
   else if (!state.vm.setup_complete) { label = "Needs initial setup"; cls = "yellow"; }
   else if (state.vm.vm_running) { label = "Running"; cls = "green"; }
   else { label = "Ready"; cls = "green"; }
-  summary.innerHTML = `<span class="dot ${cls}"></span> ${label}`;
+  const signin = state.vm.apple_signin || {};
+  const signinText = {
+    running: "iCloud sign-in in progress…",
+    awaiting_2fa: "iCloud sign-in: waiting for 2FA code",
+    signed_in: "iCloud ✓",
+    failed: "iCloud sign-in failed" + (signin.error ? ` — ${signin.error}` : ""),
+  }[signin.state];
+  const signinLine = signinText
+    ? `<div class="vm-signin-line ${signin.state}">${signinText}</div>`
+    : (signin.signed_in_cached ? '<div class="vm-signin-line signed_in">iCloud ✓</div>' : "");
+  summary.innerHTML = `<span class="dot ${cls}"></span> ${label}${signinLine}`;
 
   if (state.vm.vm_running && vmOverlayTimer) hideVmOverlay();
 
