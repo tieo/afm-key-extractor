@@ -11,8 +11,13 @@ let vmStartTime = null;
 let vmOverlayTimer = null;
 
 export function enterVmPanel() {
-  if (!vncLoaded) {
-    document.getElementById("vnc-iframe").src = VNC_URL;
+  // Always (re)load the iframe on panel entry. If a previous load
+  // failed (auth race, websocket issue, VM not yet up) the iframe
+  // stays blank until something re-sets .src — users report "I don't
+  // see the VM" when that happens.
+  const f = document.getElementById("vnc-iframe");
+  if (f && (!vncLoaded || !f.src || !f.src.includes("vnc.html"))) {
+    f.src = VNC_URL;
     vncLoaded = true;
   }
   renderVmStatus();
@@ -163,8 +168,6 @@ async function startAppleSignin(btn) {
   return busy(btn, "Starting…", async () => {
     let res = await postJSON("/api/vm/apple-signin/start");
     if (!res.ok && res.data?.error === "needs_password") {
-      // Route through the regular Apple ID login form — it already
-      // handles 2FA and, on success, triggers the VM sign-in itself.
       toast("Sign in with Apple ID — the VM sign-in runs automatically");
       openPanel("account");
       showLoginForm();
@@ -172,6 +175,18 @@ async function startAppleSignin(btn) {
     }
     const { ok, data } = res;
     if (!ok || data.error) { toast(data.error || "Failed to start", "error"); return false; }
+    // Check if worker is already done (common case: VM already signed in).
+    const st = await getJSON("/api/vm/apple-signin/status");
+    if (st.ok && st.data.state === "signed_in") {
+      toast("VM already signed into iCloud");
+      await refreshStatus();
+      return true;
+    }
+    if (st.ok && st.data.state === "idle" && st.data.signed_in_cached) {
+      toast("VM already signed into iCloud");
+      await refreshStatus();
+      return true;
+    }
     toast("Apple ID sign-in started");
     pollSignin();
     return true;
@@ -190,6 +205,8 @@ async function pollSignin() {
     } else if (data.state === "signed_in" || data.state === "failed" || data.state === "idle") {
       clearInterval(signinPoll); signinPoll = null;
       const f = document.getElementById("vm-2fa-form"); if (f) f.remove();
+      if (data.state === "signed_in") toast("VM signed into iCloud");
+      else if (data.state === "failed") toast(data.error || "Sign-in failed", "error");
       await refreshStatus();
     }
   };
@@ -199,8 +216,10 @@ async function pollSignin() {
 
 function render2faForm(smsPhone) {
   let form = document.getElementById("vm-2fa-form");
-  const controls = document.getElementById("vm-controls");
-  if (!controls) return;
+  // Attach to the panel body (not #vm-controls, which renderVmStatus
+  // wipes every status refresh).
+  const host = document.querySelector("#vm-panel .panel-body");
+  if (!host) return;
   if (!form) {
     form = document.createElement("div");
     form.id = "vm-2fa-form";
@@ -212,7 +231,7 @@ function render2faForm(smsPhone) {
       <button class="btn primary" data-action="vm-submit-2fa">Verify</button>
       <button class="btn" data-action="vm-request-sms">Send SMS code</button>
       <div class="vm-2fa-phone" id="vm-2fa-phone"></div>`;
-    controls.prepend(form);
+    host.append(form);
     form.querySelector('[data-action="vm-submit-2fa"]').addEventListener("click", submitVm2fa);
     form.querySelector('[data-action="vm-request-sms"]').addEventListener("click", requestVmSms);
     document.getElementById("vm-2fa-code").focus();
