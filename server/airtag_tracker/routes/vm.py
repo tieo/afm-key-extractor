@@ -51,8 +51,16 @@ def reset_to_golden():
 
 @bp.route("/api/vm/apple-signin/start", methods=["POST"])
 def apple_signin_start():
+    from flask import request
+    body = request.get_json(silent=True) or {}
     try:
-        return jsonify(vm_apple_signin.start())
+        return jsonify(vm_apple_signin.start(
+            email=body.get("email"), password=body.get("password"),
+        ))
+    except RuntimeError as e:
+        if str(e) == "needs_password":
+            return jsonify({"error": "needs_password"}), 400
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 

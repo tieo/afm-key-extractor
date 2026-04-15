@@ -103,7 +103,15 @@ let signinPoll = null;
 
 async function startAppleSignin(btn) {
   return busy(btn, "Starting…", async () => {
-    const { ok, data } = await postJSON("/api/vm/apple-signin/start");
+    let res = await postJSON("/api/vm/apple-signin/start");
+    if (!res.ok && res.data?.error === "needs_password") {
+      const email = window.prompt("Apple ID email:");
+      if (!email) return false;
+      const password = window.prompt("Apple ID password:");
+      if (!password) return false;
+      res = await postJSON("/api/vm/apple-signin/start", { email, password });
+    }
+    const { ok, data } = res;
     if (!ok || data.error) { toast(data.error || "Failed to start", "error"); return false; }
     toast("Apple ID sign-in started");
     pollSignin();

@@ -71,13 +71,18 @@ def status() -> dict:
     }
 
 
-def start() -> dict:
+def start(email: str | None = None, password: str | None = None) -> dict:
+    """Kick off the sign-in worker.
+
+    If ``email`` and ``password`` are provided, they're stashed into
+    ``apple_creds`` first. Otherwise uses whatever is already cached
+    (populated by the web login flow)."""
     global _state, _error, _thread, _2fa_code
+    if email and password:
+        apple_creds.set_(email, password)
     creds = apple_creds.get()
     if not creds:
-        raise RuntimeError(
-            "No Apple credentials cached. Sign in via the web form first."
-        )
+        raise RuntimeError("needs_password")
     if not vm.is_running():
         raise RuntimeError("VM is not running")
     with _lock:

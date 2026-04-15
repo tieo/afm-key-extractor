@@ -16,7 +16,8 @@ export async function syncKeys(btn) {
   await busy(btn, "Syncing…", async () => {
     const { ok, data } = await postJSON("/api/extract-keys");
     if (!ok || data.error) toast(data.error || "Sync failed", "error");
-    else toast(`Synced ${data.count ?? ""} key${data.count === 1 ? "" : "s"}`.trim());
+    else if (data.status === "already_running") toast("Sync already in progress");
+    else toast("Sync started — keys will appear when the VM finishes");
     await refreshStatus();
   });
 }
