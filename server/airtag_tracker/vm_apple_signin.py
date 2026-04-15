@@ -149,9 +149,29 @@ def _wait_desktop(deadline_s: int = 300) -> None:
     while time.time() - t0 < deadline_s:
         r = vm_ui.ssh("pgrep -x Dock >/dev/null && echo up", timeout=8)
         if r.returncode == 0 and "up" in r.stdout:
+            _disable_sleep_and_lock()
             return
         time.sleep(4)
     raise RuntimeError("desktop never came up")
+
+
+def _disable_sleep_and_lock() -> None:
+    """Idempotent: disable every path that would blank or lock the screen.
+
+    We discovered the hard way that a locked screen makes every
+    `open x-apple.systempreferences:...` no-op from the URL opener's
+    perspective (app launches, but the pane never renders because the
+    loginwindow overlay is on top) — OCR then reports "pane never
+    rendered" and the worker gives up. Applies every run so a user-
+    initiated lock or a future screensaver re-enable can't stick."""
+    vm_ui.ssh(
+        "sudo pmset -a displaysleep 0 sleep 0 disksleep 0 2>/dev/null; "
+        "defaults -currentHost write com.apple.screensaver idleTime -int 0; "
+        "defaults write com.apple.screensaver askForPassword -int 0; "
+        "defaults write com.apple.screensaver askForPasswordDelay -int 0; "
+        "killall ScreenSaverEngine 2>/dev/null; true",
+        timeout=15,
+    )
 
 
 def _is_signed_in() -> bool:
