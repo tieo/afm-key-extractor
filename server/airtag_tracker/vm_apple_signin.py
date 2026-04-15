@@ -276,17 +276,42 @@ def _focus_email_field() -> None:
         time.sleep(0.5)
 
 
-def _type_credentials(email: str, password: str) -> None:
-    """Focus email field, type email → Return → verify password sheet → type password → Return.
+def _paste_via_clipboard(text: str) -> None:
+    """Push text to the VM's pasteboard over SSH, then press cmd-v.
 
-    Each step verifies its effect via OCR; on mismatch we retry once
-    before giving up with a diagnostic.
+    QMP send-key uses fixed US-layout scancodes; if the VM's active
+    input source differs (or the password contains chars whose
+    layout-dependent mapping we misjudge), characters silently
+    mismatch and Apple returns 'password incorrect'. Clipboard paste
+    sidesteps the keymap entirely — pbcopy accepts raw bytes and
+    cmd-v types whatever is on the pasteboard verbatim.
+    """
+    import base64, shlex
+    b64 = base64.b64encode(text.encode()).decode()
+    r = _ssh(
+        f"echo {shlex.quote(b64)} | base64 -D | pbcopy",
+        timeout=15,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"pbcopy failed: {(r.stderr or r.stdout).strip()[:200]}")
+    time.sleep(0.3)
+    with qmp.qmp() as c:
+        c.send_chord(["meta_l", "v"])
+        time.sleep(0.3)
+
+
+def _type_credentials(email: str, password: str) -> None:
+    """Focus email field, paste email → Return → verify password sheet → paste password → Return.
+
+    Uses clipboard paste (pbcopy + cmd-v) instead of per-character
+    QMP typing so passwords with punctuation or non-ASCII survive
+    intact regardless of the VM's keyboard layout.
     """
     for attempt in (1, 2):
         _focus_email_field()
+        _paste_via_clipboard(email)
+        time.sleep(0.4)
         with qmp.qmp() as c:
-            c.type_text(email, gap_s=0.08)
-            time.sleep(0.6)
             c.send_keys(["ret"])
         emit("info", "vm", "Apple ID sign-in: email submitted, waiting for password prompt")
         if _wait_for_keywords(PASSWORD_PROMPT_KEYWORDS, deadline_s=20):
@@ -294,14 +319,15 @@ def _type_credentials(email: str, password: str) -> None:
         if attempt == 2:
             raise RuntimeError("password prompt never appeared after typing email")
         emit("warning", "vm", "Password prompt missing — retrying email entry")
-        # Re-open the pane so the form is in a known state.
         _open_apple_id_pane()
 
     time.sleep(0.4)
+    _paste_via_clipboard(password)
+    time.sleep(0.4)
     with qmp.qmp() as c:
-        c.type_text(password, gap_s=0.08)
-        time.sleep(0.5)
         c.send_keys(["ret"])
+    # Wipe the pasteboard so the password doesn't linger on the clipboard.
+    _ssh("pbcopy </dev/null", timeout=10)
 
 
 def _wait_for_2fa_or_signed_in(deadline_s: int = 180) -> str:
