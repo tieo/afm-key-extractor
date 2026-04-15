@@ -221,23 +221,45 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
+# Vertical bands we must never click into. The menu bar holds system
+# items (clock, Siri) whose text can incidentally match OCR queries;
+# the Dock holds app labels, and clicking one launches that app — that
+# is exactly how a click_text("Find", "Mac") matched the "Find My"
+# Dock tooltip and launched Find My.app instead of toggling a settings
+# row. Both bands are stable on a 1280x800 VM framebuffer.
+MENUBAR_H = 28
+DOCK_H = 90
+
+
 def find_phrase(
     words: list[tuple[str, int, int, int, int]],
     first: str,
     last: str | None = None,
     y_tol: int = 12,
+    screen_h: int | None = None,
+    exclude_chrome: bool = True,
 ) -> tuple[int, int] | None:
     """Locate ``first`` (and optionally ``last``) in OCR output on a
-    single line. Returns click centre in native pixels, or None."""
+    single line. Returns click centre in native pixels, or None.
+
+    When ``exclude_chrome`` is set (the default) and ``screen_h`` is
+    provided, matches that land inside the menu bar or Dock bands are
+    discarded — the caller almost always means a target inside the
+    app's content area."""
+    def _in_content(y: int, h: int) -> bool:
+        if not exclude_chrome or screen_h is None:
+            return True
+        return y >= MENUBAR_H and (y + h) <= (screen_h - DOCK_H)
+
     nf = _norm(first)
-    fws = [w for w in words if _norm(w[0]) == nf]
+    fws = [w for w in words if _norm(w[0]) == nf and _in_content(w[2], w[4])]
     if not fws:
         return None
     if last is None:
         _, x, y, w, h = fws[0]
         return (x + w // 2, y + h // 2)
     nl = _norm(last)
-    lws = [w for w in words if _norm(w[0]) == nl]
+    lws = [w for w in words if _norm(w[0]) == nl and _in_content(w[2], w[4])]
     for fw in fws:
         for lw in lws:
             if abs(fw[2] - lw[2]) <= y_tol and lw[1] >= fw[1]:
@@ -297,7 +319,7 @@ def click_text(first: str, last: str | None = None, tries: int = 3, settle_s: fl
         p = _screendump()
         sw, sh = _screen_size(p)
         words = ocr_words(p)
-        hit = find_phrase(words, first, last)
+        hit = find_phrase(words, first, last, screen_h=sh)
         if hit:
             cx, cy = hit
             click_pixel(cx, cy, sw, sh)

@@ -428,6 +428,20 @@ def _enable_find_my_mac(deadline_s: int = 60) -> None:
     raise RuntimeError("Find My Mac never turned on")
 
 
+def _close_settings_and_findmy() -> None:
+    """Close System Settings and FindMy.app windows left behind.
+
+    FindMy.app may have been launched by a misdirected OCR click on the
+    Dock tooltip before chrome-exclusion was in place. killall is the
+    blunt but reliable option — neither app has unsaved state."""
+    vm_ui.ssh(
+        "killall 'System Settings' 2>/dev/null; "
+        "killall 'FindMy' 2>/dev/null; "
+        "killall 'Find My' 2>/dev/null; true",
+        timeout=10,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Worker
 # ---------------------------------------------------------------------------
@@ -484,6 +498,15 @@ def _worker() -> None:
             _enable_find_my_mac()
         except Exception as e:
             emit("warning", "vm", f"Find My Mac enable failed: {e}")
+
+        # Close any app windows the worker opened or that were left over
+        # from a bad earlier run (System Settings, and FindMy.app if a
+        # misdirected OCR click launched it from the Dock). Leaves
+        # Finder/Dock alone.
+        try:
+            _close_settings_and_findmy()
+        except Exception as e:
+            emit("warning", "vm", f"post-signin cleanup failed: {e}")
 
         _set_state("signed_in")
         try:
