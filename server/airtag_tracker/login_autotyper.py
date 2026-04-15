@@ -1,11 +1,11 @@
-"""Detect the macOS login window via OCR on QMP screendumps, then type
-the stored password.
+"""Detect the macOS login window via OCR, then type the stored password.
 
-Why OCR and not a timer: the login window appears 20–60 s after the
-OpenCore picker depending on kernel cache state, FileVault, and disk
-speed. Blindly typing after a sleep either misses the window or types
-into the wrong focus. OCR gives us a deterministic "the password field
-is visible right now" signal.
+OCR notes: the 'Enter Password' placeholder tesseract mangles badly
+('CbrterPosmwerd'), so matching on 'password' misses the window. The
+login screen's unmistakable signature is the trio of bottom-row
+buttons (Shut Down / Restart / Sleep) plus the username label. We
+match on those instead — all three terms are rendered in plain
+fonts that tesseract handles reliably.
 """
 
 from __future__ import annotations
@@ -20,45 +20,50 @@ from .events import emit
 
 
 POLL_INTERVAL_S = 3.0
-MAX_WAIT_S = 180.0
-START_DELAY_S = 20.0      # no point screen-dumping before macOS is close to login
-MATCH_KEYWORDS = ("password", "enter password")
+MAX_WAIT_S = 240.0
+START_DELAY_S = 20.0
+USERNAME = "airtag"
+# Any ≥2 of these visible together = login screen. Picked for OCR
+# robustness: all three are short words in default system font.
+SIGNATURE_KEYWORDS = ("shut down", "restart", "sleep")
 
 
-def _ocr(ppm_path: Path) -> str:
-    """Read text from a QEMU framebuffer dump.
-
-    macOS login is white text on a dark desktop; tesseract needs the
-    image inverted to a dark-on-light page, and PSM 11 ('sparse text')
-    handles the scattered labels much better than the default layout
-    analysis.
-    """
+def _ocr_text() -> str:
+    """OCR the current framebuffer at 1× and 2×, merged and lowercased."""
     try:
         import pytesseract
         from PIL import Image, ImageOps
     except ImportError as e:
         raise RuntimeError(f"OCR dependencies missing: {e}") from e
-    with Image.open(ppm_path) as img:
-        inverted = ImageOps.invert(img.convert("L"))
-        return pytesseract.image_to_string(inverted, config="--psm 11").lower()
+    with tempfile.TemporaryDirectory() as td:
+        ppm = Path(td) / "frame.ppm"
+        try:
+            qmp.screendump(str(ppm))
+        except Exception as e:
+            emit("warning", "vm", f"screendump failed: {e}")
+            return ""
+        if not ppm.exists() or ppm.stat().st_size == 0:
+            return ""
+        with Image.open(ppm) as img:
+            rgb = img.convert("RGB")
+            out = []
+            for variant in (rgb, ImageOps.invert(rgb),
+                            rgb.resize((rgb.width * 2, rgb.height * 2), Image.LANCZOS)):
+                try:
+                    out.append(pytesseract.image_to_string(
+                        variant, config="--psm 6"
+                    ))
+                except Exception:
+                    pass
+            return "\n".join(out).lower()
 
 
 def _login_screen_visible() -> bool:
-    with tempfile.TemporaryDirectory() as td:
-        shot = Path(td) / "frame.ppm"
-        try:
-            qmp.screendump(str(shot))
-        except Exception as e:
-            emit("warning", "vm", f"screendump failed: {e}")
-            return False
-        if not shot.exists() or shot.stat().st_size == 0:
-            return False
-        try:
-            text = _ocr(shot)
-        except Exception as e:
-            emit("warning", "vm", f"OCR failed: {e}")
-            return False
-        return any(kw in text for kw in MATCH_KEYWORDS)
+    text = _ocr_text()
+    if not text:
+        return False
+    hits = sum(1 for kw in SIGNATURE_KEYWORDS if kw in text)
+    return hits >= 2 and USERNAME in text
 
 
 def _worker() -> None:
@@ -73,6 +78,12 @@ def _worker() -> None:
         if _login_screen_visible():
             emit("info", "vm", "Login window detected via OCR — typing password")
             try:
+                # Click the password field first — macOS sometimes lands
+                # focus on the Shut Down button instead of the field.
+                # We don't know exact coords, but pressing Return on the
+                # username tile moves focus to the field reliably.
+                qmp.send_keys(["ret"])
+                time.sleep(0.6)
                 qmp.type_text(password)
                 qmp.send_keys(["ret"])
                 emit("info", "vm", "Auto-login keystrokes sent")
