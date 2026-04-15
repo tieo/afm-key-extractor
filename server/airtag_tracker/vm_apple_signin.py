@@ -216,8 +216,10 @@ def _screen_matches(keywords: tuple[str, ...]) -> bool:
 
 def _open_apple_id_pane() -> None:
     """Navigate System Settings to the Apple ID sign-in pane."""
-    with qmp.qmp() as c:
-        c.send_chord(["meta_l", "q"]); time.sleep(0.5)
+    # Fully quit System Settings so the URL scheme opens a clean window
+    # (reopening an existing one leaves the sidebar search focused).
+    _ssh("osascript -e 'tell application \"System Settings\" to quit' 2>/dev/null", timeout=10)
+    time.sleep(1.0)
     last_err = ""
     for url in APPLE_ID_URLS:
         r = _ssh(f"open {url!r} 2>&1", timeout=15)
@@ -230,15 +232,42 @@ def _open_apple_id_pane() -> None:
     )
 
 
-def _type_credentials(email: str, password: str) -> None:
-    """Type the email into the focused field, submit, then the password.
+def _focus_email_field() -> None:
+    """Put keyboard focus on the Apple ID email field.
 
-    Ventura's Apple ID sign-in sheet focuses the email field on open.
-    If focus is wrong, Cmd-Tab-ing back and typing still works because
-    Return submits the email form, which then autofocuses the password
-    field.
+    Without this, typed characters go into the sidebar search — the
+    email field isn't auto-focused when the pane is opened via URL
+    scheme. We send Tab keystrokes and a click via AppleScript UI
+    scripting to coax focus onto the first text field of the sheet.
     """
+    script = (
+        'tell application "System Settings" to activate\n'
+        'delay 0.5\n'
+        'tell application "System Events"\n'
+        '  tell process "System Settings"\n'
+        '    try\n'
+        '      set focused of text field 1 of window 1 to true\n'
+        '    end try\n'
+        '    try\n'
+        '      click text field 1 of window 1\n'
+        '    end try\n'
+        '  end tell\n'
+        'end tell\n'
+    )
+    import base64, shlex
+    b64 = base64.b64encode(script.encode()).decode()
+    _ssh(f"echo {shlex.quote(b64)} | base64 -D | osascript - 2>&1", timeout=15)
+
+
+def _type_credentials(email: str, password: str) -> None:
+    """Focus the email field, type email → Return → password → Return."""
+    _focus_email_field()
+    time.sleep(0.5)
     with qmp.qmp() as c:
+        # Select-all + delete in case a stray character was typed elsewhere
+        # and autofill put something there.
+        c.send_chord(["meta_l", "a"]); time.sleep(0.2)
+        c.send_keys(["delete"]); time.sleep(0.2)
         c.type_text(email, gap_s=0.08)
         time.sleep(0.4)
         c.send_keys(["ret"]); time.sleep(4.0)
