@@ -57,7 +57,10 @@ APPLE_ID_URLS = (
 )
 
 TWOFA_KEYWORDS = ("verification code", "two-factor", "enter the code", "trust this")
-SIGNIN_FAIL_KEYWORDS = ("incorrect", "could not sign in", "try again")
+SIGNIN_FAIL_KEYWORDS = (
+    "incorrect", "could not sign in", "try again",
+    "verification failed", "cannot verify",
+)
 
 
 def status() -> dict:
@@ -301,7 +304,7 @@ def _type_credentials(email: str, password: str) -> None:
         c.send_keys(["ret"])
 
 
-def _wait_for_2fa_or_signed_in(deadline_s: int = 90) -> str:
+def _wait_for_2fa_or_signed_in(deadline_s: int = 180) -> str:
     """Return ``'2fa'`` if the 2FA sheet appeared, ``'signed_in'`` if
     the account is active, or raise if neither happened in time."""
     t0 = time.time()
