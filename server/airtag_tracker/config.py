@@ -14,6 +14,7 @@ ANISETTE_PATH = DATA_DIR / "ani_libs.bin"
 SETTINGS_PATH = DATA_DIR / "settings.json"
 VM_PASSWORD_PATH = DATA_DIR / "vm-password"
 VM_SSH_ENABLED_MARKER = DATA_DIR / "vm-ssh-enabled"
+VM_ICLOUD_SIGNED_IN_MARKER = DATA_DIR / "vm-icloud-signed-in"
 
 POLL_INTERVAL = int(os.environ.get("AIRTAG_POLL_INTERVAL", "900"))
 PORT = int(os.environ.get("AIRTAG_PORT", "8042"))

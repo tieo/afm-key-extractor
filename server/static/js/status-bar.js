@@ -23,16 +23,19 @@ export function renderStatusBar() {
   else { label += "ready"; cls = "green"; }
 
   const signin = state.vm.apple_signin || {};
-  const signinLabel = {
+  let signinLabel = {
     running: { text: "signing in…", cls: "yellow" },
     awaiting_2fa: { text: "needs 2FA", cls: "yellow" },
     signed_in: { text: "iCloud ✓", cls: "green" },
     failed: { text: "sign-in failed", cls: "red" },
   }[signin.state];
-  if (signinLabel) {
-    label += " · " + signinLabel.text;
-    cls = signinLabel.cls;
+  if (!signinLabel) {
+    signinLabel = signin.signed_in_cached
+      ? { text: "iCloud ✓", cls: "green" }
+      : { text: "iCloud: not signed in", cls: "yellow" };
   }
+  label += " · " + signinLabel.text;
+  if (signinLabel.cls === "red" || signinLabel.cls === "yellow") cls = signinLabel.cls;
   vmBadge.firstElementChild.className = "dot " + cls;
   vmBadge.lastElementChild.textContent = label;
   vmBadge.title = signin.error || "";

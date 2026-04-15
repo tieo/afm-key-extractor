@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Literal
 
 from . import apple_creds, qmp, vm, vm_password
+from .config import VM_ICLOUD_SIGNED_IN_MARKER
 from .events import emit
 
 State = Literal["idle", "running", "awaiting_2fa", "signed_in", "failed"]
@@ -61,7 +62,13 @@ SIGNIN_FAIL_KEYWORDS = ("incorrect", "could not sign in", "try again")
 
 def status() -> dict:
     with _lock:
-        return {"state": _state, "error": _error}
+        state = _state
+        error = _error
+    return {
+        "state": state,
+        "error": error,
+        "signed_in_cached": VM_ICLOUD_SIGNED_IN_MARKER.exists(),
+    }
 
 
 def start() -> dict:
@@ -296,6 +303,11 @@ def _worker() -> None:
             _wait_signed_in()
 
         _set_state("signed_in")
+        try:
+            VM_ICLOUD_SIGNED_IN_MARKER.parent.mkdir(parents=True, exist_ok=True)
+            VM_ICLOUD_SIGNED_IN_MARKER.write_text("1")
+        except Exception:
+            pass
         apple_creds.clear()
         emit("info", "vm", "Apple ID sign-in complete — triggering key extraction")
         try:
