@@ -1,4 +1,4 @@
-"""Drive Apple ID sign-in inside the macOS VM.
+"""Drive Apple ID sign-in inside the macOS VM (Ventura 13).
 
 State machine consumed by a worker thread. The browser kicks off the
 flow via ``start()``, polls ``status()``, and when the state is
@@ -6,22 +6,32 @@ flow via ``start()``, polls ``status()``, and when the state is
 then resumes, types the code into the VM, waits for sign-in to
 complete, and (on success) triggers key extraction automatically.
 
-We drive macOS via ``ssh -p 2222`` + ``osascript``. SSH is already set
-up for the extract-keys flow, so no new plumbing is needed. osascript
-UI scripting is more stable than OCR+clicks for the Apple ID pane —
-System Events gives us accessibility-tree access to the real buttons
-and fields, not pixels.
+Driving strategy
+----------------
+System Settings' accessibility tree on Ventura is unreliable for
+scripted clicks (many fields are SwiftUI and don't expose stable AX
+roles). So we use the same pattern that already works for
+``key_extraction._enable_remote_login``:
+
+* SSH runs an `open "x-apple.systempreferences:..."` URL to navigate
+  directly to the Apple ID sign-in pane — no hunting through menus.
+* QMP send-key types into whatever field has focus (Ventura focuses
+  the email field automatically).
+* SSH polls ``defaults read MobileMeAccounts`` for the signed-in
+  state — that's the authoritative signal.
+* OCR on a screendump detects the 2FA sheet so we know when to stop
+  and wait for a code from the browser.
 """
 
 from __future__ import annotations
 
-import shlex
-import subprocess as sp
+import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import Literal
 
-from . import apple_creds, vm, vm_password
+from . import apple_creds, qmp, vm, vm_password
 from .events import emit
 
 State = Literal["idle", "running", "awaiting_2fa", "signed_in", "failed"]
@@ -37,6 +47,17 @@ VM_USER = "airtag"
 VM_HOST = "localhost"
 VM_PORT = 2222
 
+# URL schemes that open the Apple ID sign-in pane directly. The first
+# one that Ventura honors wins — the exact scheme name changed across
+# 13.0/13.x point releases.
+APPLE_ID_URLS = (
+    "x-apple.systempreferences:com.apple.systempreferences.AppleIDSettings",
+    "x-apple.systempreferences:com.apple.preferences.AppleIDPrefPane",
+)
+
+TWOFA_KEYWORDS = ("verification code", "two-factor", "enter the code", "trust this")
+SIGNIN_FAIL_KEYWORDS = ("incorrect", "could not sign in", "try again")
+
 
 def status() -> dict:
     with _lock:
@@ -44,7 +65,6 @@ def status() -> dict:
 
 
 def start() -> dict:
-    """Kick off the sign-in worker. No-op if one is already running."""
     global _state, _error, _thread, _2fa_code
     creds = apple_creds.get()
     if not creds:
@@ -67,6 +87,7 @@ def start() -> dict:
 
 def submit_2fa(code: str) -> dict:
     global _2fa_code
+    code = (code or "").strip()
     if not code:
         raise RuntimeError("empty 2fa code")
     with _lock:
@@ -84,84 +105,27 @@ def _set_state(new: State, error: str | None = None) -> None:
         _error = error
 
 
-def _ssh(cmd: str, timeout: int = 30) -> sp.CompletedProcess:
-    """Run ``cmd`` on the VM via sshpass. Returns the CompletedProcess."""
+# ---------------------------------------------------------------------------
+# SSH + OCR helpers
+# ---------------------------------------------------------------------------
+
+def _ssh(cmd: str, timeout: int = 30):
+    import subprocess as sp
     pw = vm_password.get() or ""
-    full = [
-        "sshpass", "-p", pw,
-        "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "ConnectTimeout=5",
-        "-p", str(VM_PORT),
-        f"{VM_USER}@{VM_HOST}",
-        cmd,
-    ]
-    return sp.run(full, capture_output=True, text=True, timeout=timeout)
+    return sp.run(
+        [
+            "sshpass", "-p", pw,
+            "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ConnectTimeout=5",
+            "-p", str(VM_PORT),
+            f"{VM_USER}@{VM_HOST}",
+            cmd,
+        ],
+        capture_output=True, text=True, timeout=timeout,
+    )
 
-
-def _osascript(script: str, timeout: int = 30) -> str:
-    """Run ``script`` on the VM via ``osascript -e`` and return stdout."""
-    # osascript -e takes one line per -e; we base64-encode and pipe to
-    # sidestep quoting headaches for multi-line scripts.
-    import base64
-    b64 = base64.b64encode(script.encode()).decode()
-    cmd = f"echo {shlex.quote(b64)} | base64 -D | osascript -"
-    r = _ssh(cmd, timeout=timeout)
-    if r.returncode != 0:
-        raise RuntimeError(f"osascript failed: {r.stderr.strip()}")
-    return r.stdout.strip()
-
-
-def _worker() -> None:
-    try:
-        creds = apple_creds.get()
-        if not creds:
-            raise RuntimeError("credentials vanished")
-        email, password = creds
-
-        emit("info", "vm", "Apple ID sign-in: waiting for VM SSH")
-        _wait_ssh()
-
-        emit("info", "vm", "Apple ID sign-in: opening System Settings")
-        _open_apple_id_pane()
-
-        emit("info", "vm", "Apple ID sign-in: typing credentials")
-        _type_credentials(email, password)
-
-        emit("info", "vm", "Apple ID sign-in: waiting for 2FA prompt")
-        if _wait_for_2fa_prompt():
-            _set_state("awaiting_2fa")
-            emit("info", "vm", "Apple ID sign-in: awaiting 2FA code from browser")
-            if not _2fa_event.wait(timeout=300):
-                raise RuntimeError("2FA code not supplied within 5 min")
-            _set_state("running")
-            emit("info", "vm", "Apple ID sign-in: typing 2FA code")
-            _type_2fa(_2fa_code or "")
-
-        emit("info", "vm", "Apple ID sign-in: waiting for signed-in state")
-        _wait_signed_in()
-
-        _set_state("signed_in")
-        apple_creds.clear()
-        emit("info", "vm", "Apple ID sign-in complete — triggering key extraction")
-        try:
-            vm.trigger_key_extraction()
-        except Exception as e:
-            emit("warning", "vm", f"Auto key extraction failed to start: {e}")
-    except Exception as e:
-        _set_state("failed", str(e))
-        emit("error", "vm", f"Apple ID sign-in failed: {e}")
-
-
-# ---------------------------------------------------------------------------
-# Driving macOS — the actual osascript state machine.
-#
-# These are intentionally small and separate so we can iterate each
-# against a live VM. The exact keystroke/UI-script sequence for
-# Ventura's Apple ID pane is fragile; getting it right needs real-VM
-# testing, not staring at docs.
-# ---------------------------------------------------------------------------
 
 def _wait_ssh(deadline_s: int = 120) -> None:
     t0 = time.time()
@@ -173,52 +137,171 @@ def _wait_ssh(deadline_s: int = 120) -> None:
     raise RuntimeError("VM SSH never came up")
 
 
-def _open_apple_id_pane() -> None:
-    # TODO: replace with the exact Ventura System Settings AppleScript.
-    # Placeholder: open System Settings and click the Apple ID row.
-    _osascript(
-        'tell application "System Settings" to activate\n'
-        'delay 2\n'
-        'tell application "System Events"\n'
-        '  tell process "System Settings"\n'
-        '    click button "Sign In" of window 1\n'
-        '  end tell\n'
-        'end tell\n'
+def _is_signed_in() -> bool:
+    r = _ssh(
+        "defaults read MobileMeAccounts Accounts 2>/dev/null "
+        "| grep -c AccountID",
+        timeout=10,
     )
+    try:
+        return r.returncode == 0 and int(r.stdout.strip() or "0") > 0
+    except ValueError:
+        return False
+
+
+def _ocr_screen() -> str:
+    """Screendump the VM and OCR the result. Returns '' on failure."""
+    try:
+        import pytesseract
+        from PIL import Image, ImageOps
+    except ImportError:
+        return ""
+    with tempfile.TemporaryDirectory() as td:
+        shot = Path(td) / "frame.ppm"
+        try:
+            qmp.screendump(str(shot))
+        except Exception as e:
+            emit("warning", "vm", f"signin screendump failed: {e}")
+            return ""
+        if not shot.exists() or shot.stat().st_size == 0:
+            return ""
+        try:
+            with Image.open(shot) as img:
+                inverted = ImageOps.invert(img.convert("L"))
+                return pytesseract.image_to_string(
+                    inverted, config="--psm 6"
+                ).lower()
+        except Exception as e:
+            emit("warning", "vm", f"signin OCR failed: {e}")
+            return ""
+
+
+def _screen_matches(keywords: tuple[str, ...]) -> bool:
+    text = _ocr_screen()
+    return any(kw in text for kw in keywords)
+
+
+# ---------------------------------------------------------------------------
+# Driving macOS
+# ---------------------------------------------------------------------------
+
+def _open_apple_id_pane() -> None:
+    """Navigate System Settings to the Apple ID sign-in pane."""
+    # Close anything stuck on the screen, then fire the URL scheme.
+    with qmp.qmp() as c:
+        c.send_chord(["meta_l", "q"]); time.sleep(0.5)
+    for url in APPLE_ID_URLS:
+        r = _ssh(f"open {url!r}", timeout=15)
+        if r.returncode == 0:
+            break
+    else:
+        raise RuntimeError("could not open Apple ID pane via URL scheme")
+    # Give System Settings time to actually render the sheet.
+    time.sleep(6.0)
 
 
 def _type_credentials(email: str, password: str) -> None:
-    # TODO: real implementation — click the email field, set value, click
-    # Continue, wait for password field, set value, click Continue.
-    _osascript(
-        f'tell application "System Events"\n'
-        f'  keystroke "{email}"\n'
-        f'  key code 36\n'  # Return
-        f'  delay 2\n'
-        f'  keystroke "{password}"\n'
-        f'  key code 36\n'
-        f'end tell\n'
-    )
+    """Type the email into the focused field, submit, then the password.
+
+    Ventura's Apple ID sign-in sheet focuses the email field on open.
+    If focus is wrong, Cmd-Tab-ing back and typing still works because
+    Return submits the email form, which then autofocuses the password
+    field.
+    """
+    with qmp.qmp() as c:
+        c.type_text(email, gap_s=0.08)
+        time.sleep(0.4)
+        c.send_keys(["ret"]); time.sleep(4.0)
+        c.type_text(password, gap_s=0.08)
+        time.sleep(0.4)
+        c.send_keys(["ret"])
 
 
-def _wait_for_2fa_prompt(deadline_s: int = 60) -> bool:
-    # TODO: poll for the "Enter Verification Code" sheet via
-    # System Events. Return True if it appeared, False if sign-in
-    # completed without 2FA.
-    time.sleep(5)
-    return True
+def _wait_for_2fa_or_signed_in(deadline_s: int = 90) -> str:
+    """Return ``'2fa'`` if the 2FA sheet appeared, ``'signed_in'`` if
+    the account is active, or raise if neither happened in time."""
+    t0 = time.time()
+    while time.time() - t0 < deadline_s:
+        if _is_signed_in():
+            return "signed_in"
+        if _screen_matches(TWOFA_KEYWORDS):
+            return "2fa"
+        if _screen_matches(SIGNIN_FAIL_KEYWORDS):
+            raise RuntimeError("Apple rejected credentials (check password)")
+        time.sleep(4)
+    raise RuntimeError("timed out waiting for 2FA or signed-in state")
 
 
 def _type_2fa(code: str) -> None:
-    _osascript(
-        f'tell application "System Events"\n'
-        f'  keystroke "{code}"\n'
-        f'  key code 36\n'
-        f'end tell\n'
-    )
+    # The 2FA sheet focuses the first digit field; typing the digits
+    # advances through the six boxes automatically.
+    with qmp.qmp() as c:
+        c.type_text(code, gap_s=0.15)
+        time.sleep(0.5)
+        c.send_keys(["ret"])
 
 
-def _wait_signed_in(deadline_s: int = 90) -> None:
-    # TODO: poll for the signed-in state (e.g. the Apple ID pane header
-    # shows the user's name). For now, just wait a bit.
-    time.sleep(15)
+def _wait_signed_in(deadline_s: int = 180) -> None:
+    t0 = time.time()
+    while time.time() - t0 < deadline_s:
+        if _is_signed_in():
+            return
+        if _screen_matches(SIGNIN_FAIL_KEYWORDS):
+            raise RuntimeError("Apple rejected 2FA code")
+        time.sleep(4)
+    raise RuntimeError("sign-in never completed")
+
+
+# ---------------------------------------------------------------------------
+# Worker
+# ---------------------------------------------------------------------------
+
+def _worker() -> None:
+    try:
+        creds = apple_creds.get()
+        if not creds:
+            raise RuntimeError("credentials vanished")
+        email, password = creds
+
+        emit("info", "vm", "Apple ID sign-in: waiting for VM SSH")
+        _wait_ssh()
+
+        if _is_signed_in():
+            emit("info", "vm", "VM already signed into iCloud — skipping")
+            _set_state("signed_in")
+            apple_creds.clear()
+            try:
+                vm.trigger_key_extraction()
+            except Exception as e:
+                emit("warning", "vm", f"Key extraction trigger failed: {e}")
+            return
+
+        emit("info", "vm", "Apple ID sign-in: opening System Settings pane")
+        _open_apple_id_pane()
+
+        emit("info", "vm", "Apple ID sign-in: typing credentials")
+        _type_credentials(email, password)
+
+        emit("info", "vm", "Apple ID sign-in: waiting for 2FA or signed-in")
+        outcome = _wait_for_2fa_or_signed_in()
+
+        if outcome == "2fa":
+            _set_state("awaiting_2fa")
+            emit("info", "vm", "Apple ID sign-in: awaiting 2FA code from browser")
+            if not _2fa_event.wait(timeout=300):
+                raise RuntimeError("2FA code not supplied within 5 min")
+            _set_state("running")
+            emit("info", "vm", "Apple ID sign-in: typing 2FA code")
+            _type_2fa(_2fa_code or "")
+            _wait_signed_in()
+
+        _set_state("signed_in")
+        apple_creds.clear()
+        emit("info", "vm", "Apple ID sign-in complete — triggering key extraction")
+        try:
+            vm.trigger_key_extraction()
+        except Exception as e:
+            emit("warning", "vm", f"Auto key extraction failed to start: {e}")
+    except Exception as e:
+        _set_state("failed", str(e))
+        emit("error", "vm", f"Apple ID sign-in failed: {e}")

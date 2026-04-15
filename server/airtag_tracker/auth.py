@@ -7,9 +7,19 @@ import threading
 from findmy import AppleAccount, LocalAnisetteProvider
 from findmy.reports import LoginState, SyncSmsSecondFactor
 
-from . import account_storage, apple_creds
+from . import account_storage, apple_creds, vm, vm_apple_signin
 from .config import ANISETTE_PATH
 from .events import emit
+
+
+def _maybe_trigger_vm_signin() -> None:
+    """Kick off VM Apple ID sign-in if the VM is up. Best-effort — if
+    the VM isn't running, credentials stay cached for a later attempt."""
+    try:
+        if vm.is_running():
+            vm_apple_signin.start()
+    except Exception as e:
+        emit("warning", "vm", f"Could not start VM sign-in: {e}")
 
 _lock = threading.Lock()
 _pending_account: AppleAccount | None = None
@@ -59,6 +69,7 @@ def begin(email: str, password: str) -> dict:
             _pending_account = None
             _pending_methods = None
             emit("info", "account", "Logged in successfully (no 2FA needed)")
+            _maybe_trigger_vm_signin()
             return {"status": "logged_in"}
 
         emit("error", "account", f"Unexpected login state: {state}")
@@ -79,6 +90,7 @@ def submit_2fa(code: str, method_index: int) -> dict:
             _pending_account = None
             _pending_methods = None
             emit("info", "account", "2FA verified, logged in successfully")
+            _maybe_trigger_vm_signin()
             return {"status": "logged_in"}
         emit("warning", "account", f"2FA rejected (state: {state})")
         raise LoginError(f"2FA failed, state: {state}")
