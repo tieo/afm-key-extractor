@@ -215,64 +215,89 @@ def _screen_matches(keywords: tuple[str, ...]) -> bool:
 # ---------------------------------------------------------------------------
 
 def _open_apple_id_pane() -> None:
-    """Navigate System Settings to the Apple ID sign-in pane."""
-    # Fully quit System Settings so the URL scheme opens a clean window
-    # (reopening an existing one leaves the sidebar search focused).
-    _ssh("osascript -e 'tell application \"System Settings\" to quit' 2>/dev/null", timeout=10)
-    time.sleep(1.0)
+    """Navigate System Settings to the Apple ID sign-in pane.
+
+    Uses `killall` instead of osascript-quit because TCC blocks any
+    AppleScript automation with a consent prompt. After opening we
+    verify via OCR that the sign-in sheet actually appeared."""
+    _ssh("killall 'System Settings' 2>/dev/null; true", timeout=10)
+    time.sleep(1.5)
     last_err = ""
     for url in APPLE_ID_URLS:
         r = _ssh(f"open {url!r} 2>&1", timeout=15)
-        if r.returncode == 0:
-            time.sleep(6.0)
+        if r.returncode != 0:
+            last_err = (r.stdout + r.stderr).strip()
+            continue
+        # Wait up to 20s for the sign-in sheet to render.
+        if _wait_for_keywords(SIGNIN_PANE_KEYWORDS, deadline_s=20):
             return
-        last_err = (r.stdout + r.stderr).strip()
-    raise RuntimeError(
-        f"could not open Apple ID pane via URL scheme: {last_err[:200]}"
-    )
+        last_err = f"URL {url} opened but sign-in sheet never rendered"
+    raise RuntimeError(f"could not open Apple ID pane: {last_err[:200]}")
+
+
+SIGNIN_PANE_KEYWORDS = ("one account for everything", "apple id", "sign in")
+PASSWORD_PROMPT_KEYWORDS = ("password",)
+
+
+def _wait_for_keywords(
+    keywords: tuple[str, ...],
+    deadline_s: int,
+    poll_s: float = 2.0,
+) -> bool:
+    t0 = time.time()
+    while time.time() - t0 < deadline_s:
+        if _screen_matches(keywords):
+            return True
+        if _screen_matches(SIGNIN_FAIL_KEYWORDS):
+            raise RuntimeError("Apple rejected credentials (check password)")
+        time.sleep(poll_s)
+    return False
 
 
 def _focus_email_field() -> None:
-    """Put keyboard focus on the Apple ID email field.
+    """Move keyboard focus from sidebar search → email field.
 
-    Without this, typed characters go into the sidebar search — the
-    email field isn't auto-focused when the pane is opened via URL
-    scheme. We send Tab keystrokes and a click via AppleScript UI
-    scripting to coax focus onto the first text field of the sheet.
+    URL-scheme navigation lands focus in the sidebar search. AppleScript
+    UI-scripting to re-focus is blocked by macOS TCC (unattended consent
+    prompts stall osascript indefinitely), so this is keyboard-only:
+    cmd-a + delete clears any stray characters in the search field,
+    then tab advances focus into the main sheet where Ventura
+    auto-lands on the first text field (email).
     """
-    script = (
-        'tell application "System Settings" to activate\n'
-        'delay 0.5\n'
-        'tell application "System Events"\n'
-        '  tell process "System Settings"\n'
-        '    try\n'
-        '      set focused of text field 1 of window 1 to true\n'
-        '    end try\n'
-        '    try\n'
-        '      click text field 1 of window 1\n'
-        '    end try\n'
-        '  end tell\n'
-        'end tell\n'
-    )
-    import base64, shlex
-    b64 = base64.b64encode(script.encode()).decode()
-    _ssh(f"echo {shlex.quote(b64)} | base64 -D | osascript - 2>&1", timeout=15)
+    with qmp.qmp() as c:
+        c.send_chord(["meta_l", "a"])
+        time.sleep(0.2)
+        c.send_keys(["delete"])
+        time.sleep(0.2)
+        c.send_keys(["tab"])
+        time.sleep(0.5)
 
 
 def _type_credentials(email: str, password: str) -> None:
-    """Focus the email field, type email → Return → password → Return."""
-    _focus_email_field()
-    time.sleep(0.5)
+    """Focus email field, type email → Return → verify password sheet → type password → Return.
+
+    Each step verifies its effect via OCR; on mismatch we retry once
+    before giving up with a diagnostic.
+    """
+    for attempt in (1, 2):
+        _focus_email_field()
+        with qmp.qmp() as c:
+            c.type_text(email, gap_s=0.08)
+            time.sleep(0.6)
+            c.send_keys(["ret"])
+        emit("info", "vm", "Apple ID sign-in: email submitted, waiting for password prompt")
+        if _wait_for_keywords(PASSWORD_PROMPT_KEYWORDS, deadline_s=20):
+            break
+        if attempt == 2:
+            raise RuntimeError("password prompt never appeared after typing email")
+        emit("warning", "vm", "Password prompt missing — retrying email entry")
+        # Re-open the pane so the form is in a known state.
+        _open_apple_id_pane()
+
+    time.sleep(0.4)
     with qmp.qmp() as c:
-        # Select-all + delete in case a stray character was typed elsewhere
-        # and autofill put something there.
-        c.send_chord(["meta_l", "a"]); time.sleep(0.2)
-        c.send_keys(["delete"]); time.sleep(0.2)
-        c.type_text(email, gap_s=0.08)
-        time.sleep(0.4)
-        c.send_keys(["ret"]); time.sleep(4.0)
         c.type_text(password, gap_s=0.08)
-        time.sleep(0.4)
+        time.sleep(0.5)
         c.send_keys(["ret"])
 
 
