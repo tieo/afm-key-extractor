@@ -36,21 +36,67 @@ export function renderVmStatus() {
   if (state.vm.vm_running && vmOverlayTimer) hideVmOverlay();
 
   controls.innerHTML = "";
+  const primary = document.createElement("div");
+  primary.className = "vm-actions-primary";
+  const advanced = document.createElement("details");
+  advanced.className = "vm-actions-advanced";
+  advanced.innerHTML = '<summary>Advanced</summary>';
+  const adv = document.createElement("div");
+  adv.className = "vm-actions-advanced-body";
+  advanced.append(adv);
+
   if (!state.vm.vm_running) {
-    controls.append(button("Start VM (auto-boot)", "primary", (ev) => vmStartSetup(ev.currentTarget)));
-    controls.append(button("Start (manual)", "", (ev) => vmAction("/api/vm/start-manual", "Starting VM", ev.currentTarget)));
-    controls.append(button("Reset to golden", "danger", (ev) => {
-      if (!confirm("Overwrite the VM disk with the golden snapshot? All session state since the last bake will be lost.")) return;
-      vmAction("/api/vm/reset-to-golden", "Resetting to golden", ev.currentTarget);
-    }));
+    primary.append(action(
+      "Start VM", "primary",
+      "Boot macOS and auto-login. Once the VM is up, use “Sign in to iCloud” to drive the Apple ID sign-in.",
+      (ev) => vmStartSetup(ev.currentTarget),
+    ));
+    adv.append(action(
+      "Start without automation", "",
+      "Boot the VM with no key-typing. For debugging or driving Setup Assistant manually via the VNC view.",
+      (ev) => vmAction("/api/vm/start-manual", "Starting VM (manual)", ev.currentTarget),
+    ));
+    adv.append(action(
+      "Reset to golden snapshot", "danger",
+      "Overwrite the VM disk with the last baked golden image. Destructive — everything since the last bake is lost.",
+      (ev) => {
+        if (!confirm("Overwrite the VM disk with the golden snapshot? All session state since the last bake will be lost.")) return;
+        vmAction("/api/vm/reset-to-golden", "Resetting to golden", ev.currentTarget);
+      },
+    ));
   } else {
-    controls.append(button("Stop VM", "", (ev) => vmAction("/api/vm/stop", "Stopping VM", ev.currentTarget)));
-    controls.append(button("Sign Apple ID into VM", "primary", (ev) => startAppleSignin(ev.currentTarget)));
+    primary.append(action(
+      "Sign in to iCloud", "primary",
+      "Drive Apple ID sign-in inside the running VM. Required once before extracting AirTag keys.",
+      (ev) => startAppleSignin(ev.currentTarget),
+    ));
+    primary.append(action(
+      "Stop VM", "",
+      "Shut down the VM cleanly.",
+      (ev) => vmAction("/api/vm/stop", "Stopping VM", ev.currentTarget),
+    ));
   }
-  controls.append(button("Bake golden image", "danger", (ev) => {
-    if (!confirm("Bake the current VM disk as the golden image? The VM must be fully set up.")) return;
-    vmAction("/api/vm/bake-golden", "Baking golden", ev.currentTarget);
-  }));
+  adv.append(action(
+    "Bake golden snapshot", "danger",
+    "Save the current VM disk as the new golden image. Do this once, after macOS is set up and signed into iCloud, so future resets restore to this clean state.",
+    (ev) => {
+      if (!confirm("Bake the current VM disk as the golden image? The VM must be fully set up.")) return;
+      vmAction("/api/vm/bake-golden", "Baking golden", ev.currentTarget);
+    },
+  ));
+
+  controls.append(primary, advanced);
+}
+
+function action(text, extraClass, description, onClick) {
+  const row = document.createElement("div");
+  row.className = "vm-action";
+  const b = button(text, extraClass, onClick);
+  const desc = document.createElement("div");
+  desc.className = "vm-action-desc";
+  desc.textContent = description;
+  row.append(b, desc);
+  return row;
 }
 
 function button(text, extraClass, onClick) {
