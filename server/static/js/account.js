@@ -24,7 +24,7 @@ export function renderAccount(error) {
   showLoginForm(error);
 }
 
-function showLoginForm(error) {
+export function showLoginForm(error) {
   const body = document.getElementById("account-body");
   body.innerHTML = `
     <div class="section">

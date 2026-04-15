@@ -2,6 +2,8 @@
 
 import { postJSON, getJSON, toast, busy } from "./api.js";
 import { state, refreshStatus } from "./state.js";
+import { openPanel } from "./panels.js";
+import { showLoginForm } from "./account.js";
 
 const VNC_URL = `//${location.hostname.replace("airtag", "airtag-vnc")}/vnc.html?autoconnect=true&resize=scale&view_only=true`;
 let vncLoaded = false;
@@ -161,11 +163,12 @@ async function startAppleSignin(btn) {
   return busy(btn, "Starting…", async () => {
     let res = await postJSON("/api/vm/apple-signin/start");
     if (!res.ok && res.data?.error === "needs_password") {
-      const email = window.prompt("Apple ID email:");
-      if (!email) return false;
-      const password = window.prompt("Apple ID password:");
-      if (!password) return false;
-      res = await postJSON("/api/vm/apple-signin/start", { email, password });
+      // Route through the regular Apple ID login form — it already
+      // handles 2FA and, on success, triggers the VM sign-in itself.
+      toast("Sign in with Apple ID — the VM sign-in runs automatically");
+      openPanel("account");
+      showLoginForm();
+      return false;
     }
     const { ok, data } = res;
     if (!ok || data.error) { toast(data.error || "Failed to start", "error"); return false; }
