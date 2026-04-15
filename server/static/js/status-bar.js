@@ -21,6 +21,19 @@ export function renderStatusBar() {
   else if (!state.vm.setup_complete) { label += "needs setup"; cls = "yellow"; }
   else if (state.vm.vm_running) { label += "running"; cls = "green"; }
   else { label += "ready"; cls = "green"; }
+
+  const signin = state.vm.apple_signin || {};
+  const signinLabel = {
+    running: { text: "signing in…", cls: "yellow" },
+    awaiting_2fa: { text: "needs 2FA", cls: "yellow" },
+    signed_in: { text: "iCloud ✓", cls: "green" },
+    failed: { text: "sign-in failed", cls: "red" },
+  }[signin.state];
+  if (signinLabel) {
+    label += " · " + signinLabel.text;
+    cls = signinLabel.cls;
+  }
   vmBadge.firstElementChild.className = "dot " + cls;
   vmBadge.lastElementChild.textContent = label;
+  vmBadge.title = signin.error || "";
 }

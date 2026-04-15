@@ -12,7 +12,9 @@ bp = Blueprint("vm", __name__)
 
 @bp.route("/api/vm/status")
 def status():
-    return jsonify(vmmgr.status())
+    st = vmmgr.status()
+    st["apple_signin"] = vm_apple_signin.status()
+    return jsonify(st)
 
 
 def _action(fn):
