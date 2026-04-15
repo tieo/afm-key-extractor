@@ -20,7 +20,7 @@ export function renderStatusBar() {
   if (!state.vm.provisioned) { label += "downloading"; cls = "yellow"; }
   else if (!state.vm.setup_complete) { label += "needs setup"; cls = "yellow"; }
   else if (state.vm.vm_running) { label += "running"; cls = "green"; }
-  else { label += "ready"; cls = "green"; }
+  else { label += "stopped"; cls = "gray"; }
 
   const signin = state.vm.apple_signin || {};
   let signinLabel = {

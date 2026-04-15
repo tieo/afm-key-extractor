@@ -30,7 +30,7 @@ export function renderVmStatus() {
   if (!state.vm.provisioned) { label = "Downloading macOS…"; cls = "yellow"; }
   else if (!state.vm.setup_complete) { label = "Needs initial setup"; cls = "yellow"; }
   else if (state.vm.vm_running) { label = "Running"; cls = "green"; }
-  else { label = "Ready"; cls = "green"; }
+  else { label = "Stopped"; cls = "gray"; }
   const signin = state.vm.apple_signin || {};
   const signinText = {
     running: "iCloud sign-in in progress…",
