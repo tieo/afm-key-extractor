@@ -143,16 +143,64 @@ def _wait_ssh(deadline_s: int = 120) -> None:
 
 
 def _wait_desktop(deadline_s: int = 300) -> None:
-    """`open` requires a GUI session — poll for Dock.app, not just sshd."""
+    """Wait for a usable GUI session and auto-unlock if needed.
+
+    Two failure modes this has to handle:
+
+    * VM freshly booted and still at the login window. login_autotyper
+      runs in the background but its deadline is finite — if we race
+      past it we have to type the password ourselves.
+    * VM logged in but the session was locked (screensaver/Cmd-Ctrl-Q
+      before we disabled screensaver; any future re-enable of same).
+
+    Detection: OCR for the lock-screen/login-screen signature (any 2
+    of "shut down"/"restart"/"sleep" + the username label). If found,
+    paste the stored password. Otherwise, wait for Dock + stable pane.
+    """
     emit("info", "vm", "Apple ID sign-in: waiting for desktop (post-login)")
     t0 = time.time()
+    last_unlock_attempt = 0.0
     while time.time() - t0 < deadline_s:
         r = vm_ui.ssh("pgrep -x Dock >/dev/null && echo up", timeout=8)
-        if r.returncode == 0 and "up" in r.stdout:
+        dock_up = r.returncode == 0 and "up" in r.stdout
+        # OCR-based lock-screen detection: look for the trio + username.
+        # Cheap enough (one screendump) to run once every loop.
+        if _login_screen_visible() and time.time() - last_unlock_attempt > 20:
+            last_unlock_attempt = time.time()
+            _try_unlock_login_screen()
+            time.sleep(5)  # let loginwindow settle
+            continue
+        if dock_up and not _login_screen_visible():
             _disable_sleep_and_lock()
             return
         time.sleep(4)
     raise RuntimeError("desktop never came up")
+
+
+def _login_screen_visible() -> bool:
+    """Reuse login_autotyper's OCR signature — trio + username."""
+    try:
+        txt = vm_ui.screen_text()
+    except Exception:
+        return False
+    hits = sum(1 for kw in ("shut down", "restart", "sleep") if kw in txt)
+    return hits >= 2 and "airtag" in txt
+
+
+def _try_unlock_login_screen() -> None:
+    from . import vm_password
+    pw = vm_password.get()
+    if not pw:
+        emit("warning", "vm", "Lock screen present but no VM password stored")
+        return
+    emit("info", "vm", "Login/lock screen detected — typing VM password")
+    try:
+        qmp.type_text(pw)
+        time.sleep(0.3)
+        with qmp.qmp() as c:
+            c.send_keys(["ret"])
+    except Exception as e:
+        emit("warning", "vm", f"unlock type failed: {e}")
 
 
 def _disable_sleep_and_lock() -> None:

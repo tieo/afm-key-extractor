@@ -20,7 +20,10 @@ from .events import emit
 
 
 POLL_INTERVAL_S = 3.0
-MAX_WAIT_S = 240.0
+# Boot can take 5-10 min on a cold VM; give the autotyper plenty of
+# runway so a slow first boot doesn't leave the VM stranded at the
+# login screen until something else triggers a retry.
+MAX_WAIT_S = 1800.0
 START_DELAY_S = 20.0
 USERNAME = "airtag"
 # Any ≥2 of these visible together = login screen. Picked for OCR
