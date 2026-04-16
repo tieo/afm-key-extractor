@@ -34,7 +34,14 @@ _thread: threading.Thread | None = None
 
 
 def _ocr_text() -> str:
-    """OCR the current framebuffer at 1× and 2×, merged and lowercased."""
+    """OCR the current framebuffer. Grayscale + autocontrast; lowercased merged output.
+
+    Lock screen text (username label, bottom-row buttons) is white over the
+    macOS colored wallpaper. RGB-mode tesseract gets defeated by the colored
+    gradient and reliably returns "s 4" — even with invert or 2× upscale.
+    Grayscale-then-autocontrast collapses the gradient into a high-contrast
+    black-and-white frame and recovers all keywords cleanly.
+    """
     try:
         import pytesseract
         from PIL import Image, ImageOps
@@ -50,17 +57,11 @@ def _ocr_text() -> str:
         if not ppm.exists() or ppm.stat().st_size == 0:
             return ""
         with Image.open(ppm) as img:
-            rgb = img.convert("RGB")
-            out = []
-            for variant in (rgb, ImageOps.invert(rgb),
-                            rgb.resize((rgb.width * 2, rgb.height * 2), Image.LANCZOS)):
-                try:
-                    out.append(pytesseract.image_to_string(
-                        variant, config="--psm 6"
-                    ))
-                except Exception:
-                    pass
-            return "\n".join(out).lower()
+            gray = ImageOps.autocontrast(ImageOps.grayscale(img), cutoff=5)
+            try:
+                return pytesseract.image_to_string(gray, config="--psm 6").lower()
+            except Exception:
+                return ""
 
 
 def _login_screen_visible() -> bool:
