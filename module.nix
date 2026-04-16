@@ -84,6 +84,11 @@ in {
           StateDirectory = "airtag-tracker";
           Restart = "on-failure";
           RestartSec = 10;
+          # QEMU runs as a daemonized child — default KillMode=control-group
+          # would kill it alongside the tracker on restart, rebooting the VM
+          # on every deploy. "process" kills only the main PID; the tracker
+          # reattaches to the existing QEMU on startup.
+          KillMode = "process";
           # QEMU runs as a child process — deprioritize so it doesn't starve
           # other services (especially dnsmasq) when doing heavy VM work.
           Nice = 10;
