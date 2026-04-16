@@ -134,6 +134,60 @@ in {
         };
       };
 
+      # Inject a stable, plausible Apple device identity into the OpenCore
+      # config.plist baked into the cloned qcow2. The upstream OSX-KVM
+      # ships placeholder values (SystemUUID=zeros, SystemSerialNumber=
+      # W00000000001) which Apple's CloudKit/FMIP reject as fraudulent —
+      # blocking iCloud Keychain sync and Find-My Location Services, the
+      # two services searchpartyd needs to publish AirTag beacon keys.
+      # Needs root to modprobe nbd + mount the EFI partition; runs once
+      # after provisioning and idempotently skips if marker is present.
+      systemd.services.airtag-patch-identity = {
+        description = "Inject stable Apple identity into OpenCore config";
+        after = [ "airtag-provision-vm.service" ];
+        wants = [ "airtag-provision-vm.service" ];
+        before = [ "airtag-tracker.service" ];
+        wantedBy = [ "multi-user.target" ];
+        unitConfig.ConditionPathExists = [
+          "${cfg.vm.vmDir}/OpenCore/OpenCore.qcow2"
+          "!${cfg.vm.vmDir}/.identity-patched"
+        ];
+        path = [ pkgs.qemu pkgs.python3 pkgs.util-linux pkgs.kmod pkgs.coreutils ];
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+        };
+        script = ''
+          set -euo pipefail
+          VM_DIR=${cfg.vm.vmDir}
+          QCOW=$VM_DIR/OpenCore/OpenCore.qcow2
+          MNT=$(mktemp -d)
+          modprobe nbd max_part=8
+          # Always release any stale nbd attachment before claiming.
+          qemu-nbd -d /dev/nbd0 >/dev/null 2>&1 || true
+          cleanup() {
+            umount "$MNT" 2>/dev/null || true
+            qemu-nbd -d /dev/nbd0 >/dev/null 2>&1 || true
+            rmdir "$MNT" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          qemu-nbd -c /dev/nbd0 "$QCOW"
+          # nbd partition scan can lag briefly after attach.
+          for _ in $(seq 1 10); do
+            [ -b /dev/nbd0p1 ] && break
+            sleep 0.3
+          done
+          mount /dev/nbd0p1 "$MNT"
+          python3 ${./server/airtag_tracker/vm_identity.py} \
+            "$VM_DIR/vm-identity.json" "$MNT/EFI/OC/config.plist"
+          umount "$MNT"
+          qemu-nbd -d /dev/nbd0
+          chown airtag-tracker:airtag-tracker "$QCOW" "$VM_DIR/vm-identity.json"
+          touch "$VM_DIR/.identity-patched"
+          chown airtag-tracker:airtag-tracker "$VM_DIR/.identity-patched"
+        '';
+      };
+
       # noVNC websocket proxy — bridges browser to VM's VNC display.
       # Started/stopped on demand by the tracker server.
       systemd.services.airtag-novnc = {

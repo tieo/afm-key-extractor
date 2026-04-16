@@ -25,6 +25,9 @@ if [ ! -f "$VM_DIR/OpenCore/OpenCore.qcow2" ]; then
   git clone --depth 1 https://github.com/kholia/OSX-KVM.git "$TMP_CLONE"
   cp -a "$TMP_CLONE"/. "$VM_DIR/"
   rm -rf "$TMP_CLONE"
+  # Fresh qcow2 needs a fresh identity patch — the airtag-patch-identity
+  # service checks this marker before skipping.
+  rm -f "$VM_DIR/.identity-patched"
   log "OSX-KVM cloned successfully"
 fi
 
