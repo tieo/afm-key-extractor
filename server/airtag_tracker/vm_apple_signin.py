@@ -408,6 +408,71 @@ def _dismiss_post_signin_prompts(deadline_s: int = 45) -> None:
     emit("warning", "vm", "Post-signin dialogs not fully cleared within deadline")
 
 
+def _is_apple_id_update_pending() -> bool:
+    """Look for the red-badge 'Update Apple ID Settings' row in sidebar."""
+    p = vm_ui._screendump()
+    words = vm_ui.ocr_words(p)
+    # Single-line phrase match: the row reads "Update Apple ID Settings".
+    # OCR usually splits it; accept any co-located occurrence of
+    # "Update" and "Settings" on a sidebar row.
+    return (
+        vm_ui.find_phrase(words, "Update", "Settings",
+                          y_tol=20, screen_h=None, exclude_chrome=True)
+        is not None
+    )
+
+
+def _click_apple_id_update() -> bool:
+    return vm_ui.click_text("Update", "Settings", tries=3)
+
+
+def _resolve_apple_id_update(deadline_s: int = 60) -> bool:
+    """Click 'Update Apple ID Settings', handle password prompt.
+
+    Returns True if prompt handled (or was never present). False if
+    creds are needed but not available — caller should surface to user."""
+    _open_apple_id_pane()
+    if not _is_apple_id_update_pending():
+        return True  # nothing to do
+    emit("info", "vm", "Apple ID update pending — driving prompt")
+    creds = apple_creds.get()
+    if not creds:
+        emit("warning", "vm",
+             "Apple ID update prompt is pending but we have no cached "
+             "password. User needs to re-submit credentials.")
+        return False
+    _, password = creds
+    if not _click_apple_id_update():
+        emit("warning", "vm", "Could not click Update Apple ID row")
+        return False
+    time.sleep(2.0)
+    # Dismiss any toast notification that overlaps the button row
+    # (Ventura often pops a "Discover features" onboarding tip here).
+    # Return accepts the default button in the update panel ("Continue").
+    with qmp.qmp() as c:
+        c.send_keys(["ret"])
+    time.sleep(2.0)
+    # Password prompt — paste password + Return.
+    if vm_ui.wait_for_text(("password",), deadline_s=15):
+        vm_ui.paste_text(password)
+        time.sleep(0.4)
+        with qmp.qmp() as c:
+            c.send_keys(["ret"])
+        emit("info", "vm", "Apple ID update: password submitted")
+    else:
+        emit("info", "vm",
+             "No password prompt — update may have resolved on Continue")
+    # Wait for pending badge to clear.
+    t0 = time.time()
+    while time.time() - t0 < deadline_s:
+        if not _is_apple_id_update_pending():
+            emit("info", "vm", "Apple ID settings up to date")
+            return True
+        time.sleep(3)
+    emit("warning", "vm", "Apple ID update badge did not clear")
+    return False
+
+
 def _enable_find_my_mac(deadline_s: int = 60) -> None:
     """Navigate to iCloud → Find My Mac and toggle it on.
 
@@ -513,6 +578,14 @@ def _worker() -> None:
             _dismiss_post_signin_prompts()
         except Exception as e:
             emit("warning", "vm", f"post-signin dismiss failed: {e}")
+
+        # Resolve any "Update Apple ID Settings" red-badge prompt before
+        # touching iCloud features — if it's pending, FMM/Keychain rows
+        # disable themselves until accepted.
+        try:
+            _resolve_apple_id_update()
+        except Exception as e:
+            emit("warning", "vm", f"Apple ID update resolve failed: {e}")
 
         try:
             _enable_find_my_mac()
