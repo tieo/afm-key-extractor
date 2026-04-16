@@ -20,15 +20,17 @@ from .events import emit
 
 
 POLL_INTERVAL_S = 3.0
-# Boot can take 5-10 min on a cold VM; give the autotyper plenty of
-# runway so a slow first boot doesn't leave the VM stranded at the
-# login screen until something else triggers a retry.
-MAX_WAIT_S = 1800.0
 START_DELAY_S = 20.0
 USERNAME = "airtag"
 # Any ≥2 of these visible together = login screen. Picked for OCR
 # robustness: all three are short words in default system font.
 SIGNATURE_KEYWORDS = ("shut down", "restart", "sleep")
+
+# Singleton guard: the autotyper is a persistent watchdog. Multiple
+# callers (vm.start on boot, app.py autostart on tracker restart) may
+# try to start it; only the first succeeds.
+_lock = threading.Lock()
+_thread: threading.Thread | None = None
 
 
 def _ocr_text() -> str:
@@ -72,13 +74,14 @@ def _login_screen_visible() -> bool:
 def _worker() -> None:
     password = vm_password.get()
     if not password:
-        emit("info", "vm", "No VM password stored — skipping auto-login")
+        emit("info", "vm", "No VM password stored — autotyper exiting")
         return
 
     time.sleep(START_DELAY_S)
-    deadline = time.time() + MAX_WAIT_S
     attempts = 0
-    while time.time() < deadline:
+    # Runs for the life of the tracker process. Deploys bring the
+    # tracker back up and app.py re-invokes start() on restart.
+    while True:
         if _login_screen_visible():
             attempts += 1
             emit("info", "vm", f"Login window detected (attempt {attempts}) — typing password")
@@ -92,21 +95,28 @@ def _worker() -> None:
                 qmp.send_keys(["ret"])
             except Exception as e:
                 emit("error", "vm", f"Auto-login type failed: {e}")
-                return
-            # Wait for login screen to disappear (= success). If it stays
-            # visible, macOS rejected the password — retry after cooldown.
+                time.sleep(10.0)
+                continue
             t_check = time.time() + 15
+            unlocked = False
             while time.time() < t_check:
                 time.sleep(2.0)
                 if not _login_screen_visible():
                     emit("info", "vm", f"Auto-login succeeded after {attempts} attempt(s)")
-                    return
-            emit("warning", "vm", f"Login screen still visible after attempt {attempts} — retrying")
-            time.sleep(3.0)
+                    unlocked = True
+                    break
+            if not unlocked:
+                emit("warning", "vm", f"Login screen still visible after attempt {attempts} — retrying")
+                time.sleep(3.0)
             continue
         time.sleep(POLL_INTERVAL_S)
-    emit("warning", "vm", f"Auto-login gave up after {MAX_WAIT_S:.0f}s ({attempts} attempts)")
 
 
 def start() -> None:
-    threading.Thread(target=_worker, daemon=True, name="login-autotyper").start()
+    """Spawn the watchdog thread. Idempotent — subsequent calls are no-ops."""
+    global _thread
+    with _lock:
+        if _thread is not None and _thread.is_alive():
+            return
+        _thread = threading.Thread(target=_worker, daemon=True, name="login-autotyper")
+        _thread.start()

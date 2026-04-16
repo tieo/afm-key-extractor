@@ -50,13 +50,18 @@ def run() -> None:
 
     if VM_ENABLED:
         import threading
-        from . import apple_creds, vm as vmmgr, vm_apple_signin
+        from . import apple_creds, login_autotyper, vm as vmmgr, vm_apple_signin, vm_password
         def _autostart():
             try:
                 st = vmmgr.status()
                 if st.get("setup_complete") and not st.get("vm_running"):
                     emit("info", "vm", "Auto-starting VM on server startup")
                     vmmgr.start()
+                # Always run the login watchdog whenever the VM is up and
+                # a password is stored, so a tracker restart doesn't leave
+                # the VM unattended at a login/lock screen.
+                if vmmgr.status().get("vm_running") and vm_password.get():
+                    login_autotyper.start()
                 if apple_creds.get():
                     emit("info", "vm", "Cached Apple creds found — auto-triggering sign-in")
                     try:
