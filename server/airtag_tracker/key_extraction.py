@@ -11,6 +11,7 @@ started it) stops the VM. All of it over the already-forwarded port
 from __future__ import annotations
 
 import plistlib
+import shutil
 import subprocess as sp
 import tarfile
 import tempfile
@@ -20,8 +21,8 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from . import plist_conversion, qmp, vm, vm_password
-from .config import DATA_DIR, VM_SSH_ENABLED_MARKER
+from . import plist_conversion, qmp, vm, vm_password, vm_ui
+from .config import DATA_DIR, PLISTS_DIR, VM_SSH_ENABLED_MARKER
 from .events import emit
 
 VM_USER = "airtag"
@@ -174,6 +175,77 @@ def _wait_ssh(deadline_s: int = 300) -> None:
     raise RuntimeError("VM SSH never came up")
 
 
+def _extract_beacon_key_via_terminal(pw: str) -> str:
+    """Open Terminal in the VM and run `security find-generic-password` from
+    there so the keychain ACL prompt appears in the GUI session. Type the
+    keychain password and press Return (which triggers the default Allow
+    button). Read the resulting hex key over SSH.
+
+    SSH-direct `security` calls return errSecAuthFailed (-25308) because
+    they have no UI session to present the ACL prompt — only Terminal
+    works. Once granted in this session, repeat Terminal calls succeed
+    without re-prompting."""
+    pw_esc = pw.replace('"', '\\"').replace("$", "\\$")
+    cmd = (
+        f"clear; security find-generic-password -s BeaconStore "
+        f"-a BeaconStoreKey -w > /tmp/beacon-key.hex 2>/tmp/beacon-key.err; "
+        f"echo RC=$?"
+    )
+
+    # Spotlight → Terminal
+    with qmp.qmp() as c:
+        c.send_chord(["meta_l", "spc"])
+    time.sleep(1.5)
+    qmp.type_text("Terminal", gap_s=0.10)
+    time.sleep(0.6)
+    qmp.send_keys(["ret"])
+    time.sleep(6.0)  # cold launch
+
+    qmp.type_text(cmd, gap_s=0.04)
+    time.sleep(0.5)
+    qmp.send_keys(["ret"])
+
+    # Poll for SecurityAgent dialog OR for the file to be populated.
+    # If access is cached for this session, no dialog appears.
+    dialog_seen = False
+    for i in range(24):
+        time.sleep(0.5)
+        try:
+            qmp.screendump("/tmp/_keychain_dialog.ppm")
+            time.sleep(0.2)
+            txt = vm_ui.screen_text("/tmp/_keychain_dialog.ppm").lower()
+        except Exception:
+            txt = ""
+        if "beaconstore" in txt and "always allow" in txt:
+            dialog_seen = True
+            emit("info", "extract", "Keychain ACL prompt visible — entering password")
+            break
+        # No dialog and key file populated → done
+        check = _ssh("test -s /tmp/beacon-key.hex && echo READY", timeout=5)
+        if "READY" in check.stdout:
+            break
+
+    if dialog_seen:
+        qmp.type_text(pw, gap_s=0.06)
+        time.sleep(0.4)
+        qmp.send_keys(["ret"])  # Default button is Allow
+        time.sleep(3.0)
+
+    # Quit Terminal so it doesn't pile up
+    with qmp.qmp() as c:
+        c.send_chord(["meta_l", "q"])
+    time.sleep(0.5)
+
+    r = _ssh("cat /tmp/beacon-key.hex 2>/dev/null", timeout=10)
+    key_hex = r.stdout.strip()
+    if not key_hex:
+        err = _ssh("cat /tmp/beacon-key.err 2>/dev/null", timeout=5).stdout.strip()
+        raise RuntimeError(
+            f"Beacon key still empty after Terminal extraction: {err or '(no error)'}"
+        )
+    return key_hex
+
+
 def _run() -> None:
     global _running
     we_started_vm = False
@@ -189,37 +261,36 @@ def _run() -> None:
         if not pw:
             raise RuntimeError("VM password not available")
 
-        emit("info", "extract", "Extracting BeaconStore key + records from VM")
-        # All shell — macOS Command Line Tools (python3) aren't installed
-        # and requiring CLT would turn this into an interactive multi-GB
-        # download. The AES-GCM decryption happens server-side.
-        # Script echoes one of: EMPTY (no AirTags paired), OK.
-        pw_esc = pw.replace("'", "'\\''")
+        emit("info", "extract", "Checking for AirTag records in VM")
+        # First, just check whether OwnedBeacons exists and has records, and
+        # if so tar them up. The keychain key is fetched separately via the
+        # GUI Terminal trick (SSH security calls fail with -25308 because
+        # the ACL prompt requires a UI session).
         cmd = (
-            f"security unlock-keychain -p '{pw_esc}' "
-            f"~/Library/Keychains/login.keychain-db >/dev/null 2>&1; "
             f"SPD=~/Library/com.apple.icloud.searchpartyd; "
             f"if [ ! -d \"$SPD/OwnedBeacons\" ] || "
             f"[ -z \"$(ls -A $SPD/OwnedBeacons 2>/dev/null)\" ]; then "
             f"  echo EMPTY; exit 0; "
             f"fi; "
-            f"KEY=$(security find-generic-password -l BeaconStore -w 2>/dev/null); "
-            f"if [ -z \"$KEY\" ]; then echo NO_KEY; exit 2; fi; "
-            f"echo \"$KEY\" > /tmp/beacon-key.hex; "
             f"cd \"$SPD\" && "
             f"tar czf /tmp/airtag-records.tar.gz "
             f"OwnedBeacons $(test -d BeaconNamingRecord && echo BeaconNamingRecord) && "
             f"echo OK"
         )
         r = _ssh(cmd, timeout=60)
-        if r.returncode != 0 or "OK" not in r.stdout and "EMPTY" not in r.stdout:
+        if r.returncode != 0 or ("OK" not in r.stdout and "EMPTY" not in r.stdout):
             raise RuntimeError(
-                f"VM extract failed (rc={r.returncode}): "
+                f"VM tar failed (rc={r.returncode}): "
                 f"{(r.stdout + r.stderr).strip()[:500]}"
             )
         if "EMPTY" in r.stdout:
             emit("info", "extract", "No AirTags paired in VM yet — nothing to extract")
             return
+
+        emit("info", "extract", "Fetching BeaconStore key via GUI Terminal")
+        key_hex = _extract_beacon_key_via_terminal(pw)
+        # Stash in a file the rest of the flow expects.
+        _ssh(f"echo {key_hex} > /tmp/beacon-key.hex", timeout=10)
 
         emit("info", "extract", "Copying records to server")
         with tempfile.TemporaryDirectory() as td:
@@ -235,13 +306,23 @@ def _run() -> None:
             with tarfile.open(local / "records.tar.gz") as tf:
                 tf.extractall(local)
             owned = local / "OwnedBeacons"
-            if not owned.exists() or not any(owned.glob("*.record")):
+            # Filter macOS AppleDouble metadata files (._*) that `tar` on
+            # the VM sometimes emits for extended attributes.
+            def _records(p):
+                return [r for r in p.rglob("*.record") if not r.name.startswith("._")]
+            if not owned.exists() or not _records(owned):
                 emit("warning", "extract", "No beacon records — no AirTags paired?")
                 return
 
-            plist_dir = local / "_decrypted" / "OwnedBeacons"
+            # Persist decrypted plists across runs so the OpenTagViewer
+            # export endpoint can rebuild the zip without another extraction.
+            plist_dir = PLISTS_DIR / "OwnedBeacons"
+            naming_dir = PLISTS_DIR / "BeaconNamingRecord"
+            for d in (plist_dir, naming_dir):
+                if d.exists():
+                    shutil.rmtree(d)
             plist_dir.mkdir(parents=True, exist_ok=True)
-            for rec in owned.glob("*.record"):
+            for rec in _records(owned):
                 try:
                     (plist_dir / f"{rec.stem}.plist").write_bytes(
                         plistlib.dumps(_decrypt(rec, key))
@@ -249,17 +330,23 @@ def _run() -> None:
                 except Exception as e:
                     emit("warning", "extract", f"decrypt {rec.stem}: {e}")
 
-            naming_dir = local / "_decrypted" / "BeaconNamingRecord"
             named = local / "BeaconNamingRecord"
             if named.exists():
                 naming_dir.mkdir(parents=True, exist_ok=True)
-                for rec in named.glob("*.record"):
+                # Apple nests naming records as <beacon-id>/<record-id>.record;
+                # decrypt each and place under BeaconNamingRecord/<bid>/<rid>.plist
+                # using the plist's own associatedBeacon/identifier fields.
+                for rec in _records(named):
                     try:
-                        (naming_dir / f"{rec.stem}.plist").write_bytes(
-                            plistlib.dumps(_decrypt(rec, key))
-                        )
+                        pl = _decrypt(rec, key)
                     except Exception:
-                        pass
+                        continue
+                    bid = (pl.get("associatedBeacon") or rec.parent.name).upper()
+                    rid = (pl.get("identifier") or rec.stem).upper()
+                    (naming_dir / bid).mkdir(parents=True, exist_ok=True)
+                    (naming_dir / bid / f"{rid}.plist").write_bytes(
+                        plistlib.dumps(pl)
+                    )
 
             KEYS_DIR.mkdir(parents=True, exist_ok=True)
             count = plist_conversion.convert_dir(

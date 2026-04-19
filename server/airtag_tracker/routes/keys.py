@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 
 from .. import keys as keystore
+from .. import opentagviewer_export
 from .. import vm
 
 bp = Blueprint("keys", __name__)
@@ -51,3 +52,32 @@ def extract_keys():
         return jsonify(vm.trigger_key_extraction())
     except vm.VmError as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@bp.route("/api/export/opentagviewer.zip", methods=["GET"])
+def export_opentagviewer_zip():
+    try:
+        result = opentagviewer_export.build_zip()
+    except opentagviewer_export.NoPlistsError as e:
+        return jsonify({"error": str(e)}), 404
+    return Response(
+        result.data,
+        mimetype="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="opentagviewer.zip"',
+            "X-Airtag-Count": str(result.tag_count),
+        },
+    )
+
+
+@bp.route("/api/export/opentagviewer", methods=["GET"])
+def export_opentagviewer_info():
+    try:
+        result = opentagviewer_export.build_zip()
+    except opentagviewer_export.NoPlistsError as e:
+        return jsonify({"available": False, "error": str(e)})
+    return jsonify({
+        "available": True,
+        "tag_count": result.tag_count,
+        "size_bytes": len(result.data),
+    })

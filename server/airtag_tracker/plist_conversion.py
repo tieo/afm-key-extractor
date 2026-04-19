@@ -18,16 +18,23 @@ def plist_to_findmy_json(plist_path, naming_dir=None):
     shared_secret = data.get("sharedSecret", {}).get("key", {}).get("data", b"")
     secondary_shared = data.get("secondarySharedSecret", {}).get("key", {}).get("data", b"")
     pairing_date = data.get("pairingDate", datetime.now(timezone.utc))
+    # macOS plists store pairingDate as timezone-naive UTC; findmy warns otherwise.
+    if isinstance(pairing_date, datetime) and pairing_date.tzinfo is None:
+        pairing_date = pairing_date.replace(tzinfo=timezone.utc)
     identifier = data.get("identifier", plist_path.stem)
     model = data.get("model", "AirTag")
 
     if not private_key:
         raise ValueError(f"No privateKey found in {plist_path}")
+    if not secondary_shared:
+        # Non-AirTag Find My items (iPhones, iPads, AirPods, Macs) only have a
+        # primary shared secret. findmy's FindMyAccessory requires both sks+skn.
+        raise ValueError(f"No secondarySharedSecret (likely not an AirTag) in {plist_path}")
 
     # Look up name from BeaconNamingRecord
     name = identifier
     if naming_dir:
-        for naming_file in Path(naming_dir).glob("*.plist"):
+        for naming_file in Path(naming_dir).rglob("*.plist"):
             try:
                 with open(naming_file, "rb") as f:
                     naming = plistlib.load(f)
@@ -37,15 +44,19 @@ def plist_to_findmy_json(plist_path, naming_dir=None):
             except Exception:
                 continue
 
+    # findmy expects the last 28 bytes of the P-224 private key
+    # (matches how FindMyAccessory.from_device_dump slices device_data["privateKey"]["key"]["data"][-28:])
     return {
         "type": "accessory",
-        "master_key": private_key.hex(),
+        "master_key": private_key[-28:].hex(),
         "skn": shared_secret.hex(),
         "sks": secondary_shared.hex(),
         "paired_at": pairing_date.isoformat() if isinstance(pairing_date, datetime) else str(pairing_date),
         "name": name,
         "model": model,
         "identifier": identifier,
+        "alignment_date": None,
+        "alignment_index": 0,
     }
 
 

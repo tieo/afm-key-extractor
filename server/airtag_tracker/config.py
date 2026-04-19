@@ -7,6 +7,7 @@ from pathlib import Path
 
 DATA_DIR = Path(os.environ.get("AIRTAG_DATA_DIR", "/var/lib/airtag-tracker"))
 KEYS_DIR = DATA_DIR / "keys"
+PLISTS_DIR = DATA_DIR / "plists"
 DB_PATH = DATA_DIR / "locations.db"
 ACCOUNT_PATH = DATA_DIR / "account.json"
 ACCOUNT_ENC_PATH = DATA_DIR / "account.enc"

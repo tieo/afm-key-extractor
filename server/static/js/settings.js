@@ -6,7 +6,28 @@ import { refreshStatus } from "./state.js";
 export async function enterSettings() {
   await loadPollingSettings();
   await loadKeysList();
+  await loadOtvExport();
   wireDropZone();
+}
+
+async function loadOtvExport() {
+  const status = document.getElementById("otv-export-status");
+  const link = document.getElementById("otv-export-link");
+  if (!status || !link) return;
+  try {
+    const info = await getJSON("/api/export/opentagviewer");
+    if (info.available) {
+      const kb = Math.round(info.size_bytes / 1024);
+      status.textContent = `${info.tag_count} AirTag${info.tag_count === 1 ? "" : "s"} ready — ${kb} KB`;
+      link.hidden = false;
+    } else {
+      status.textContent = info.error || "No decrypted plists yet. Sync from VM.";
+      link.hidden = true;
+    }
+  } catch (e) {
+    status.textContent = "Export unavailable.";
+    link.hidden = true;
+  }
 }
 
 async function loadPollingSettings() {
