@@ -1,59 +1,121 @@
-// App bootstrap: wire buttons, register panels, kick off polling.
+// Entry point: DOMContentLoaded → fetch initial status → initSSE().
 
-import { refreshStatus, onStateChange } from "./state.js";
-import { togglePanel, registerPanelOpen, isPanelOpen } from "./panels.js";
-import { renderKeysMain, renderCta, handleCta } from "./keys-view.js";
-import { renderStatusBar } from "./status-bar.js";
-import { renderAccount } from "./account.js";
-import { enterVmPanel, renderVmStatus, toggleVncInteract } from "./vm.js";
-import { enterSettings, savePollingSettings } from "./settings.js";
-import { refreshLog, wireLogFilters, startLogAutoRefresh } from "./log.js";
-import { pollNow, syncKeys } from "./actions.js";
+import { initSSE, updateUI, fetchInitialStatus } from "./state.js";
+import { wireButtons, setVncPort, ensureVncLoaded, setSmsPhone } from "./vm-panel.js";
+import { get } from "./api.js";
 
-// Panel open hooks
-registerPanelOpen("log", refreshLog);
-registerPanelOpen("account", renderAccount);
-registerPanelOpen("vm", enterVmPanel);
-registerPanelOpen("settings", enterSettings);
+// Maximum number of log entries to show in the UI.
+const MAX_LOG_ENTRIES = 20;
 
-// State-driven re-renders
-onStateChange(() => {
-  renderStatusBar();
-  renderKeysMain();
-  renderCta();
-  if (isPanelOpen("vm")) renderVmStatus();
-  if (isPanelOpen("account")) renderAccount();
+// ---------------------------------------------------------------------------
+// Log panel
+// ---------------------------------------------------------------------------
+
+function appendLogEntry(entry) {
+  const panel = document.getElementById("log-panel");
+  if (!panel) return;
+
+  const row = document.createElement("div");
+  row.className = `log-entry ${entry.level || ""}`;
+
+  const ts = new Date(entry.ts);
+  const timeStr = ts.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+  row.innerHTML =
+    `<span class="log-ts">${timeStr}</span>` +
+    `<span class="log-cat">${entry.cat || ""}</span>` +
+    `<span class="log-msg">${entry.msg || ""}</span>`;
+
+  panel.appendChild(row);
+
+  // Keep only the last MAX_LOG_ENTRIES rows.
+  while (panel.children.length > MAX_LOG_ENTRIES) {
+    panel.removeChild(panel.firstChild);
+  }
+
+  // Auto-scroll to bottom.
+  panel.scrollTop = panel.scrollHeight;
+}
+
+async function loadInitialLog() {
+  const entries = await get("/api/log");
+  if (!Array.isArray(entries)) return;
+  // Show only the last MAX_LOG_ENTRIES.
+  const slice = entries.slice(-MAX_LOG_ENTRIES);
+  const panel = document.getElementById("log-panel");
+  if (panel) panel.innerHTML = "";
+  slice.forEach(appendLogEntry);
+}
+
+// ---------------------------------------------------------------------------
+// SSE event handler
+// ---------------------------------------------------------------------------
+
+function onSseEvent(event) {
+  if (event.type === "state") {
+    // Map SSE state event to the updateUI contract.
+    updateUI({
+      flow: event.flow ?? null,
+      state: event.state,
+      label: event.label ?? event.state,
+      error: event.error ?? null,
+      running: event.state !== "idle" && event.state !== "done" && event.state !== "error",
+    });
+
+    // Show/hide noVNC when state changes.
+    const vncSection = document.getElementById("vnc-section");
+    if (vncSection && vncSection.style.display !== "none") {
+      ensureVncLoaded();
+    }
+  } else if (event.type === "log") {
+    appendLogEntry(event);
+  } else if (event.type === "sms_phone") {
+    setSmsPhone(event.phone);
+  } else if (event.type === "2fa_required") {
+    // Engine can emit this explicitly — updateUI handles the state-based show/hide,
+    // but in case the type is sent directly, trigger a status refresh.
+    refreshStatus();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Periodic status refresh (fallback for reconnected clients)
+// ---------------------------------------------------------------------------
+
+async function refreshStatus() {
+  const data = await get("/api/automation/status");
+  if (data) updateUI(data);
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap
+// ---------------------------------------------------------------------------
+
+document.addEventListener("DOMContentLoaded", async () => {
+  wireButtons();
+
+  // Load initial automation status.
+  const initial = await fetchInitialStatus();
+
+  // Set VNC port from vm/status (fetchInitialStatus updates window.VNC_WS_PORT).
+  setVncPort(window.VNC_WS_PORT);
+
+  if (initial) {
+    updateUI(initial);
+
+    // If already running, pre-load the VNC iframe.
+    const vncSection = document.getElementById("vnc-section");
+    if (vncSection && vncSection.style.display !== "none") {
+      ensureVncLoaded();
+    }
+  }
+
+  // Load the last log entries.
+  await loadInitialLog();
+
+  // Open SSE stream.
+  initSSE(onSseEvent);
+
+  // Refresh status every 15 seconds as a safety net (SSE may miss events on reconnect).
+  setInterval(refreshStatus, 15000);
 });
-
-// Wire data-action attributes declaratively
-const actions = {
-  "poll-now": (ev) => pollNow(ev.currentTarget),
-  "sync-keys": (ev) => syncKeys(ev.currentTarget),
-  "open-log": () => togglePanel("log"),
-  "open-settings": () => togglePanel("settings"),
-  "open-account": () => togglePanel("account"),
-  "open-vm": () => togglePanel("vm"),
-  "close-log": () => togglePanel("log"),
-  "close-account": () => togglePanel("account"),
-  "close-vm": () => togglePanel("vm"),
-  "close-settings": () => togglePanel("settings"),
-  "close-detail": () => togglePanel("detail"),
-  "cta": () => handleCta(),
-  "toggle-vnc-interact": () => toggleVncInteract(),
-  "save-polling": () => savePollingSettings(),
-};
-document.addEventListener("click", (ev) => {
-  const el = ev.target.closest("[data-action]");
-  if (!el) return;
-  const fn = actions[el.dataset.action];
-  if (fn) { ev.preventDefault(); fn(ev); }
-});
-document.querySelectorAll('input[data-action="save-polling"]').forEach((i) => {
-  i.addEventListener("change", savePollingSettings);
-});
-
-wireLogFilters();
-startLogAutoRefresh();
-
-refreshStatus();
-setInterval(refreshStatus, 10000);

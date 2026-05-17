@@ -1,240 +1,348 @@
-* { margin: 0; padding: 0; box-sizing: border-box; }
-html, body { overflow-x: hidden; }
-body {
-  font-family: -apple-system, system-ui, sans-serif;
-  background: #1a1a2e; color: #eee;
-  display: flex; flex-direction: column;
-  min-height: 100vh; min-height: 100dvh;
+/* ============ Reset & base ============ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: #1a1a1a;
+  color: #e8e8e8;
+  line-height: 1.5;
 }
 
-/* ============ Toolbar ============ */
-.toolbar {
-  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
-  padding-top: calc(8px + env(safe-area-inset-top));
-  background: #0f3460; flex-shrink: 0;
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
 }
-.toolbar h1 { font-size: 0.95em; margin-right: 6px; white-space: nowrap; }
-.actions { display: flex; gap: 6px; flex: 1; justify-content: flex-end; flex-wrap: nowrap; }
+
+/* ============ Header ============ */
+.app-header {
+  background: #111;
+  border-bottom: 1px solid #2a2a2a;
+  padding: 14px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.app-header h1 {
+  font-size: 1.1em;
+  font-weight: 600;
+  color: #e8e8e8;
+  letter-spacing: 0.01em;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ============ Main layout ============ */
+.app-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  max-width: 960px;
+  width: 100%;
+  margin: 0 auto;
+}
 
 /* ============ Buttons ============ */
 .btn {
-  padding: 8px 12px; border-radius: 6px; border: 1px solid #333;
-  background: #16213e; color: #eee; cursor: pointer; font-size: 0.9em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 18px;
+  border-radius: 6px;
+  border: 1px solid #333;
+  background: #242424;
+  color: #e8e8e8;
+  font-size: 0.9em;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, opacity 0.15s;
   white-space: nowrap;
-}
-.btn:hover { border-color: #4cc9f0; }
-.btn.primary { background: #4361ee; border-color: #4361ee; color: #fff; }
-.btn.sync { background: #4cc9f0; border-color: #4cc9f0; color: #000; }
-.btn.danger { background: #2a1822; border-color: #e63946; color: #e63946; }
-.btn.ghost { background: transparent; }
-.btn.small { padding: 6px 10px; font-size: 0.82em; }
-.btn:disabled { opacity: 0.5; cursor: default; }
-
-/* ============ Toast ============ */
-#toast {
-  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-  background: #16213e; border: 1px solid #4cc9f0; color: #eee;
-  padding: 10px 16px; border-radius: 8px; z-index: 10000; font-size: 0.9em;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.6); max-width: 90%;
-  opacity: 0; pointer-events: none; transition: opacity 0.2s;
-}
-#toast.show { opacity: 1; }
-#toast.error { border-color: #e63946; }
-
-/* ============ Status bar ============ */
-.status-bar {
-  display: flex; gap: 8px; padding: 8px 14px; background: #16213e;
-  font-size: 0.82em; color: #aaa; align-items: center;
-  flex-shrink: 0; overflow-x: auto;
-}
-.status-bar::-webkit-scrollbar { display: none; }
-.status-bar > * { flex-shrink: 0; }
-#tags-status {
-  color: #aaa; height: 26px; line-height: 26px;
-  display: inline-flex; align-items: center;
-}
-.badge {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 10px; border-radius: 12px; background: #0f3460;
-  border: 1px solid #1a2f56; cursor: pointer; user-select: none;
-  height: 26px; line-height: 1; white-space: nowrap;
-}
-.badge:hover { border-color: #4cc9f0; }
-.badge .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
-.dot.green { background: #2ecc71; }
-.dot.red { background: #e74c3c; }
-.dot.yellow { background: #f1c40f; }
-.dot.gray { background: #666; }
-
-/* ============ Main — keys list ============ */
-.main {
-  flex: 1 1 auto; padding: 12px 14px; overflow-y: auto;
-  display: flex; flex-direction: column; gap: 10px;
-}
-.cta-banner {
-  background: linear-gradient(90deg,#4361ee,#3a0ca3);
-  padding: 12px 14px; border-radius: 10px; cursor: pointer;
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-}
-.cta-banner .cta-text { font-size: 0.9em; line-height: 1.3; }
-.cta-banner .cta-arrow { font-size: 1.3em; opacity: 0.8; }
-.section-title {
-  font-size: 0.78em; color: #888; text-transform: uppercase;
-  letter-spacing: 0.05em; margin: 8px 0 4px;
-}
-.key-card {
-  padding: 12px 14px; background: #16213e; border-radius: 10px;
-  cursor: pointer; border: 1px solid transparent; transition: border 0.1s;
-  display: flex; align-items: center; gap: 12px;
-}
-.key-card:hover { border-color: #4cc9f0; }
-.key-card .key-icon {
-  width: 36px; height: 36px; border-radius: 50%; background: #0f3460;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0; font-size: 1.1em;
-}
-.key-card .key-body { flex: 1; min-width: 0; }
-.key-card .key-name { font-weight: 500; font-size: 0.95em; }
-.key-card .key-meta {
-  color: #888; font-size: 0.78em; margin-top: 2px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.key-card .key-status { font-size: 0.75em; color: #666; white-space: nowrap; }
-.empty-state { color: #888; text-align: center; padding: 20px; font-size: 0.9em; }
-#detail-map {
-  width: 100%; height: 40vh; border-radius: 8px;
-  background: #0a0a1a; margin-top: 8px;
+  text-decoration: none;
 }
 
-/* ============ Slide-in panels ============ */
-.panel {
-  position: fixed; top: 0; right: 0; width: 100%; max-width: 520px;
-  height: 100vh; height: 100dvh; background: #1a1a2e; z-index: 9000;
-  box-shadow: -4px 0 20px rgba(0,0,0,0.5);
-  padding: 16px; padding-top: calc(16px + env(safe-area-inset-top));
-  display: flex; flex-direction: column; gap: 12px;
-  transform: translateX(0); transition: transform 0.2s ease;
+.btn:hover:not(:disabled) { border-color: #0af; }
+.btn:disabled { opacity: 0.45; cursor: default; }
+
+.btn-primary {
+  background: #0af;
+  border-color: #0af;
+  color: #000;
+  font-weight: 600;
+}
+.btn-primary:hover:not(:disabled) {
+  background: #29bbff;
+  border-color: #29bbff;
+}
+
+.btn-secondary {
+  background: transparent;
+  border-color: #444;
+  color: #aaa;
+}
+.btn-secondary:hover:not(:disabled) { border-color: #0af; color: #0af; }
+
+.btn-danger {
+  background: #2d1010;
+  border-color: #c0392b;
+  color: #e74c3c;
+}
+.btn-danger:hover:not(:disabled) { background: #3d1515; }
+
+.btn-sm { padding: 6px 12px; font-size: 0.82em; }
+
+/* ============ Stage bar ============ */
+.stage-section {
+  background: #111;
+  border: 1px solid #2a2a2a;
+  border-radius: 10px;
+  padding: 16px 20px;
+}
+
+.stage-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.stage {
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.75em;
+  font-weight: 500;
+  background: #242424;
+  border: 1px solid #333;
+  color: #666;
+  white-space: nowrap;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+
+.stage--done {
+  background: #0d1f14;
+  border-color: #2ecc71;
+  color: #27ae60;
+}
+
+.stage--active {
+  background: #003348;
+  border-color: #0af;
+  color: #0af;
+  box-shadow: 0 0 8px rgba(0, 170, 255, 0.25);
+}
+
+.stage-label {
+  font-size: 1.1em;
+  font-weight: 600;
+  color: #e8e8e8;
+  min-height: 1.4em;
+}
+
+/* ============ noVNC iframe ============ */
+.vnc-section {
+  background: #000;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid #2a2a2a;
+}
+
+#vnc {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: none;
+}
+
+/* ============ 2FA form ============ */
+.twofa-form {
+  background: #111;
+  border: 1px solid #0af;
+  border-radius: 10px;
+  padding: 24px;
+  max-width: 480px;
+  align-self: center;
+  width: 100%;
+}
+
+.twofa-form h2 {
+  font-size: 1em;
+  font-weight: 600;
+  color: #0af;
+  margin-bottom: 6px;
+}
+
+.twofa-hint {
+  font-size: 0.88em;
+  color: #888;
+  margin-bottom: 14px;
+  line-height: 1.4;
+}
+
+.twofa-inputs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.twofa-input {
+  flex: 1;
+  padding: 10px 14px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 6px;
+  color: #e8e8e8;
+  font-size: 1.1em;
+  font-family: monospace;
+  letter-spacing: 0.2em;
+  text-align: center;
+}
+
+.twofa-input:focus {
+  outline: none;
+  border-color: #0af;
+}
+
+.twofa-sms-phone {
+  font-size: 0.82em;
+  color: #0af;
+  margin-bottom: 6px;
+}
+
+/* ============ Action cards ============ */
+.actions-section {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 640px) {
+  .actions-section { grid-template-columns: 1fr; }
+}
+
+.action-card {
+  background: #111;
+  border: 1px solid #2a2a2a;
+  border-radius: 10px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.action-card h3 {
+  font-size: 0.95em;
+  font-weight: 600;
+  color: #e8e8e8;
+}
+
+.action-card p {
+  font-size: 0.85em;
+  color: #888;
+  line-height: 1.4;
+  flex: 1;
+}
+
+.runtime-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.runtime-fields input[type=email],
+.runtime-fields input[type=password] {
+  width: 100%;
+  padding: 9px 12px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 6px;
+  color: #e8e8e8;
+  font-size: 0.9em;
+}
+
+.runtime-fields input:focus {
+  outline: none;
+  border-color: #0af;
+}
+
+.runtime-fields input::placeholder { color: #555; }
+
+.check-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85em;
+  color: #888;
+  cursor: pointer;
+}
+
+.check-label input[type=checkbox] {
+  accent-color: #0af;
+  width: 15px;
+  height: 15px;
+}
+
+/* ============ Error banner ============ */
+.error-banner {
+  background: #2d1010;
+  border: 1px solid #c0392b;
+  color: #e74c3c;
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+/* ============ Log panel ============ */
+.log-section {
+  background: #111;
+  border: 1px solid #2a2a2a;
+  border-radius: 10px;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.log-title {
+  font-size: 0.82em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #555;
+}
+
+.log-panel {
+  font-family: "SF Mono", "Fira Mono", "Cascadia Code", monospace;
+  font-size: 0.78em;
+  background: #0d0d0d;
+  border-radius: 6px;
+  padding: 10px;
   overflow-y: auto;
-}
-.panel.hidden { transform: translateX(110%); pointer-events: none; }
-
-/* VM panel shows a VNC canvas — give it much more room on desktop. */
-#vm-panel { max-width: min(1400px, 92vw); }
-@media (max-width: 900px) { #vm-panel { max-width: 100%; } }
-.panel-header {
-  display: flex; align-items: center; justify-content: space-between;
-  flex-shrink: 0;
-}
-.panel-header h2 { font-size: 1.1em; }
-.panel-body {
-  flex: 1; overflow-y: auto; display: flex; flex-direction: column;
-  gap: 14px; min-height: 0;
-}
-.section { background: #16213e; border-radius: 10px; padding: 14px; }
-.section h3 { font-size: 0.95em; margin-bottom: 10px; color: #4cc9f0; }
-.section p {
-  color: #aaa; font-size: 0.85em; margin-bottom: 8px; line-height: 1.4;
+  max-height: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-/* ============ Form inputs ============ */
-input[type=email], input[type=password], input[type=text], input[type=number] {
-  width: 100%; padding: 10px 12px; border-radius: 6px; border: 1px solid #333;
-  background: #0f3460; color: #eee; font-size: 0.95em; margin-bottom: 8px;
-}
-input::placeholder { color: #666; }
-.error { color: #e74c3c; font-size: 0.85em; margin: 6px 0; }
-.info { color: #4cc9f0; font-size: 0.85em; margin: 6px 0; }
-label.check {
-  display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 0.9em;
-}
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-@media (max-width: 500px) { .grid2 { grid-template-columns: 1fr; } }
-
-/* ============ VM panel — VNC iframe ============ */
-.vnc-wrap {
-  position: relative; width: 100%; flex: 1 1 auto;
-  min-height: 40vh; background: #000; border-radius: 8px; overflow: hidden;
-}
-.vnc-wrap iframe { width: 100%; height: 100%; border: 0; display: block; }
-.vnc-wrap .vnc-toggle {
-  position: absolute; top: 6px; right: 6px; z-index: 2;
-  background: rgba(0,0,0,0.7); border: 1px solid #555; color: #aaa;
-  padding: 4px 10px; border-radius: 4px; font-size: 0.75em; cursor: pointer;
-}
-.vnc-overlay {
-  position: absolute; inset: 0; background: rgba(0,0,0,0.85);
-  color: #4cc9f0; display: none; flex-direction: column;
-  align-items: center; justify-content: center; gap: 10px;
-  z-index: 3; font-size: 0.9em; text-align: center; padding: 20px;
-}
-.vnc-overlay.show { display: flex; }
-.spinner {
-  width: 32px; height: 32px; border: 3px solid #16213e;
-  border-top-color: #4cc9f0; border-radius: 50%;
-  animation: spin 1s linear infinite;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* ============ Progress bar ============ */
-.progress {
-  background: #0a0a1a; border-radius: 6px; height: 8px;
-  overflow: hidden; margin: 6px 0;
-}
-.progress > div {
-  height: 100%;
-  background: linear-gradient(90deg, #4361ee, #4cc9f0);
-  width: 0%; transition: width 1s ease;
-}
-
-/* ============ Log list ============ */
-.log-filters { display: flex; gap: 6px; flex-wrap: wrap; }
-.chip {
-  padding: 3px 10px; border-radius: 12px; font-size: 0.82em; cursor: pointer;
-  background: #16213e; border: 1px solid #333;
-}
-.chip.active { border-color: #4cc9f0; color: #4cc9f0; }
-#log-entries {
-  font-family: monospace; font-size: 0.78em; flex: 1;
-  overflow-y: auto; background: #0a0a1a; border-radius: 6px; padding: 8px;
-}
 .log-entry {
-  padding: 2px 0; border-bottom: 1px solid #111;
-  display: flex; gap: 8px; flex-wrap: wrap;
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+  border-bottom: 1px solid #151515;
+  line-height: 1.3;
 }
-.log-ts { color: #555; white-space: nowrap; }
-.log-cat { color: #4361ee; min-width: 60px; }
-.log-msg { color: #ccc; word-break: break-word; flex: 1; min-width: 0; }
+
+.log-ts { color: #444; white-space: nowrap; flex-shrink: 0; }
+.log-cat { color: #4a90d9; min-width: 55px; flex-shrink: 0; }
+.log-msg { color: #bbb; word-break: break-word; flex: 1; }
+
 .log-entry.error .log-msg { color: #e74c3c; }
-.log-entry.warning .log-msg { color: #f1c40f; }
-
-/* ============ Settings ============ */
-.drop-zone {
-  border: 2px dashed #4361ee; border-radius: 8px; padding: 20px;
-  text-align: center; color: #888; cursor: pointer; margin-top: 8px;
-}
-.drop-zone.dragover { border-color: #4cc9f0; color: #4cc9f0; }
-.key-item {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 0; border-bottom: 1px solid #0f3460;
-}
-.key-meta { font-size: 0.78em; color: #888; }
-
-@media (max-width: 600px) {
-  .toolbar h1 { font-size: 0.95em; }
-  .btn { padding: 7px 10px; font-size: 0.85em; }
-  .btn.small { padding: 5px 8px; font-size: 0.78em; }
-}
-
-.vm-actions-primary { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
-.vm-action { display: flex; flex-direction: column; gap: 3px; }
-.vm-action .btn { align-self: flex-start; }
-.vm-action-desc { font-size: 0.82em; color: #aaa; line-height: 1.35; }
-.vm-actions-advanced { margin-top: 10px; }
-.vm-actions-advanced > summary { cursor: pointer; color: #888; font-size: 0.88em; padding: 4px 0; user-select: none; }
-.vm-actions-advanced > summary:hover { color: #ccc; }
-.vm-actions-advanced-body { display: flex; flex-direction: column; gap: 10px; padding: 8px 0 4px 12px; border-left: 2px solid #333; margin-top: 6px; }
-
-.vm-signin-line { margin-top: 6px; font-size: 0.9em; padding: 5px 9px; border-radius: 4px; display: inline-block; }
-.vm-signin-line.running, .vm-signin-line.awaiting_2fa { background: #3a2d10; color: #ffc65c; }
-.vm-signin-line.signed_in { background: #12371b; color: #7ee0a0; }
-.vm-signin-line.failed { background: #3a1414; color: #ff8a8a; }
+.log-entry.warning .log-msg { color: #f39c12; }
+.log-entry.info .log-msg { color: #bbb; }

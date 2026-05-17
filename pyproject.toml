@@ -4,15 +4,22 @@ version = "0.1.0"
 description = "AirTag location tracker with macOS VM automation and web UI"
 requires-python = ">=3.11"
 dependencies = [
-    "flask",
+    "fastapi",
+    "uvicorn[standard]",
+    "python-multipart",
     "findmy",
     "pytesseract",
     "pillow",
+    "opencv-python-headless",
+    "cryptography",
+    "sshpass",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-asyncio",
+    "httpx",
 ]
 
 [tool.pytest.ini_options]

@@ -2,122 +2,83 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>AirTag Tracker</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9/dist/leaflet.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AirTag Key Extractor</title>
   <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
-  <header class="toolbar">
-    <h1>AirTags</h1>
-    <div class="actions">
-      <button class="btn sync small" data-action="poll-now" title="Fetch latest AirTag locations from Apple now">Refresh</button>
-      <button class="btn small" data-action="sync-keys" title="Extract AirTag keys from macOS VM Keychain">Sync Keys</button>
-      <button class="btn ghost small" data-action="open-log" title="Activity log">Log</button>
-      <button class="btn ghost small" data-action="open-settings" title="Polling &amp; keys">Settings</button>
+  <header class="app-header">
+    <h1>AirTag Key Extractor</h1>
+    <div class="header-actions">
+      <button id="btn-abort" class="btn btn-danger" style="display:none">Abort</button>
     </div>
   </header>
-  <div id="toast"></div>
 
-  <div class="status-bar" id="status-bar">
-    <span class="badge" id="badge-account" data-action="open-account"><span class="dot gray"></span><span>Account</span></span>
-    <span class="badge" id="badge-vm" data-action="open-vm"><span class="dot gray"></span><span>VM</span></span>
-    <span id="tags-status">…</span>
-  </div>
+  <main class="app-main">
+    <!-- Stage progress bar -->
+    <section class="stage-section" id="stage-section" style="display:none">
+      <div class="stage-bar" id="stage-bar"></div>
+      <div class="stage-label" id="stage-label"></div>
+    </section>
 
-  <main class="main">
-    <div id="cta-banner" class="cta-banner" style="display:none" data-action="cta">
-      <div class="cta-text" id="cta-text">…</div><div class="cta-arrow">›</div>
-    </div>
-    <div class="section-title">AirTag Keys</div>
-    <div id="keys-main">Loading…</div>
+    <!-- noVNC iframe -->
+    <section class="vnc-section" id="vnc-section" style="display:none">
+      <iframe id="vnc" allow="fullscreen" allowfullscreen></iframe>
+    </section>
+
+    <!-- 2FA form -->
+    <section class="twofa-form" id="twofa-form" style="display:none">
+      <h2>Two-Factor Authentication Required</h2>
+      <p class="twofa-hint">Enter the 6-digit code Apple sent to your trusted device.</p>
+      <div class="twofa-inputs">
+        <input type="text" id="twofa-code" placeholder="000000" maxlength="6"
+               inputmode="numeric" autocomplete="one-time-code" class="twofa-input">
+        <button id="btn-twofa-submit" class="btn btn-primary">Verify Code</button>
+      </div>
+      <p id="twofa-sms-phone" class="twofa-sms-phone" style="display:none"></p>
+      <button id="btn-request-sms" class="btn btn-secondary btn-sm">Send SMS code instead</button>
+    </section>
+
+    <!-- Action cards -->
+    <section class="actions-section" id="actions-section">
+      <!-- Install flow -->
+      <div class="action-card" id="card-install">
+        <h3>Install macOS</h3>
+        <p>Run the one-time macOS installation to create the golden VM image. Takes 20-45 minutes.</p>
+        <button id="btn-start-install" class="btn btn-primary">Start Install</button>
+      </div>
+
+      <!-- Runtime / extraction flow -->
+      <div class="action-card" id="card-runtime">
+        <h3>Extract AirTag Keys</h3>
+        <p>Sign in to Apple ID inside the VM and extract your AirTag keys.</p>
+        <div class="runtime-fields">
+          <input type="email" id="input-email" placeholder="Apple ID email" autocomplete="username">
+          <input type="password" id="input-password" placeholder="Apple ID password" autocomplete="current-password">
+          <label class="check-label">
+            <input type="checkbox" id="input-restore-golden" checked>
+            Restore VM from golden image first
+          </label>
+        </div>
+        <button id="btn-start-runtime" class="btn btn-primary">Start Extraction</button>
+      </div>
+    </section>
+
+    <!-- Error banner -->
+    <div class="error-banner" id="error-banner" style="display:none"></div>
+
+    <!-- Log panel -->
+    <section class="log-section">
+      <h3 class="log-title">Activity Log</h3>
+      <div class="log-panel" id="log-panel"></div>
+    </section>
   </main>
 
-  <aside class="panel hidden" id="detail-panel">
-    <div class="panel-header"><h2 id="detail-title">Key</h2><button class="btn small ghost" data-action="close-detail">Close</button></div>
-    <div class="panel-body">
-      <div class="section">
-        <div id="detail-meta" style="font-size:0.85em;color:#aaa"></div>
-        <div id="detail-map"></div>
-      </div>
-    </div>
-  </aside>
-
-  <aside class="panel hidden" id="account-panel">
-    <div class="panel-header"><h2>Apple ID</h2><button class="btn small ghost" data-action="close-account">Close</button></div>
-    <div class="panel-body" id="account-body"></div>
-  </aside>
-
-  <aside class="panel hidden" id="vm-panel">
-    <div class="panel-header"><h2>macOS VM</h2><button class="btn small ghost" data-action="close-vm">Close</button></div>
-    <div class="panel-body">
-      <div class="vnc-wrap" id="vnc-wrap">
-        <iframe id="vnc-iframe" allow="fullscreen" allowfullscreen></iframe>
-        <button class="vnc-toggle" id="vnc-interact" data-action="toggle-vnc-interact">View Only</button>
-        <div class="vnc-overlay" id="vnc-overlay">
-          <div class="spinner"></div>
-          <div id="vnc-overlay-label">Starting VM…</div>
-          <div id="vnc-overlay-elapsed" style="color:#888;font-size:0.82em"></div>
-          <div style="color:#888;font-size:0.78em;max-width:280px;line-height:1.4">
-            Takes ~30s to reach the desktop. The VM runs on the server — safe to close this page.
-          </div>
-        </div>
-      </div>
-      <div class="section">
-        <div id="vm-status-summary" style="display:flex;align-items:center;gap:8px;margin-bottom:6px"></div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px" id="vm-controls"></div>
-      </div>
-    </div>
-  </aside>
-
-  <aside class="panel hidden" id="settings-panel">
-    <div class="panel-header"><h2>Settings</h2><button class="btn small ghost" data-action="close-settings">Close</button></div>
-    <div class="panel-body">
-      <div class="section">
-        <h3>Polling</h3>
-        <div id="poll-status" style="margin-bottom:8px;font-size:0.82em"></div>
-        <label class="check"><input type="checkbox" id="set-adaptive" data-action="save-polling"> Adaptive polling (faster when moving)</label>
-        <div class="grid2">
-          <div><label style="font-size:0.78em;color:#888">Idle (min)</label><input type="number" id="set-idle" min="1" max="1440"></div>
-          <div><label style="font-size:0.78em;color:#888">Active (min)</label><input type="number" id="set-active" min="1" max="60"></div>
-          <div><label style="font-size:0.78em;color:#888">Threshold (m)</label><input type="number" id="set-threshold" min="1" max="10000"></div>
-          <div><label style="font-size:0.78em;color:#888">Cooldown polls</label><input type="number" id="set-cooldown" min="1" max="100"></div>
-        </div>
-        <button class="btn small" data-action="save-polling">Save</button>
-      </div>
-
-      <div class="section">
-        <h3>AirTag Keys</h3>
-        <div id="keys-list">Loading…</div>
-        <div class="drop-zone" id="drop-zone">Drop .json key files here or tap to upload</div>
-        <input type="file" id="key-file-input" accept=".json" multiple style="display:none">
-      </div>
-
-      <div class="section">
-        <h3>OpenTagViewer Export</h3>
-        <div id="otv-export-status" style="font-size:0.85em;color:#888;margin-bottom:0.4em">Checking…</div>
-        <a id="otv-export-link" class="btn small" href="/api/export/opentagviewer.zip" download hidden>Download .zip</a>
-      </div>
-    </div>
-  </aside>
-
-  <aside class="panel hidden" id="log-panel">
-    <div class="panel-header"><h2>Activity Log</h2><button class="btn small ghost" data-action="close-log">Close</button></div>
-    <div class="panel-body">
-      <div class="log-filters">
-        <span class="chip active" data-cat="">All</span>
-        <span class="chip" data-cat="poll">Poll</span>
-        <span class="chip" data-cat="movement">Move</span>
-        <span class="chip" data-cat="vm">VM</span>
-        <span class="chip" data-cat="account">Account</span>
-        <span class="chip" data-cat="keys">Keys</span>
-        <span class="chip" data-cat="system">System</span>
-      </div>
-      <div id="log-entries"></div>
-    </div>
-  </aside>
-
-  <script src="https://unpkg.com/leaflet@1.9/dist/leaflet.js"></script>
+  <script>
+    // Injected at build-time equivalent: port from server config.
+    // The actual port is fetched from /api/vm/status so the HTML stays static.
+    window.VNC_WS_PORT = 6901; // default; overridden by init.js from /api/vm/status
+  </script>
   <script type="module" src="/js/init.js"></script>
 </body>
 </html>

@@ -128,6 +128,13 @@ def send_chord(keys: list[str], **kw) -> None:
         c.send_chord(keys, **kw)
 
 
+def system_powerdown() -> None:
+    """Send ACPI power-down signal (graceful shutdown)."""
+    with qmp() as c:
+        c._send({"execute": "system_powerdown"})
+        c._recv_json()
+
+
 def screendump(output_path: str, monitor_path: str = MONITOR_SOCK) -> None:
     """Ask the HMP monitor to dump the framebuffer to `output_path` (PPM)."""
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
