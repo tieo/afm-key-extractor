@@ -62,9 +62,14 @@ def has_any_text(*keywords: str) -> bool:
     return any(kw.lower() in text for kw in keywords)
 
 
-def click_text(first: str, last: str | None = None, tries: int = 3) -> bool:
+def click_text(
+    first: str,
+    last: str | None = None,
+    tries: int = 3,
+    include_menubar: bool = False,
+) -> bool:
     """Click a UI element identified by OCR text. Coordinate-free."""
-    return vm_ui.click_text(first, last, tries=tries)
+    return vm_ui.click_text(first, last, tries=tries, include_menubar=include_menubar)
 
 
 def wait_click_text(
@@ -188,12 +193,17 @@ def wait_template(
 def detect_opencore_picker() -> bool:
     """True if the OpenCore boot picker is visible.
 
-    Primary: template match (black background + icon pair).
-    Fallback: OCR for "EFI" keyword which only appears on that screen.
+    Uses OCR for strings that only appear on the picker:
+      - "EFI" (default first entry label)
+      - "macOS Base System" / "Base System" (recovery installer entry)
+      - "REL-" prefix from the OpenCore version string shown below icons
+
+    Template matching was removed because the dark background of the picker
+    template produced false positives on the macOS installer progress screen.
+    The 4-variant OCR (including autocontrast 2×) reliably detects these
+    strings even against the picker's dark background.
     """
-    if find_template("opencore_picker") is not None:
-        return True
-    return has_any_text("EFI")
+    return has_any_text("EFI", "Base System", "REL-")
 
 
 def detect_recovery_utilities() -> bool:

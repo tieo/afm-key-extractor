@@ -105,6 +105,30 @@ def start_runtime(body: RuntimeStartBody) -> dict:
     return {"status": "started"}
 
 
+@router.post("/resume-install")
+def resume_install(state: str = "waiting_install") -> dict:
+    """Resume the install flow from a specific state.
+
+    Useful after an error — for example, to resume monitoring once the
+    macOS installer is already running (use state='waiting_install') or
+    to continue from the post-install reboot (state='booting_installed').
+    """
+    if engine._engine.is_running:
+        raise HTTPException(status_code=409, detail="An automation flow is already running")
+    try:
+        initial = InstallState(state)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown install state: {state!r}")
+    vm_password = ensure_vm_password()
+    ctx = AutomationContext(
+        flow_kind=FlowKind.INSTALL,
+        vm_password=vm_password,
+        initial_state=initial,
+    )
+    engine.start_flow(ctx, sse.broadcast)
+    return {"status": "resumed", "from_state": state}
+
+
 @router.post("/abort")
 def abort_flow() -> dict:
     engine.abort()

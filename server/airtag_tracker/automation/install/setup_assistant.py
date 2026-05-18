@@ -95,15 +95,18 @@ def run(ctx: AutomationContext) -> InstallState:
         raise RuntimeError("'Create a Computer Account' screen not reached within 30s")
 
     # Full name field is focused by default.
-    vm_ui.paste_text("airtag")
+    # SSH is not available during Setup Assistant (no user account yet), so
+    # use QMP type_text.  vm_password.ensure() generates only URL-safe chars
+    # (A-Za-z0-9 + '-' + '_') which _ascii_to_chord handles correctly.
+    qmp.type_text("airtag")
     # Tab past the account name field (auto-filled from full name) and into password.
     qmp.send_keys(["tab", "tab"])
     time.sleep(0.3)
-    vm_ui.paste_text(password)
+    qmp.type_text(password)
     # Tab into the password-verify field.
     qmp.send_keys(["tab"])
     time.sleep(0.3)
-    vm_ui.paste_text(password)
+    qmp.type_text(password)
 
     if not screen.wait_click_text("Continue", deadline_s=10):
         raise RuntimeError("Could not click Continue on Create Account screen")
@@ -159,8 +162,8 @@ def run(ctx: AutomationContext) -> InstallState:
     # Wait for desktop (Finder menu bar)
     # ------------------------------------------------------------------
     emit("info", "setup_assistant", "Waiting for desktop (Finder)…")
-    if not screen.has_text("Finder", deadline_s=60, poll_s=3.0):
-        raise RuntimeError("Desktop (Finder) not detected within 60s after Setup Assistant")
+    if not screen.has_text("Finder", deadline_s=300, poll_s=3.0):
+        raise RuntimeError("Desktop (Finder) not detected within 300s after Setup Assistant")
 
     emit("info", "setup_assistant", "Setup Assistant complete — desktop reached")
     return InstallState.DISMISS_FIRST_BOOT

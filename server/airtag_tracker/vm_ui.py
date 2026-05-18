@@ -186,10 +186,14 @@ def ocr_words(ppm: str) -> list[tuple[str, int, int, int, int]]:
     words: list[tuple[str, int, int, int, int]] = []
     with Image.open(ppm) as im:
         im = im.convert("RGB")
+        im2x = im.resize((im.width * 2, im.height * 2), Image.LANCZOS)
+        # Autocontrast on 2× helps with dark-background screens (OpenCore
+        # picker, login window) where flat white-on-dark fools tesseract.
+        im2x_ac = ImageOps.autocontrast(im2x)
         variants = [
             (im, 1, "1x"),
             (ImageOps.invert(im), 1, "1x-inv"),
-            (im.resize((im.width * 2, im.height * 2), Image.LANCZOS), 2, "2x"),
+            (im2x_ac, 2, "2x"),
         ]
         for vim, scale, tag in variants:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
@@ -313,13 +317,27 @@ def click_pixel(x: int, y: int, screen_w: int, screen_h: int) -> None:
     ]}})
 
 
-def click_text(first: str, last: str | None = None, tries: int = 3, settle_s: float = 1.5) -> bool:
-    """Click a UI label identified by OCR. Retries on transient OCR misses."""
+def click_text(
+    first: str,
+    last: str | None = None,
+    tries: int = 3,
+    settle_s: float = 1.5,
+    include_menubar: bool = False,
+) -> bool:
+    """Click a UI label identified by OCR. Retries on transient OCR misses.
+
+    Set ``include_menubar=True`` to allow hitting targets inside the menu bar
+    band (needed for menu bar items like "Utilities" in macOS Recovery).
+    """
     for i in range(tries):
         p = _screendump()
         sw, sh = _screen_size(p)
         words = ocr_words(p)
-        hit = find_phrase(words, first, last, screen_h=sh)
+        hit = find_phrase(
+            words, first, last,
+            screen_h=sh,
+            exclude_chrome=not include_menubar,
+        )
         if hit:
             cx, cy = hit
             click_pixel(cx, cy, sw, sh)

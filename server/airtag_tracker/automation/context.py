@@ -35,6 +35,7 @@ class AutomationContext:
         apple_password: str = "",
         restore_golden: bool = True,
         icloud_sync_timeout_s: int = 1800,
+        initial_state: AnyState | None = None,
     ) -> None:
         self.flow_kind = flow_kind
         self.vm_password = vm_password
@@ -46,9 +47,12 @@ class AutomationContext:
         self._lock = threading.Lock()
         self.qmp_lock = threading.RLock()
 
-        initial: AnyState = (
-            InstallState.IDLE if flow_kind == FlowKind.INSTALL else RuntimeState.IDLE
-        )
+        if initial_state is not None:
+            initial: AnyState = initial_state
+        else:
+            initial = (
+                InstallState.IDLE if flow_kind == FlowKind.INSTALL else RuntimeState.IDLE
+            )
         self._state: AnyState = initial
         self._error: str | None = None
 

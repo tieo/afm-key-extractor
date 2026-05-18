@@ -45,13 +45,14 @@ def restore_golden(ctx: AutomationContext) -> RuntimeState:
 
 
 def start_vm(ctx: AutomationContext) -> RuntimeState:
-    """Start the QEMU VM (and noVNC, via systemd, inside vm.start()).
+    """Start the QEMU VM in automation mode (no autotyper, no blind boot picks).
 
-    Delegates entirely to ``vm.start()`` which handles systemd unit
-    management and noVNC proxy startup.
+    Passes automation=True to vm.start() so the login autotyper and the
+    blind OpenCore key-mash are suppressed — the state machine handles
+    both via OCR-based detection.
     """
-    emit("info", "boot", "Starting VM")
-    vm.start()
+    emit("info", "boot", "Starting VM (automation mode)")
+    vm.start(automation=True)
     emit("info", "boot", "VM started — waiting for OpenCore picker")
     return RuntimeState.PICKER_SELECTING
 

@@ -26,12 +26,27 @@ def run(ctx: AutomationContext) -> InstallState:
     """
     emit("info", "format_disk", "Opening Utilities → Terminal")
     with ctx.qmp_lock:
-        # Click the "Utilities" menu bar item.
-        screen.click_text("Utilities")
-        time.sleep(0.5)
+        # "Utilities" sits in the macOS menu bar, which is outside the normal
+        # content area filter — pass include_menubar=True so the click lands.
+        clicked = screen.click_text("Utilities", include_menubar=True, tries=5)
+        if not clicked:
+            # Fallback: keyboard menu bar navigation (ctrl+F2 → focus menu bar).
+            emit("warning", "format_disk", "OCR missed Utilities — trying ctrl+F2 navigation")
+            qmp.send_chord(["ctrl", "f2"])
+            time.sleep(0.5)
+            # Type "u" to jump to Utilities, then Enter to open it.
+            qmp.type_text("u")
+            time.sleep(0.3)
+        time.sleep(0.8)
         # Click "Terminal" in the dropdown.
-        screen.click_text("Terminal")
+        clicked_term = screen.click_text("Terminal", tries=5)
+        if not clicked_term:
+            emit("warning", "format_disk", "OCR missed Terminal dropdown — trying keyboard nav")
+            qmp.type_text("t")
         time.sleep(3.0)
+        # Only type the command if Terminal appears to be open.
+        if not screen.has_any_text("Terminal", "bash", "zsh", "Last login"):
+            raise RuntimeError("Terminal did not open in Recovery — cannot run diskutil")
         # Type the erase command and confirm.
         qmp.type_text(_ERASE_CMD)
         qmp.send_keys(["ret"])

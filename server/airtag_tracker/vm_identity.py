@@ -116,8 +116,6 @@ def patch_config_plist(plist_path: Path, identity: dict) -> None:
          f"<data>{identity['ROM_b64']}</data>"),
         ("<string>W00000000001</string>",
          f"<string>{identity['SystemSerialNumber']}</string>"),
-        ("<string>00000000-0000-0000-0000-000000000000</string>",
-         f"<string>{identity['SystemUUID']}</string>"),
     ]
     for old, new in replacements:
         if old not in text:
@@ -126,6 +124,16 @@ def patch_config_plist(plist_path: Path, identity: dict) -> None:
                 "already patched? Refusing to overwrite."
             )
         text = text.replace(old, new, 1)
+
+    # SystemUUID must be targeted by key context — the zero UUID also appears
+    # in boot device paths, so a plain replace hits the wrong one.
+    uuid_stub = "<key>SystemUUID</key>\n\t\t\t<string>00000000-0000-0000-0000-000000000000</string>"
+    uuid_new  = f"<key>SystemUUID</key>\n\t\t\t<string>{identity['SystemUUID']}</string>"
+    if uuid_stub not in text:
+        raise RuntimeError(
+            "config.plist missing <key>SystemUUID</key> stub — already patched?"
+        )
+    text = text.replace(uuid_stub, uuid_new, 1)
 
     plist_path.write_text(text)
 

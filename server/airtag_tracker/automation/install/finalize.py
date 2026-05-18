@@ -38,7 +38,39 @@ def dismiss_first_boot(ctx: AutomationContext) -> InstallState:
     qmp.send_keys(["ret"])
     time.sleep(5.0)
 
+    # Enable SSH Remote Login via Spotlight → Terminal — needed by every
+    # subsequent runtime-flow run which uses SSH for clipboard paste and
+    # settings navigation.
+    _enable_ssh(password)
+
     return InstallState.SHUTTING_DOWN
+
+
+def _enable_ssh(password: str) -> None:
+    """Open Terminal via Spotlight and enable SSH Remote Login."""
+    emit("info", "finalize", "Enabling SSH Remote Login")
+    # Spotlight
+    with qmp.qmp() as c:
+        c.send_chord(["meta_l", "spc"])
+    time.sleep(1.5)
+    qmp.type_text("Terminal")
+    time.sleep(0.5)
+    qmp.send_keys(["ret"])
+    time.sleep(6.0)
+    # Enable Remote Login (SSH)
+    cmd = "sudo systemsetup -setremotelogin on"
+    qmp.type_text(cmd)
+    qmp.send_keys(["ret"])
+    time.sleep(1.5)
+    # sudo password prompt
+    qmp.type_text(password)
+    qmp.send_keys(["ret"])
+    time.sleep(4.0)
+    # Quit Terminal
+    with qmp.qmp() as c:
+        c.send_chord(["meta_l", "q"])
+    time.sleep(1.0)
+    emit("info", "finalize", "SSH Remote Login enabled")
 
 
 def shutdown(ctx: AutomationContext) -> InstallState:

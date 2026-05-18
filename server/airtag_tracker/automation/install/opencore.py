@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 
-from ... import qmp
+from ... import qmp, vm
 from ...events import emit
 from ..context import AutomationContext
 from ..states import InstallState
@@ -20,10 +20,16 @@ from .. import screen
 def wait_for_picker(ctx: AutomationContext) -> InstallState:
     """Poll until the OpenCore boot picker is visible.
 
+    Starts the VM in install mode if it is not already running.
     Uses template matching as the primary signal, OCR ("EFI") as fallback.
-    Deadline: 120 s.  Raises RuntimeError on timeout.
+    Deadline: 180 s after VM start.  Raises RuntimeError on timeout.
     """
-    deadline_s = 120
+    if not vm.is_running():
+        emit("info", "opencore", "VM not running — starting in install mode")
+        vm.start_for_install()
+        time.sleep(5.0)  # give QEMU a moment to initialise before polling
+
+    deadline_s = 180
     poll_s = 3.0
     t0 = time.time()
     emit("info", "opencore", "Waiting for OpenCore picker…")
@@ -40,11 +46,13 @@ def wait_for_picker(ctx: AutomationContext) -> InstallState:
 def select_installer(ctx: AutomationContext) -> InstallState:
     """Navigate the picker to the macOS installer entry and confirm.
 
-    The macOS Installer entry is immediately to the right of the default
-    EFI entry.  Send right + ret.
+    The macOS Installer (BaseSystem) entry is immediately to the right of
+    the default EFI entry.  Send right + ret under qmp_lock to prevent
+    the popup watcher from injecting a keypress mid-sequence.
     """
     emit("info", "opencore", "Selecting installer entry (right + ret)")
-    qmp.send_keys(["right", "ret"])
+    with ctx.qmp_lock:
+        qmp.send_keys(["right", "ret"])
     return InstallState.WAITING_RECOVERY
 
 
@@ -71,23 +79,36 @@ def wait_for_recovery(ctx: AutomationContext) -> InstallState:
 def select_installed(ctx: AutomationContext) -> InstallState:
     """Navigate the post-install OpenCore picker to the Macintosh HD entry.
 
-    After the installer completes and the VM reboots, OpenCore shows the
-    picker again.  The installed macOS (Macintosh HD) is now the third
-    entry: EFI (default) → Installer → Macintosh HD.  Send right twice,
-    then ret.
+    macOS installation involves two reboot+configure phases, each preceded
+    by an OpenCore picker.  This handler loops: whenever the picker appears
+    it sends right+right+ret (EFI→Installer→MacHDD), then resumes watching.
+    It advances to SETUP_ASSISTANT only when the Setup Assistant
+    "Country or Region" screen is detected.
 
-    Polls for the picker first (deadline 120 s).
+    Deadline: 1800 s (30 min) from first call to cover both configure phases.
+    Raises RuntimeError on timeout.
     """
-    deadline_s = 120
-    poll_s = 3.0
+    deadline_s = 1800
+    poll_s = 5.0
     t0 = time.time()
-    emit("info", "opencore", "Waiting for post-install OpenCore picker…")
+    picker_seen = 0
+    emit("info", "opencore", "Waiting for post-install boot sequence…")
     while time.time() - t0 < deadline_s:
         if screen.detect_opencore_picker():
-            emit("info", "opencore", "Post-install picker detected — selecting Macintosh HD")
-            qmp.send_keys(["right", "right", "ret"])
+            picker_seen += 1
+            emit("info", "opencore",
+                 f"Post-install picker #{picker_seen} — selecting Macintosh HD")
+            with ctx.qmp_lock:
+                qmp.send_keys(["right", "right", "ret"])
+            time.sleep(10.0)  # let macOS start booting before next poll
+            continue
+
+        if screen.detect_setup_assistant():
+            emit("info", "opencore",
+                 "Setup Assistant detected — advancing flow")
             return InstallState.SETUP_ASSISTANT
+
         time.sleep(poll_s)
     raise RuntimeError(
-        f"Post-install OpenCore picker not detected within {deadline_s}s"
+        f"Setup Assistant not reached within {deadline_s}s after install"
     )
