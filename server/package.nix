@@ -39,7 +39,7 @@ let
     pythonImportsCheck = [ "findmy" ];
   };
 
-  pythonEnv = python3.withPackages (ps: [ ps.flask ps.pillow ps.pytesseract findmy ]);
+  pythonEnv = python3.withPackages (ps: [ ps.fastapi ps.uvicorn ps.pillow ps.cryptography findmy ]);
 
 in python3Packages.buildPythonApplication {
   pname = "airtag-tracker";
@@ -47,11 +47,6 @@ in python3Packages.buildPythonApplication {
   pyproject = false;
 
   src = ./.;
-
-  propagatedBuildInputs = with python3Packages; [
-    flask
-    findmy
-  ];
 
   installPhase = ''
     mkdir -p $out/bin $out/lib/airtag-tracker
@@ -62,6 +57,7 @@ in python3Packages.buildPythonApplication {
     cat > $out/bin/airtag-tracker <<WRAPPER
     #!/bin/sh
     export PATH=${tesseract}/bin:${sshpass}/bin:${openssh}/bin:\$PATH
+    export TESSDATA_PREFIX=${tesseract}/share/tessdata
     exec ${pythonEnv}/bin/python3 $out/lib/airtag-tracker/tracker.py "\$@"
     WRAPPER
     chmod +x $out/bin/airtag-tracker
