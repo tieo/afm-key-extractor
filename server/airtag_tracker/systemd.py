@@ -46,9 +46,9 @@ def _start_novnc_fallback() -> None:
             return  # already running
 
     web = _find_novnc_web()
-    cmd = ["websockify", f"127.0.0.1:{VNC_WS_PORT}", "127.0.0.1:5901"]
+    cmd = ["websockify", str(VNC_WS_PORT), "127.0.0.1:5901"]
     if web:
-        cmd = ["websockify", "--web", web, f"127.0.0.1:{VNC_WS_PORT}", "127.0.0.1:5901"]
+        cmd = ["websockify", "--web", web, str(VNC_WS_PORT), "127.0.0.1:5901"]
 
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -77,12 +77,19 @@ def ctl(action: str, unit: str) -> None:
     Falls back to direct websockify management when systemctl is
     unavailable or the unit doesn't exist (dev/Docker environments).
     """
-    result = subprocess.run(
-        ["systemctl", action, unit],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
+    try:
+        result = subprocess.run(
+            ["systemctl", action, unit],
+            capture_output=True,
+            text=True,
+        )
+        returncode = result.returncode
+        stderr = result.stderr.strip()[:200]
+    except FileNotFoundError:
+        returncode = -1
+        stderr = "systemctl not found"
+
+    if returncode == 0:
         return
 
     # systemctl failed — try the direct fallback for noVNC.
@@ -96,6 +103,5 @@ def ctl(action: str, unit: str) -> None:
     emit(
         "warning",
         "systemd",
-        f"systemctl {action} {unit} exited {result.returncode}: "
-        f"{result.stderr.strip()[:200]}",
+        f"systemctl {action} {unit} exited {returncode}: {stderr}",
     )
