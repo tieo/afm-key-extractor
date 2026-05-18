@@ -347,8 +347,13 @@ def shutdown(ctx: AutomationContext) -> RuntimeState:
     emit("info", "extract", "Shutting down VM")
 
     # Best-effort SSH shutdown first (allows macOS to flush disk caches).
+    # sudo -S reads password from stdin; pipe via base64 to avoid quoting.
     try:
-        vm_ui.ssh("sudo shutdown -h now", timeout=10)
+        import base64 as _b64
+        _pw = vm_password.get() or ""
+        _script = f"echo {_pw!r} | sudo -S shutdown -h now\n"
+        _b64_cmd = _b64.b64encode(_script.encode()).decode()
+        vm_ui.ssh(f"echo {_b64_cmd} | base64 -d | bash", timeout=15)
     except Exception as e:
         emit("warning", "extract", f"SSH shutdown failed (will try QMP): {e}")
 
