@@ -63,9 +63,17 @@ def wait_done(ctx: AutomationContext) -> InstallState:
     """
     deadline_s = 90
     poll_s = 3.0
+    progress_interval_s = 20
     t0 = time.time()
+    last_progress = t0
     emit("info", "format_disk", "Waiting for diskutil to finish…")
     while time.time() - t0 < deadline_s:
+        now = time.time()
+        elapsed = now - t0
+        if now - last_progress >= progress_interval_s:
+            emit("info", "format_disk",
+                 f"Still waiting for disk erase… ({elapsed:.0f}s)")
+            last_progress = now
         if screen.has_any_text("Finished erase", "erase on disk0"):
             emit("info", "format_disk", "Disk erase complete — quitting Terminal")
             qmp.send_chord(["meta_l", "q"])

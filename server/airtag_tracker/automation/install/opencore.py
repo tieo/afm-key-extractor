@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 
-from ... import qmp, vm
+from ... import qmp, vm, vm_ui
 from ...events import emit
 from ..context import AutomationContext
 from ..states import InstallState
@@ -29,7 +29,9 @@ def wait_for_picker(ctx: AutomationContext) -> InstallState:
         vm.start_for_install()
         time.sleep(5.0)  # give QEMU a moment to initialise before polling
 
-    deadline_s = 180
+    # 60 s: QEMU launch (~27s) + OVMF POST → OpenCore appears in <5s.
+    # mac_hdd_ng.img is always blank at this point so OVMF has nothing to probe.
+    deadline_s = 60
     poll_s = 3.0
     t0 = time.time()
     emit("info", "opencore", "Waiting for OpenCore picker…")
@@ -64,9 +66,18 @@ def wait_for_recovery(ctx: AutomationContext) -> InstallState:
     """
     deadline_s = 150
     poll_s = 4.0
+    progress_interval_s = 30
     t0 = time.time()
+    last_progress = t0
     emit("info", "opencore", "Waiting for Recovery Utilities screen…")
     while time.time() - t0 < deadline_s:
+        now = time.time()
+        elapsed = now - t0
+        if now - last_progress >= progress_interval_s:
+            screen_snippet = vm_ui.screen_text()[:80] if hasattr(vm_ui, 'screen_text') else ''
+            emit("info", "opencore",
+                 f"Still waiting for Recovery Utilities… ({elapsed:.0f}s) screen: {repr(screen_snippet)}")
+            last_progress = now
         if screen.detect_recovery_utilities():
             emit("info", "opencore", "Recovery Utilities screen detected")
             return InstallState.FORMAT_DISK
@@ -76,54 +87,170 @@ def wait_for_recovery(ctx: AutomationContext) -> InstallState:
     )
 
 
+def select_macos_entry(ctx: AutomationContext) -> None:
+    """Navigate to the macOS entry using OCR-detected picker position.
+
+    OpenCore's builtin picker ignores mouse events — only keyboard works.
+    We OCR the picker to find where the macOS label appears among visible
+    entries, count the distinct entry columns to its left, and press Right
+    that many times before confirming with Enter.
+
+    If OCR finds no macOS label, falls back to right+ret (assumes MacHDD is
+    at picker position 1, which is true in both install and normal mode after
+    macOS writes itself to disk).
+    """
+    p = vm_ui._screendump()
+    sw, sh = vm_ui._screen_size(p)
+    words = vm_ui.ocr_words(p)  # deletes p when done
+
+    # Locate the macOS entry label and its x-center.
+    macos_x: int | None = None
+    macos_label = ""
+    for label in ("Macintosh", "macOS", "Mac"):
+        hit = vm_ui.find_phrase(words, label, screen_h=sh, exclude_chrome=False)
+        if hit:
+            macos_x, _ = hit
+            macos_label = label
+            break
+
+    if macos_x is None:
+        emit("warning", "opencore",
+             f"macOS label not found — words: {[w[0] for w in words[:20]]}"
+             "; pressing right+ret (assume MacHDD at position 1)")
+        with ctx.qmp_lock:
+            qmp.send_keys(["right", "ret"])
+        return
+
+    # Count distinct entry clusters to the left of the macOS label.
+    # The picker lays entries out horizontally; each cluster of OCR words
+    # that share a similar x-center corresponds to one picker entry column.
+    # Words in the version string band at the very bottom are excluded.
+    band_lo = sh * 0.25
+    band_hi = sh * 0.77
+    CLUSTER_PX = 150  # words within this distance merge into one cluster
+
+    clusters: list[int] = []  # x-centers of clusters found to the left
+    for _, wx, wy, ww, wh in words:
+        if not (band_lo <= wy <= band_hi):
+            continue
+        cx = wx + ww // 2
+        if cx >= macos_x - 80:
+            continue  # this word belongs to macOS entry or is to its right
+        merged = any(abs(cx - ec) <= CLUSTER_PX for ec in clusters)
+        if not merged:
+            clusters.append(cx)
+
+    n_rights = len(clusters) if clusters else 1
+    keys = ["right"] * n_rights + ["ret"]
+    emit("info", "opencore",
+         f"OCR: '{macos_label}' at x≈{macos_x}px, {len(clusters)} entr"
+         f"{'y' if len(clusters) == 1 else 'ies'} to left"
+         f" — pressing {'right+' * n_rights}ret")
+    with ctx.qmp_lock:
+        qmp.send_keys(keys)
+
+
 def select_installed(ctx: AutomationContext) -> InstallState:
     """Navigate the post-install OpenCore picker to the Macintosh HD entry.
 
-    macOS installation involves two reboot+configure phases, each preceded
-    by an OpenCore picker.  This handler loops: whenever the picker appears
-    it sends right+right+ret (EFI→Installer→MacHDD), then resumes watching.
-    It advances to SETUP_ASSISTANT only when the Setup Assistant
-    "Country or Region" screen is detected.
+    macOS installation involves two configure phases, each preceded by an
+    OpenCore picker.  The handler loops, selecting MacHDD each time the
+    picker appears, and exits when Setup Assistant is detected.
 
-    TianoCore BIOS recovery: macOS sets volatile EFI boot priority variables
-    during configure phases.  If OVMF fails all boot entries and drops into
-    the Boot Maintenance Manager, we issue system_reset so OVMF re-reads the
-    unchanged OVMF_VARS file and boots OpenCore again.
+    OVMF boot failure recovery
+    --------------------------
+    macOS writes *persistent* EFI variables to OVMF's in-memory pflash
+    during configure phases.  After phase 1 reboots, OVMF tries those
+    stale entries, fails all of them, and falls into the Boot Maintenance
+    Manager (BdsDxe → PXE → Boot Manager).  system_reset does NOT help
+    because QEMU keeps the in-memory pflash state across resets.
 
-    Deadline: 1800 s (30 min) from first call to cover both configure phases.
-    Raises RuntimeError on timeout.
+    The only reliable fix: kill and restart QEMU.  QEMU then re-reads
+    OVMF_VARS from disk (still the original clean file — QEMU is killed
+    before it ever flushes VARS to disk), which has OpenCore in the boot
+    order.  OpenCore loads and the picker appears.
+
+    Picker entry count by QEMU mode
+    --------------------------------
+    Install mode (BaseSystem.img attached):  EFI | BaseSystem | MacHDD
+        → right+right+ret selects MacHDD
+    Normal mode (no BaseSystem.img):         EFI | MacHDD
+        → right+ret selects MacHDD
+
+    The first picker is always in install mode.  After any QEMU restart
+    we switch to normal mode.
     """
-    deadline_s = 1800
+    deadline_s = 3600  # 1 h: covers two configure phases + OVMF recovery
     poll_s = 5.0
+    progress_interval_s = 60
     t0 = time.time()
+    last_progress = t0
     picker_seen = 0
-    resets_done = 0
-    MAX_RESETS = 5
+    qemu_restarts = 0
+    MAX_QEMU_RESTARTS = 5
+    # First boot is always install mode (BaseSystem.img still attached).
+    # After a QEMU restart we use normal mode (no BaseSystem.img).
+    in_install_mode = True
     emit("info", "opencore", "Waiting for post-install boot sequence…")
     while time.time() - t0 < deadline_s:
+        now = time.time()
+        elapsed = now - t0
+        if now - last_progress >= progress_interval_s:
+            screen_snippet = vm_ui.screen_text()[:80] if hasattr(vm_ui, 'screen_text') else ''
+            emit("info", "opencore",
+                 f"Still waiting for Setup Assistant… ({elapsed:.0f}s) "
+                 f"pickers={picker_seen} restarts={qemu_restarts} "
+                 f"screen: {repr(screen_snippet)}")
+            last_progress = now
         if screen.detect_opencore_picker():
             picker_seen += 1
             emit("info", "opencore",
-                 f"Post-install picker #{picker_seen} — selecting Macintosh HD")
-            with ctx.qmp_lock:
-                qmp.send_keys(["right", "right", "ret"])
-            time.sleep(10.0)  # let macOS start booting before next poll
+                 f"Post-install picker #{picker_seen} ({'install' if in_install_mode else 'normal'} mode)"
+                 " — selecting macOS entry")
+            select_macos_entry(ctx)
+            time.sleep(10.0)
             continue
 
         if screen.detect_setup_assistant():
-            emit("info", "opencore",
-                 "Setup Assistant detected — advancing flow")
-            return InstallState.SETUP_ASSISTANT
+            emit("info", "opencore", "Setup Assistant detected — advancing flow")
+            return InstallState.SA_COUNTRY
 
-        if screen.detect_tiano_bios() and resets_done < MAX_RESETS:
-            resets_done += 1
+        if screen.detect_recovery_utilities() \
+                and qemu_restarts < MAX_QEMU_RESTARTS:
+            # Booted to Recovery instead of macOS — picker navigation landed on
+            # BaseSystem/Recovery by mistake.  Restart QEMU in normal mode
+            # (no BaseSystem) so the picker has only EFI and MacHDD.
+            qemu_restarts += 1
+            in_install_mode = False
+            emit("warning", "opencore",
+                 f"Recovery Utilities appeared after picker #{picker_seen}"
+                 f" — wrong entry selected; restarting QEMU in normal mode (restart #{qemu_restarts})")
+            vm.stop()
+            for _ in range(20):
+                time.sleep(1)
+                if not vm.is_running():
+                    break
+            vm.start(automation=True)
+            time.sleep(10.0)
+            continue
+
+        if screen.detect_tiano_bios() and picker_seen >= 1 \
+                and qemu_restarts < MAX_QEMU_RESTARTS:
+            # OVMF can't boot after macOS wrote persistent EFI vars.
+            # system_reset doesn't clear in-memory pflash — must restart QEMU.
+            qemu_restarts += 1
+            in_install_mode = False
             emit("info", "opencore",
-                 f"TianoCore BIOS detected — issuing system_reset #{resets_done}")
-            try:
-                qmp.system_reset()
-            except Exception as e:
-                emit("warning", "opencore", f"system_reset failed: {e}")
-            time.sleep(15.0)  # wait for POST + OpenCore to appear
+                 f"OVMF boot failure after picker #{picker_seen}"
+                 f" — restarting QEMU (restart #{qemu_restarts})")
+            vm.stop()
+            # Wait for QEMU to exit (stop() sends SIGTERM, doesn't wait).
+            for _ in range(20):
+                time.sleep(1)
+                if not vm.is_running():
+                    break
+            vm.start(automation=True)
+            time.sleep(10.0)  # let QEMU init before polling
             continue
 
         time.sleep(poll_s)

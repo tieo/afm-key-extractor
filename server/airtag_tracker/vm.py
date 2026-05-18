@@ -249,14 +249,19 @@ def start_for_install() -> dict:
             f"BaseSystem.img not found at {BASE_SYSTEM}. "
             "Run the VM provisioning step first."
         )
-    if not MAC_HDD.exists():
-        emit("info", "vm", "mac_hdd_ng.img not found — creating 80 GB blank disk")
-        result = sp.run(
-            ["qemu-img", "create", "-f", "qcow2", str(MAC_HDD), "80G"],
-            capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode != 0:
-            raise VmError(f"qemu-img create failed: {result.stderr}")
+    # Always recreate mac_hdd_ng.img as a blank disk before install.
+    # If a prior install left a bootable macOS EFI partition on the disk,
+    # OVMF probes it during POST and can spend minutes trying to boot it
+    # before falling through to OpenCore — causing spurious picker timeouts.
+    # A blank qcow2 has no EFI partition; OVMF skips it instantly.
+    qemu_img = str(Path(_find_qemu()).parent / "qemu-img")
+    emit("info", "vm", "Creating blank mac_hdd_ng.img (80 GB)")
+    result = sp.run(
+        [qemu_img, "create", "-f", "qcow2", str(MAC_HDD), "80G"],
+        capture_output=True, text=True, timeout=60,
+    )
+    if result.returncode != 0:
+        raise VmError(f"qemu-img create failed: {result.stderr}")
     emit("info", "vm", "Starting VM in install mode (BaseSystem.img attached)")
     try:
         _launch_qemu(install_mode=True)

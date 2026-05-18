@@ -112,9 +112,17 @@ def dismiss_prompts(ctx: AutomationContext) -> RuntimeState:
     """
     emit("info", "post_signin", "Dismissing post-signin dialogs")
     deadline_s = 45
+    progress_interval_s = 15
     clean_rounds = 0
     t0 = time.time()
+    last_progress = t0
     while time.time() - t0 < deadline_s:
+        now = time.time()
+        elapsed = now - t0
+        if now - last_progress >= progress_interval_s:
+            emit("info", "post_signin",
+                 f"Still dismissing post-signin dialogs… ({elapsed:.0f}s)")
+            last_progress = now
         text = vm_ui.screen_text()
         matched = [kw for kw in POST_SIGNIN_DISMISSIBLE if kw in text]
         if not matched:
@@ -195,8 +203,16 @@ def resolve_update(ctx: AutomationContext) -> RuntimeState:
              "No password prompt — update may have resolved on Continue")
 
     # Wait for the badge to clear.
+    progress_interval_s = 20
     t0 = time.time()
+    last_progress = t0
     while time.time() - t0 < deadline_s:
+        now = time.time()
+        elapsed = now - t0
+        if now - last_progress >= progress_interval_s:
+            emit("info", "post_signin",
+                 f"Still waiting for Apple ID update to clear… ({elapsed:.0f}s)")
+            last_progress = now
         if not _is_apple_id_update_pending():
             emit("info", "post_signin", "Apple ID settings up to date")
             return RuntimeState.ENABLING_FIND_MY
@@ -252,8 +268,16 @@ def enable_find_my(ctx: AutomationContext) -> RuntimeState:
         with qmp.qmp() as c:
             c.send_keys(["ret"])
 
+    progress_interval_s = 20
     t0 = time.time()
+    last_progress = t0
     while time.time() - t0 < deadline_s:
+        now = time.time()
+        elapsed = now - t0
+        if now - last_progress >= progress_interval_s:
+            emit("info", "post_signin",
+                 f"Still waiting for Find My Mac to enable… ({elapsed:.0f}s)")
+            last_progress = now
         if _is_find_my_mac_on():
             emit("info", "post_signin", "Find My Mac enabled")
             return RuntimeState.WAITING_ICLOUD_SYNC

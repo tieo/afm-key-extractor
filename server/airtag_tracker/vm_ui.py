@@ -65,10 +65,29 @@ def _find_sshpass() -> str:
     """Return path to sshpass binary, searching PATH then known Nix store dirs."""
     if found := shutil.which("sshpass"):
         return found
-    # Nix-deployed binary — stable enough for fallback
-    for candidate in Path("/nix/store").glob("sshpass-*/bin/sshpass"):
+    # Nix-deployed binary — hash-prefixed dirs like "abc123-sshpass-1.x".
+    for candidate in Path("/nix/store").glob("*-sshpass-*/bin/sshpass"):
         return str(candidate)
     return "sshpass"   # will fail with a clear FileNotFoundError
+
+
+def _find_tesseract() -> tuple[str, dict[str, str]]:
+    """Return (tesseract_path, extra_env) searching PATH then Nix store.
+
+    Sets TESSDATA_PREFIX to the sibling share/tessdata directory so that
+    tesseract can find language data when run outside a nix-shell or
+    system-level install.
+    """
+    if found := shutil.which("tesseract"):
+        return found, {}
+    # Search Nix store — hash-prefixed dirs like "abc123-tesseract-5.5.2".
+    # Prefer the entry that ships eng.traineddata.
+    for candidate in Path("/nix/store").glob("*-tesseract-*/bin/tesseract"):
+        tessdata = candidate.parent.parent / "share" / "tessdata"
+        if (tessdata / "eng.traineddata").exists():
+            return str(candidate), {"TESSDATA_PREFIX": str(tessdata)}
+    # Last resort — will fail with a clear error
+    return "tesseract", {}
 
 
 def ssh(cmd: str, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -147,6 +166,8 @@ def _screendump(path: str | None = None) -> str:
     except FileNotFoundError:
         pass
     qmp.screendump(path)
+    if not Path(path).exists():
+        raise RuntimeError(f"QMP screendump produced no file at {path}")
     return path
 
 
@@ -188,57 +209,79 @@ def _parse_tsv(text: str, scale: int) -> list[tuple[str, int, int, int, int]]:
 def ocr_words(ppm: str) -> list[tuple[str, int, int, int, int]]:
     """OCR the framebuffer at 1×/2× and normal/inverted; union all words.
 
+    Runs all 5 tesseract variants in parallel (ThreadPoolExecutor) to keep
+    total OCR time under 30 s even under QEMU CPU pressure.
+
     Returns ``(text, x, y, w, h)`` tuples in native VM coordinates."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     try:
         from PIL import Image, ImageOps
     except ImportError:
         emit("warning", "vm", "PIL unavailable — OCR disabled")
         return []
-    words: list[tuple[str, int, int, int, int]] = []
+
     with Image.open(ppm) as im:
         im = im.convert("RGB")
         im2x = im.resize((im.width * 2, im.height * 2), Image.LANCZOS)
         # Autocontrast on 2× helps with dark-background screens (OpenCore
         # picker, login window) where flat white-on-dark fools tesseract.
         im2x_ac = ImageOps.autocontrast(im2x)
-        # Grayscale+autocontrast: removes color interference from wallpapers
-        # so white-on-colored-background text (login screen, lock screen) is
-        # captured reliably. Using 2x scale for better character recognition.
+        # Grayscale+autocontrast: removes color interference from wallpapers.
         im_gray2x = ImageOps.autocontrast(ImageOps.grayscale(im2x), cutoff=5).convert("RGB")
         variants = [
-            (im, 1, "1x"),
-            (ImageOps.invert(im), 1, "1x-inv"),
-            (im2x_ac, 2, "2x"),
-            (im_gray2x, 2, "gray2x"),
+            (im,                      1),
+            (ImageOps.invert(im),     1),
+            (im2x_ac,                 2),
+            (ImageOps.invert(im2x_ac), 2),
+            (im_gray2x,               2),
         ]
-        for vim, scale, tag in variants:
+        # Save all variant images while PIL objects are still open.
+        tmps: list[tuple[str, int]] = []
+        for vim, scale in variants:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
                 tmp = tf.name
             vim.save(tmp)
-            try:
-                variants_inv = ImageOps.invert(vim) if tag == "2x" else None
-                r = subprocess.run(
-                    ["tesseract", tmp, "-", "tsv"],
-                    capture_output=True, text=True, timeout=30,
-                )
-                words += _parse_tsv(r.stdout, scale)
-                if variants_inv is not None:
-                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf2:
-                        tmp2 = tf2.name
-                    variants_inv.save(tmp2)
-                    r2 = subprocess.run(
-                        ["tesseract", tmp2, "-", "tsv"],
-                        capture_output=True, text=True, timeout=30,
-                    )
-                    words += _parse_tsv(r2.stdout, scale)
-                    Path(tmp2).unlink(missing_ok=True)
-            finally:
-                Path(tmp).unlink(missing_ok=True)
+            tmps.append((tmp, scale))
+
+    tess_bin, tess_env = _find_tesseract()
+    env = {**__import__("os").environ, **tess_env} if tess_env else None
+
+    def _run_one(tmp: str, scale: int) -> list[tuple[str, int, int, int, int]]:
+        try:
+            r = subprocess.run(
+                [tess_bin, tmp, "-", "tsv"],
+                capture_output=True, text=True, timeout=30,
+                env=env,
+            )
+            return _parse_tsv(r.stdout, scale)
+        except Exception:
+            return []
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+
+    words: list[tuple[str, int, int, int, int]] = []
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(_run_one, tmp, scale) for tmp, scale in tmps]
+        for fut in as_completed(futures):
+            words += fut.result()
+    Path(ppm).unlink(missing_ok=True)
     return words
 
 
 def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _prefix_extend(ocr_norm: str, target_norm: str) -> bool:
+    """Match an OCR word that is the target with trailing characters stripped away
+    by OCR hyphen-handling, e.g. "macintoshhd" when searching for "macintosh".
+
+    Requires target ≥ 8 chars so short targets (like "agree", "install") never
+    accidentally match longer words that start with them (like "disagree",
+    "installation").  The containment guard `ocr.startswith(target)` means
+    "disagree".startswith("agree") == False, so that never fires anyway.
+    """
+    return len(target_norm) >= 8 and ocr_norm.startswith(target_norm)
 
 
 # Vertical bands we must never click into. The menu bar holds system
@@ -272,14 +315,16 @@ def find_phrase(
         return y >= MENUBAR_H and (y + h) <= (screen_h - DOCK_H)
 
     nf = _norm(first)
-    fws = [w for w in words if _norm(w[0]) == nf and _in_content(w[2], w[4])]
+    fws = [w for w in words
+           if (_norm(w[0]) == nf or _prefix_extend(_norm(w[0]), nf)) and _in_content(w[2], w[4])]
     if not fws:
         return None
     if last is None:
         _, x, y, w, h = fws[0]
         return (x + w // 2, y + h // 2)
     nl = _norm(last)
-    lws = [w for w in words if _norm(w[0]) == nl and _in_content(w[2], w[4])]
+    lws = [w for w in words
+           if (_norm(w[0]) == nl or _prefix_extend(_norm(w[0]), nl)) and _in_content(w[2], w[4])]
     for fw in fws:
         for lw in lws:
             if abs(fw[2] - lw[2]) <= y_tol and lw[1] >= fw[1]:
@@ -291,8 +336,14 @@ def find_phrase(
 
 
 def screen_text(ppm: str | None = None) -> str:
-    """Flattened OCR text (all variants, lowercased). For keyword checks."""
-    p = ppm or _screendump()
+    """Flattened OCR text (all variants, lowercased). For keyword checks.
+
+    Returns empty string if the screendump fails (QEMU still initialising).
+    """
+    try:
+        p = ppm or _screendump()
+    except Exception:
+        return ""
     words = ocr_words(p)
     return " ".join(w[0] for w in words).lower()
 
@@ -333,6 +384,53 @@ def click_pixel(x: int, y: int, screen_w: int, screen_h: int) -> None:
     ]}})
 
 
+def scroll_down(clicks: int = 10, gap_s: float = 0.05) -> None:
+    """Send scroll-wheel-down events at the current mouse position.
+
+    Focus-independent: scrolls the element under the pointer regardless of
+    which window or widget has keyboard focus.  Call immediately after a
+    click that positioned the pointer inside the target scroll view."""
+    for _ in range(clicks):
+        _qmp_raw({"execute": "input-send-event", "arguments": {"events": [
+            {"type": "btn", "data": {"button": "wheel-down", "down": True}},
+        ]}})
+        _qmp_raw({"execute": "input-send-event", "arguments": {"events": [
+            {"type": "btn", "data": {"button": "wheel-down", "down": False}},
+        ]}})
+        time.sleep(gap_s)
+
+
+def click_right_of(anchor: str, y_tol: int = 15, settle_s: float = 1.5) -> bool:
+    """Click the element immediately to the right of *anchor* on the same line.
+
+    Used when the target button OCRs unreliably but its left-neighbour is
+    stable.  Example: the EULA / confirmation-sheet "Agree" button OCRs as
+    "Ag&e" or "Agge", but "Disagree" always reads correctly.  Finding
+    "Disagree" and clicking to its right always lands on "Agree" without
+    any hardcoded coordinates.
+
+    Returns False if *anchor* is not found or there is nothing to its right.
+    """
+    p = _screendump()
+    sw, sh = _screen_size(p)
+    words = ocr_words(p)
+    na = _norm(anchor)
+    anchors = [w for w in words if _norm(w[0]) == na]
+    if not anchors:
+        emit("warning", "vm", f"click_right_of: anchor {anchor!r} not found")
+        return False
+    _, rx, ry, rw, rh = anchors[0]
+    candidates = [w for w in words if abs(w[2] - ry) <= y_tol and w[1] > rx + rw]
+    if not candidates:
+        emit("warning", "vm", f"click_right_of: nothing to the right of {anchor!r}")
+        return False
+    target = min(candidates, key=lambda w: w[1])
+    _, tx, ty, tw, th = target
+    click_pixel(tx + tw // 2, ty + th // 2, sw, sh)
+    time.sleep(settle_s)
+    return True
+
+
 def click_text(
     first: str,
     last: str | None = None,
@@ -346,9 +444,13 @@ def click_text(
     band (needed for menu bar items like "Utilities" in macOS Recovery).
     """
     for i in range(tries):
-        p = _screendump()
-        sw, sh = _screen_size(p)
-        words = ocr_words(p)
+        try:
+            p = _screendump()
+            sw, sh = _screen_size(p)
+            words = ocr_words(p)
+        except Exception:
+            time.sleep(1.0)
+            continue
         hit = find_phrase(
             words, first, last,
             screen_h=sh,
@@ -372,7 +474,11 @@ def click_text(
 def wait_for_text(keywords: tuple[str, ...], deadline_s: int = 30, poll_s: float = 2.0) -> bool:
     t0 = time.time()
     while time.time() - t0 < deadline_s:
-        text = screen_text()
+        try:
+            text = screen_text()
+        except Exception:
+            time.sleep(poll_s)
+            continue
         if any(kw in text for kw in keywords):
             return True
         time.sleep(poll_s)

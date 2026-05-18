@@ -29,9 +29,18 @@ def wait_for_login_screen(ctx: AutomationContext) -> RuntimeState:
     """
     deadline_s = 180
     poll_s = 3.0
+    progress_interval_s = 30
     t0 = time.time()
+    last_progress = t0
     emit("info", "login", "Waiting for macOS login screen or autologin (up to 180 s)")
     while time.time() - t0 < deadline_s:
+        now = time.time()
+        elapsed = now - t0
+        if now - last_progress >= progress_interval_s:
+            screen_snippet = vm_ui.screen_text()[:80] if hasattr(vm_ui, 'screen_text') else ''
+            emit("info", "login",
+                 f"Still waiting for login screen… ({elapsed:.0f}s) screen: {repr(screen_snippet)}")
+            last_progress = now
         # Fast path: autologin booted straight to desktop — skip login entirely.
         r = vm_ui.ssh("pgrep -x Dock", timeout=8)
         if r.returncode == 0:
@@ -73,9 +82,18 @@ def wait_for_desktop(ctx: AutomationContext) -> RuntimeState:
     """
     deadline_s = 300
     poll_s = 4.0
+    progress_interval_s = 30
     t0 = time.time()
+    last_progress = t0
     emit("info", "login", "Waiting for desktop (Dock) to come up (up to 300 s)")
     while time.time() - t0 < deadline_s:
+        now = time.time()
+        elapsed = now - t0
+        if now - last_progress >= progress_interval_s:
+            screen_snippet = vm_ui.screen_text()[:80] if hasattr(vm_ui, 'screen_text') else ''
+            emit("info", "login",
+                 f"Still waiting for desktop… ({elapsed:.0f}s) screen: {repr(screen_snippet)}")
+            last_progress = now
         # Check for a re-appeared login/lock screen first — if so, retry login.
         if screen.detect_login_screen():
             emit("info", "login", "Login screen re-appeared — retrying password")

@@ -11,11 +11,12 @@ from __future__ import annotations
 import shutil
 import time
 
-from ... import qmp, vm
+from ... import vm
 from ...events import emit
 from ..context import AutomationContext
 from ..states import RuntimeState
 from .. import screen
+from ..install.opencore import select_macos_entry
 
 
 def restore_golden(ctx: AutomationContext) -> RuntimeState:
@@ -60,20 +61,28 @@ def start_vm(ctx: AutomationContext) -> RuntimeState:
 def select_macos(ctx: AutomationContext) -> RuntimeState:
     """Wait for the OpenCore boot picker and select the macOS entry.
 
-    The macOS (Macintosh HD) entry is one step to the right of the
-    default EFI entry.  We send right + ret once the picker is visible.
+    Uses OCR-based picker navigation (same as the install flow) to detect the
+    macOS entry position dynamically rather than relying on a hardcoded key
+    sequence that breaks when the picker entry order changes.
 
     Polls every 5 s for up to 90 s.  Raises RuntimeError on timeout.
     """
     deadline_s = 90
     poll_s = 5.0
+    progress_interval_s = 20
     t0 = time.time()
+    last_progress = t0
     emit("info", "boot", "Waiting for OpenCore picker (up to 90 s)")
     while time.time() - t0 < deadline_s:
+        now = time.time()
+        elapsed = now - t0
+        if now - last_progress >= progress_interval_s:
+            emit("info", "boot",
+                 f"Still waiting for OpenCore picker… ({elapsed:.0f}s)")
+            last_progress = now
         if screen.detect_opencore_picker():
             emit("info", "boot", "OpenCore picker detected — selecting macOS")
-            with ctx.qmp_lock:
-                qmp.send_keys(["right", "ret"])
+            select_macos_entry(ctx)
             return RuntimeState.WAITING_LOGIN_SCREEN
         time.sleep(poll_s)
     raise RuntimeError(f"OpenCore picker not detected within {deadline_s}s")

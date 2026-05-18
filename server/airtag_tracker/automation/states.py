@@ -23,7 +23,21 @@ class InstallState(Enum):
     REINSTALL_CLICKING = "reinstall_clicking"
     WAITING_INSTALL = "waiting_install"
     BOOTING_INSTALLED = "booting_installed"
-    SETUP_ASSISTANT = "setup_assistant"
+    SA_COUNTRY = "sa_country"
+    SA_LANGUAGES = "sa_languages"
+    SA_ACCESSIBILITY = "sa_accessibility"
+    SA_DATA_PRIVACY = "sa_data_privacy"
+    SA_MIGRATION = "sa_migration"
+    SA_APPLE_ID = "sa_apple_id"
+    SA_TERMS = "sa_terms"
+    SA_CREATE_ACCOUNT = "sa_create_account"
+    SA_APPLE_ID_2 = "sa_apple_id_2"
+    SA_TERMS_2 = "sa_terms_2"
+    SA_LOCATION = "sa_location"
+    SA_TIMEZONE = "sa_timezone"
+    SA_ANALYTICS = "sa_analytics"
+    SA_SCREEN_TIME = "sa_screen_time"
+    SA_APPEARANCE = "sa_appearance"
     DISMISS_FIRST_BOOT = "dismiss_first_boot"
     SHUTTING_DOWN = "shutting_down"
     BAKING_GOLDEN = "baking_golden"
@@ -72,7 +86,21 @@ INSTALL_STAGE_LABELS: dict[InstallState, str] = {
     InstallState.REINSTALL_CLICKING: "Starting installer",
     InstallState.WAITING_INSTALL: "Installing macOS (20–45 min)",
     InstallState.BOOTING_INSTALLED: "Rebooting",
-    InstallState.SETUP_ASSISTANT: "Running Setup Assistant",
+    InstallState.SA_COUNTRY: "Setup Assistant (1/15)",
+    InstallState.SA_LANGUAGES: "Setup Assistant (2/15)",
+    InstallState.SA_ACCESSIBILITY: "Setup Assistant (3/15)",
+    InstallState.SA_DATA_PRIVACY: "Setup Assistant (4/15)",
+    InstallState.SA_MIGRATION: "Setup Assistant (5/15)",
+    InstallState.SA_APPLE_ID: "Setup Assistant (6/15)",
+    InstallState.SA_TERMS: "Setup Assistant (7/15)",
+    InstallState.SA_CREATE_ACCOUNT: "Setup Assistant (8/15)",
+    InstallState.SA_APPLE_ID_2: "Setup Assistant (9/15)",
+    InstallState.SA_TERMS_2: "Setup Assistant (10/15)",
+    InstallState.SA_LOCATION: "Setup Assistant (11/15)",
+    InstallState.SA_TIMEZONE: "Setup Assistant (12/15)",
+    InstallState.SA_ANALYTICS: "Setup Assistant (13/15)",
+    InstallState.SA_SCREEN_TIME: "Setup Assistant (14/15)",
+    InstallState.SA_APPEARANCE: "Setup Assistant (15/15)",
     InstallState.DISMISS_FIRST_BOOT: "Finalising",
     InstallState.SHUTTING_DOWN: "Shutting down VM",
     InstallState.BAKING_GOLDEN: "Saving image",

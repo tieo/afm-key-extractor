@@ -12,7 +12,7 @@ dependencies = [
     "pillow",
     "opencv-python-headless",
     "cryptography",
-    "sshpass",
+
 ]
 
 [project.optional-dependencies]

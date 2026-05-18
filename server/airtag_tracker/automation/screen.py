@@ -194,16 +194,15 @@ def detect_opencore_picker() -> bool:
     """True if the OpenCore boot picker is visible.
 
     Uses OCR for strings that only appear on the picker:
-      - "EFI" (default first entry label)
-      - "macOS Base System" / "Base System" (recovery installer entry)
-      - "REL-" prefix from the OpenCore version string shown below icons
+      - "Base System" (recovery installer entry label)
+      - "REL-" prefix from the OpenCore version string below icons
 
-    Template matching was removed because the dark background of the picker
-    template produced false positives on the macOS installer progress screen.
-    The 4-variant OCR (including autocontrast 2×) reliably detects these
-    strings even against the picker's dark background.
+    "EFI" was removed: it is a substring of "UEFI" which appears in OVMF
+    BdsDxe error output ("BdsDxe: failed to load ... UEFI QEMU HARDDISK"),
+    causing false positives when OVMF fails to boot and scrolls error text.
+    "Base System" and "REL-" are unique to the OpenCore picker UI.
     """
-    return has_any_text("EFI", "Base System", "REL-")
+    return has_any_text("Base System", "REL-")
 
 
 def detect_recovery_utilities() -> bool:
@@ -246,13 +245,21 @@ def detect_setup_assistant() -> bool:
 
 
 def detect_tiano_bios() -> bool:
-    """True if the TianoCore BIOS Boot Maintenance Manager is visible.
+    """True if OVMF/TianoCore is on screen in any failure or maintenance state.
 
-    When macOS sets volatile EFI boot priority variables during configure
-    phases, OVMF may fail all entries and fall into the Boot Maintenance
-    Manager.  Both strings appear together only on that screen.
+    Covers all OVMF failure modes that prevent macOS from booting:
+      - BdsDxe error scroll: "BdsDxe:" when OVMF fails EFI boot entries
+      - PXE fallback: "PXE-E16" after all EFI entries fail
+      - Boot Maintenance Manager UI: "Boot Manager" or "Device Manager"
+      - EFI Firmware Setup: "EFI Firmware Setup" (OVMF settings UI)
+      - EFI Shell: "EFI Shell" prompt
+
+    Any of these means OpenCore/macOS did NOT boot and we need system_reset.
     """
-    return has_text("Boot Manager", "Device Manager")
+    return has_any_text(
+        "BdsDxe:", "PXE-E16", "EFI Shell",
+        "Boot Manager", "Device Manager", "EFI Firmware Setup",
+    )
 
 
 def detect_login_screen() -> bool:

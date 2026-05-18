@@ -239,9 +239,19 @@ def wait_2fa_or_signed_in(ctx: AutomationContext) -> RuntimeState:
     """
     deadline_s = 180
     poll_s = 4.0
+    progress_interval_s = 30
     t0 = time.time()
+    last_progress = t0
     emit("info", "apple_signin", "Waiting for Apple response (2FA or signed-in)")
     while time.time() - t0 < deadline_s:
+        now = time.time()
+        elapsed = now - t0
+        if now - last_progress >= progress_interval_s:
+            screen_snippet = vm_ui.screen_text()[:80] if hasattr(vm_ui, 'screen_text') else ''
+            emit("info", "apple_signin",
+                 f"Still waiting for Apple response… ({elapsed:.0f}s) screen: {repr(screen_snippet)}")
+            last_progress = now
+
         if _is_signed_in():
             emit("info", "apple_signin", "Signed in without 2FA")
             return RuntimeState.DISMISSING_POST_SIGNIN
@@ -288,7 +298,10 @@ def await_2fa_input(ctx: AutomationContext) -> RuntimeState:
     # Poll for SMS request while waiting for the 2FA event.
     # ctx.wait_for_2fa blocks internally on a threading.Event; we want to
     # interleave SMS checks, so we use short waits in a loop instead.
-    deadline = time.time() + 600.0
+    progress_interval_s = 60
+    t0 = time.time()
+    last_progress = t0
+    deadline = t0 + 600.0
     while time.time() < deadline:
         # Short wait — lets the event fire quickly when code is delivered.
         ctx._2fa_event.wait(timeout=2.0)
@@ -299,6 +312,13 @@ def await_2fa_input(ctx: AutomationContext) -> RuntimeState:
 
         if code_ready:
             break
+
+        now = time.time()
+        elapsed = now - t0
+        if now - last_progress >= progress_interval_s:
+            emit("info", "apple_signin",
+                 f"Waiting for 2FA code from user… ({elapsed:.0f}s)")
+            last_progress = now
 
         # Check whether the user requested an SMS code while we waited.
         if ctx.sms_was_requested():
@@ -339,9 +359,19 @@ def wait_signed_in(ctx: AutomationContext) -> RuntimeState:
     """
     deadline_s = 180
     poll_s = 4.0
+    progress_interval_s = 30
     t0 = time.time()
+    last_progress = t0
     emit("info", "apple_signin", "Waiting for sign-in to complete")
     while time.time() - t0 < deadline_s:
+        now = time.time()
+        elapsed = now - t0
+        if now - last_progress >= progress_interval_s:
+            screen_snippet = vm_ui.screen_text()[:80] if hasattr(vm_ui, 'screen_text') else ''
+            emit("info", "apple_signin",
+                 f"Still waiting for sign-in… ({elapsed:.0f}s) screen: {repr(screen_snippet)}")
+            last_progress = now
+
         if _is_signed_in():
             emit("info", "apple_signin", "iCloud sign-in confirmed")
             try:
