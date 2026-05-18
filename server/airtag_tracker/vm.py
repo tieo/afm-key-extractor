@@ -18,6 +18,7 @@ from .config import (
     DATA_DIR,
     MONITOR_SOCK,
     QMP_SOCK,
+    QEMU_BINARY,
     VM_DIR,
     VM_ENABLED,
     VM_PASSWORD_PATH,
@@ -27,6 +28,35 @@ from .config import (
 from .events import emit
 
 MAC_HDD = VM_DIR / "mac_hdd_ng.img"
+
+
+def _find_qemu() -> str:
+    """Return path to qemu-system-x86_64.
+
+    Resolution order:
+    1. AIRTAG_QEMU_BINARY env var (explicit override)
+    2. shutil.which (PATH lookup)
+    3. `find /nix/store -maxdepth 3` — avoids slow full-store glob
+    """
+    if QEMU_BINARY != "qemu-system-x86_64":
+        return QEMU_BINARY  # explicit override
+    if found := shutil.which("qemu-system-x86_64"):
+        return found
+    try:
+        r = sp.run(
+            ["find", "/nix/store", "-maxdepth", "3", "-name", "qemu-system-x86_64",
+             "!", "-name", "*.drv"],
+            capture_output=True, text=True, timeout=10,
+        )
+        # Prefer full qemu (not host-cpu-only) for macOS CPU model flag support.
+        lines = [l for l in r.stdout.splitlines() if "host-cpu-only" not in l]
+        if lines:
+            return lines[0]
+        if r.stdout.strip():
+            return r.stdout.splitlines()[0]
+    except Exception:
+        pass
+    return "qemu-system-x86_64"  # will fail with a clear FileNotFoundError
 GOLDEN_HDD = VM_DIR / "mac_hdd_golden.img"
 BASE_SYSTEM = VM_DIR / "BaseSystem.img"
 OVMF_CODE = VM_DIR / "OVMF_CODE_4M.fd"
@@ -47,7 +77,7 @@ class VmError(Exception):
 def _qemu_base_args() -> list[str]:
     """Args common to both install and runtime modes."""
     return [
-        "qemu-system-x86_64",
+        _find_qemu(),
         "-enable-kvm",
         "-m", "8192",
         "-cpu", _CPU,

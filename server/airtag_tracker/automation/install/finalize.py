@@ -19,12 +19,16 @@ from .. import screen
 
 
 def dismiss_first_boot(ctx: AutomationContext) -> InstallState:
-    """Dismiss first-boot dialogs and enable SSH.
+    """Dismiss first-boot dialogs, enable SSH, and configure autologin.
 
     After SA completes, macOS shows: Welcome splash → Keyboard Setup
     Assistant.  We dismiss both, then enable SSH Remote Login via
     launchctl (systemsetup -setremotelogin requires Full Disk Access on
     Sequoia and is therefore not usable here).
+
+    Autologin is configured so that future boots do not require keyboard
+    input at the login window — QMP key injection is blocked by macOS
+    Sequoia's loginwindow security policy.
     """
     password = vm_password.ensure()
 
@@ -41,7 +45,59 @@ def dismiss_first_boot(ctx: AutomationContext) -> InstallState:
     # Enable SSH Remote Login via Spotlight → Terminal.
     _enable_ssh(password)
 
+    # Configure autologin so runtime boots skip the login window.
+    _configure_autologin(password)
+
     return InstallState.SHUTTING_DOWN
+
+
+def _configure_autologin(password: str) -> None:
+    """Configure macOS autologin so runtime boots skip the login window.
+
+    macOS Sequoia blocks QMP keyboard injection at the loginwindow
+    (both from QMP send-key and VNC key events), so we must configure
+    autologin rather than trying to type the password.
+
+    Two writes required:
+    1. ``defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser``
+    2. ``/etc/kcpassword`` — XOR-encoded password file (macOS's autologin
+       credential store, obfuscated with a fixed 11-byte key).
+    """
+    from ... import vm_ui
+
+    emit("info", "finalize", "Configuring autologin via SSH")
+
+    # Build kcpassword bytes: XOR password with repeating 11-byte key, then
+    # null-terminate and pad to a multiple of 11 bytes.
+    key = [0x7D, 0x89, 0x52, 0x23, 0xD2, 0xBC, 0xDD, 0xEA, 0xA3, 0xB9, 0x1F]
+    pw_bytes = password.encode("utf-8") + b"\x00"
+    while len(pw_bytes) % 11 != 0:
+        pw_bytes += b"\x00"
+    kcp = bytes(b ^ key[i % 11] for i, b in enumerate(pw_bytes))
+    kcp_hex = kcp.hex()
+
+    # Build a shell script that elevates once via sudo -S then does all root
+    # work inside a single bash -c.  Sending via base64 avoids quoting hazards
+    # with special characters in the password or hex payload.
+    import base64
+    script = (
+        f"PW={password!r}\n"
+        # One sudo invocation handles both the loginwindow pref and kcpassword.
+        # printf inside the bash -c doesn't fight sudo -S for stdin because
+        # sudo already consumed the password line before exec'ing bash.
+        f"echo \"$PW\" | sudo -S bash -c '"
+        "defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser airtag; "
+        f"printf \"{kcp_hex}\" | xxd -r -p > /etc/kcpassword; "
+        "chmod 600 /etc/kcpassword'\n"
+    )
+    # Use a Python-side base64 encode so no shell quoting is needed.
+    b64 = base64.b64encode(script.encode()).decode()
+    r = vm_ui.ssh(f"echo {b64} | base64 -d | bash", timeout=30)
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"Autologin configuration failed: {(r.stderr or r.stdout).strip()[:300]}"
+        )
+    emit("info", "finalize", "Autologin configured — next boot will skip login window")
 
 
 def _enable_ssh(password: str) -> None:

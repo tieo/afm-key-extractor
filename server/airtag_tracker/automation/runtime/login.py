@@ -19,19 +19,24 @@ from .. import screen
 
 
 def wait_for_login_screen(ctx: AutomationContext) -> RuntimeState:
-    """Poll until the macOS login window is visible.
+    """Poll until the macOS login window is visible — or autologin fires.
 
-    Uses ``screen.detect_login_screen()`` which checks OCR for the
-    power-button trio ("shut down", "restart", "sleep") plus the VM
-    username.  Polls every 3 s for up to 120 s.
+    When autologin is configured the desktop (Dock) comes up directly
+    without a login window.  We check for that first each poll so we
+    don't time-out waiting for a screen that will never appear.
 
-    Raises RuntimeError on timeout.
+    Polls every 3 s for up to 180 s.  Raises RuntimeError on timeout.
     """
-    deadline_s = 120
+    deadline_s = 180
     poll_s = 3.0
     t0 = time.time()
-    emit("info", "login", "Waiting for macOS login screen (up to 120 s)")
+    emit("info", "login", "Waiting for macOS login screen or autologin (up to 180 s)")
     while time.time() - t0 < deadline_s:
+        # Fast path: autologin booted straight to desktop — skip login entirely.
+        r = vm_ui.ssh("pgrep -x Dock", timeout=8)
+        if r.returncode == 0:
+            emit("info", "login", "Dock already running — autologin succeeded, skipping login")
+            return RuntimeState.WAITING_DESKTOP
         if screen.detect_login_screen():
             emit("info", "login", "Login screen detected")
             return RuntimeState.LOGGING_IN
@@ -95,12 +100,18 @@ def disable_sleep(ctx: AutomationContext) -> RuntimeState:
     Also disables the password-on-wake requirement so a transient blank
     screen does not require another login.
     """
+    from ... import vm_password as _vm_password
+    import base64 as _base64
+
     emit("info", "login", "Disabling sleep and screensaver")
-    vm_ui.ssh(
-        "sudo pmset -a displaysleep 0 sleep 0 disksleep 0 2>/dev/null; "
-        "defaults -currentHost write com.apple.screensaver idleTime -int 0; "
-        "defaults write com.apple.screensaver askForPassword -int 0",
-        timeout=20,
+    pw = _vm_password.get() or ctx.vm_password
+    script = (
+        f"PW={pw!r}\n"
+        "echo \"$PW\" | sudo -S pmset -a displaysleep 0 sleep 0 disksleep 0\n"
+        "defaults -currentHost write com.apple.screensaver idleTime -int 0\n"
+        "defaults write com.apple.screensaver askForPassword -int 0\n"
     )
+    b64 = _base64.b64encode(script.encode()).decode()
+    vm_ui.ssh(f"echo {b64} | base64 -d | bash", timeout=30)
     emit("info", "login", "Sleep and screensaver disabled")
     return RuntimeState.OPENING_APPLE_ID

@@ -26,6 +26,8 @@ VM_DIR = Path(os.environ.get("AIRTAG_VM_DIR", "/var/lib/airtag-tracker/osx-kvm")
 VNC_WS_PORT = int(os.environ.get("AIRTAG_VNC_WS_PORT", "6901"))
 VM_USERNAME = os.environ.get("AIRTAG_VM_USERNAME", "airtag")
 
+QEMU_BINARY = os.environ.get("AIRTAG_QEMU_BINARY", "qemu-system-x86_64")
+
 QMP_SOCK = "/tmp/airtag-vm-qmp.sock"
 MONITOR_SOCK = "/tmp/airtag-vm-monitor.sock"
 VM_PID_FILE = Path("/tmp/airtag-vm-setup.pid")

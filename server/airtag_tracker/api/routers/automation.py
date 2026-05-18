@@ -129,6 +129,33 @@ def resume_install(state: str = "waiting_install") -> dict:
     return {"status": "resumed", "from_state": state}
 
 
+@router.post("/resume-runtime")
+def resume_runtime(body: RuntimeStartBody, state: str = "waiting_login_screen") -> dict:
+    """Resume the runtime flow from a specific state.
+
+    Useful after an error — the VM may already be running past the failed
+    state.  Example: if picker_selecting failed but macOS is booting, use
+    state='waiting_login_screen'."""
+    if engine._engine.is_running:
+        raise HTTPException(status_code=409, detail="An automation flow is already running")
+    try:
+        initial = RuntimeState(state)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown runtime state: {state!r}")
+    vm_password = ensure_vm_password()
+    ctx = AutomationContext(
+        flow_kind=FlowKind.RUNTIME,
+        vm_password=vm_password,
+        apple_email=body.apple_email,
+        apple_password=body.apple_password,
+        restore_golden=False,
+        icloud_sync_timeout_s=body.icloud_sync_timeout_s,
+        initial_state=initial,
+    )
+    engine.start_flow(ctx, sse.broadcast)
+    return {"status": "resumed", "from_state": state}
+
+
 @router.post("/abort")
 def abort_flow() -> dict:
     engine.abort()

@@ -201,10 +201,15 @@ def ocr_words(ppm: str) -> list[tuple[str, int, int, int, int]]:
         # Autocontrast on 2× helps with dark-background screens (OpenCore
         # picker, login window) where flat white-on-dark fools tesseract.
         im2x_ac = ImageOps.autocontrast(im2x)
+        # Grayscale+autocontrast: removes color interference from wallpapers
+        # so white-on-colored-background text (login screen, lock screen) is
+        # captured reliably. Using 2x scale for better character recognition.
+        im_gray2x = ImageOps.autocontrast(ImageOps.grayscale(im2x), cutoff=5).convert("RGB")
         variants = [
             (im, 1, "1x"),
             (ImageOps.invert(im), 1, "1x-inv"),
             (im2x_ac, 2, "2x"),
+            (im_gray2x, 2, "gray2x"),
         ]
         for vim, scale, tag in variants:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
