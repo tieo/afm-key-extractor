@@ -8,6 +8,7 @@ services:
       - "6901:6901"   # noVNC
     volumes:
       - ${AIRTAG_DATA_DIR:-airtag-data}:/data
+      - ./server/static:/app/server/static:ro
     environment:
       AIRTAG_VM_ENABLED: "1"
       AIRTAG_DATA_DIR: /data
