@@ -1,0 +1,15 @@
+.git
+result
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+tests
+docs
+app
+module
+extractor
+flake.nix
+flake.lock
+module.nix
+*.md

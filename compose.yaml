@@ -1,0 +1,17 @@
+services:
+  airtag-tracker:
+    build: .
+    devices:
+      - /dev/kvm:/dev/kvm
+    ports:
+      - "8042:8042"
+      - "6901:6901"   # noVNC
+    volumes:
+      - ${AIRTAG_DATA_DIR:-airtag-data}:/data
+    environment:
+      AIRTAG_VM_ENABLED: "1"
+      AIRTAG_DATA_DIR: /data
+      AIRTAG_VM_DIR: /data/osx-kvm
+    tmpfs:
+      - /tmp          # QMP sockets, QEMU snapshots, screendump PPMs
+    restart: unless-stopped
