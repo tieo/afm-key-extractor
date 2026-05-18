@@ -135,6 +135,13 @@ def system_powerdown() -> None:
         c._recv_json()
 
 
+def system_reset() -> None:
+    """Send hardware reset signal via QMP (equivalent to pressing the reset button)."""
+    with qmp() as c:
+        c._send({"execute": "system_reset"})
+        c._recv_json()
+
+
 def screendump(output_path: str, monitor_path: str = MONITOR_SOCK) -> None:
     """Ask the HMP monitor to dump the framebuffer to `output_path` (PPM)."""
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

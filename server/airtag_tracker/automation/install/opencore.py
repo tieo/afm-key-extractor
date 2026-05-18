@@ -85,6 +85,11 @@ def select_installed(ctx: AutomationContext) -> InstallState:
     It advances to SETUP_ASSISTANT only when the Setup Assistant
     "Country or Region" screen is detected.
 
+    TianoCore BIOS recovery: macOS sets volatile EFI boot priority variables
+    during configure phases.  If OVMF fails all boot entries and drops into
+    the Boot Maintenance Manager, we issue system_reset so OVMF re-reads the
+    unchanged OVMF_VARS file and boots OpenCore again.
+
     Deadline: 1800 s (30 min) from first call to cover both configure phases.
     Raises RuntimeError on timeout.
     """
@@ -92,6 +97,8 @@ def select_installed(ctx: AutomationContext) -> InstallState:
     poll_s = 5.0
     t0 = time.time()
     picker_seen = 0
+    resets_done = 0
+    MAX_RESETS = 5
     emit("info", "opencore", "Waiting for post-install boot sequence…")
     while time.time() - t0 < deadline_s:
         if screen.detect_opencore_picker():
@@ -107,6 +114,17 @@ def select_installed(ctx: AutomationContext) -> InstallState:
             emit("info", "opencore",
                  "Setup Assistant detected — advancing flow")
             return InstallState.SETUP_ASSISTANT
+
+        if screen.detect_tiano_bios() and resets_done < MAX_RESETS:
+            resets_done += 1
+            emit("info", "opencore",
+                 f"TianoCore BIOS detected — issuing system_reset #{resets_done}")
+            try:
+                qmp.system_reset()
+            except Exception as e:
+                emit("warning", "opencore", f"system_reset failed: {e}")
+            time.sleep(15.0)  # wait for POST + OpenCore to appear
+            continue
 
         time.sleep(poll_s)
     raise RuntimeError(

@@ -212,8 +212,47 @@ def detect_recovery_utilities() -> bool:
 
 
 def detect_setup_assistant() -> bool:
-    """True if Setup Assistant is running (country/language picker)."""
-    return has_any_text("Country or Region", "Choose Your Country", "country or region")
+    """True if Setup Assistant is running (any screen).
+
+    Checks for distinctive text from each of the 13 Setup Assistant screens
+    so that mid-flow resumption can be detected when we're past screen 1.
+    """
+    return has_any_text(
+        # screen 1
+        "country or region", "choose your country",
+        # screen 2
+        "written and spoken", "spoken languages",
+        # screen 3 — single word too broad, pair it
+        # screen 4
+        "data & privacy",
+        # screen 5
+        "migration assistant", "transfer your information",
+        # screen 6
+        "sign in with your apple id",
+        # screen 7
+        "terms and conditions",
+        # screen 8
+        "computer account", "mac account",
+        # screen 9
+        "location services",
+        # screen 10
+        "time zone",
+        # screen 11 — "analytics" alone is too broad, skip
+        # screen 12
+        "screen time",
+        # screen 13
+        "choose your look",
+    )
+
+
+def detect_tiano_bios() -> bool:
+    """True if the TianoCore BIOS Boot Maintenance Manager is visible.
+
+    When macOS sets volatile EFI boot priority variables during configure
+    phases, OVMF may fail all entries and fall into the Boot Maintenance
+    Manager.  Both strings appear together only on that screen.
+    """
+    return has_text("Boot Manager", "Device Manager")
 
 
 def detect_login_screen() -> bool:

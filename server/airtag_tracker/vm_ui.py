@@ -37,6 +37,7 @@ from __future__ import annotations
 import base64
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import time
@@ -60,10 +61,20 @@ def _ssh_password() -> str:
     return vm_password.get() or ""
 
 
+def _find_sshpass() -> str:
+    """Return path to sshpass binary, searching PATH then known Nix store dirs."""
+    if found := shutil.which("sshpass"):
+        return found
+    # Nix-deployed binary — stable enough for fallback
+    for candidate in Path("/nix/store").glob("sshpass-*/bin/sshpass"):
+        return str(candidate)
+    return "sshpass"   # will fail with a clear FileNotFoundError
+
+
 def ssh(cmd: str, timeout: int = 30) -> subprocess.CompletedProcess:
     return subprocess.run(
         [
-            "sshpass", "-p", _ssh_password(),
+            _find_sshpass(), "-p", _ssh_password(),
             "ssh",
             "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",

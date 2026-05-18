@@ -19,37 +19,39 @@ from .. import screen
 
 
 def dismiss_first_boot(ctx: AutomationContext) -> InstallState:
-    """Dismiss the Keyboard Setup Assistant and re-authenticate.
+    """Dismiss first-boot dialogs and enable SSH.
 
-    macOS shows a "Keyboard Setup Assistant" modal on the first desktop
-    session.  We wait up to 30 s for it, click Quit (with retries), then
-    type the VM password and press Return to unlock the session in case
-    the dismiss triggers a re-lock.
+    After SA completes, macOS shows: Welcome splash → Keyboard Setup
+    Assistant.  We dismiss both, then enable SSH Remote Login via
+    launchctl (systemsetup -setremotelogin requires Full Disk Access on
+    Sequoia and is therefore not usable here).
     """
+    password = vm_password.ensure()
+
+    # Dismiss Keyboard Setup Assistant if present.
     emit("info", "finalize", "Waiting for Keyboard Setup Assistant modal…")
     if screen.has_text("Keyboard", "Setup", deadline_s=30, poll_s=2.0):
         emit("info", "finalize", "Keyboard Setup Assistant detected — clicking Quit")
-        screen.click_text("Quit", tries=3)
-        time.sleep(1.0)
+        if not screen.click_text("Quit", tries=3):
+            emit("warning", "finalize", "OCR Quit not found — using pixel fallback")
+            from ... import vm_ui
+            vm_ui.click_pixel(905, 684, 1280, 800)
+        time.sleep(1.5)
 
-    password = vm_password.ensure()
-    emit("info", "finalize", "Typing VM password to re-authenticate")
-    qmp.type_text(password)
-    qmp.send_keys(["ret"])
-    time.sleep(5.0)
-
-    # Enable SSH Remote Login via Spotlight → Terminal — needed by every
-    # subsequent runtime-flow run which uses SSH for clipboard paste and
-    # settings navigation.
+    # Enable SSH Remote Login via Spotlight → Terminal.
     _enable_ssh(password)
 
     return InstallState.SHUTTING_DOWN
 
 
 def _enable_ssh(password: str) -> None:
-    """Open Terminal via Spotlight and enable SSH Remote Login."""
-    emit("info", "finalize", "Enabling SSH Remote Login")
-    # Spotlight
+    """Open Terminal via Spotlight and enable SSH Remote Login.
+
+    Uses launchctl rather than systemsetup because macOS Sequoia requires
+    Full Disk Access for systemsetup -setremotelogin, which a GUI session
+    doesn't hold.
+    """
+    emit("info", "finalize", "Enabling SSH Remote Login via launchctl")
     with qmp.qmp() as c:
         c.send_chord(["meta_l", "spc"])
     time.sleep(1.5)
@@ -57,16 +59,14 @@ def _enable_ssh(password: str) -> None:
     time.sleep(0.5)
     qmp.send_keys(["ret"])
     time.sleep(6.0)
-    # Enable Remote Login (SSH)
-    cmd = "sudo systemsetup -setremotelogin on"
+    # Enable SSH: launchctl load -w works without Full Disk Access.
+    cmd = "sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist"
     qmp.type_text(cmd)
     qmp.send_keys(["ret"])
     time.sleep(1.5)
-    # sudo password prompt
     qmp.type_text(password)
     qmp.send_keys(["ret"])
     time.sleep(4.0)
-    # Quit Terminal
     with qmp.qmp() as c:
         c.send_chord(["meta_l", "q"])
     time.sleep(1.0)
