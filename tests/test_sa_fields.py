@@ -61,7 +61,7 @@ def test_fill_field_click_clear_type():
     # Cmd+A + Backspace then type
     chords = [args[0][0] for args in qmp_client.send_chord.call_args_list]
     assert chords[:2] == [["meta_l", "a"], ["backspace"]]
-    qmp_client.type_text.assert_called_once_with("airtag", gap_s=0.04)
+    qmp_client.type_text.assert_called_once_with("airtag", gap_s=0.15)
 
 
 def test_fill_field_skip_clear():
@@ -69,7 +69,17 @@ def test_fill_field_skip_clear():
     with p, patch("airtag_tracker.vm_ui.click_pixel"), patch("time.sleep"):
         _sa_fields.fill_field(50, 60, "v", clear=False)
     qmp_client.send_chord.assert_not_called()
-    qmp_client.type_text.assert_called_once_with("v", gap_s=0.04)
+    qmp_client.type_text.assert_called_once_with("v", gap_s=0.15)
+
+
+def test_fill_field_gap_is_slow_enough_to_avoid_char_drop():
+    """Regression: at gap_s=0.04 only "ai" of "airtag" registered, dropping
+    4/6 chars on SA Create Account.  Lock in the slower default."""
+    import inspect
+    sig = inspect.signature(_sa_fields.fill_field)
+    assert sig.parameters["gap_s"].default >= 0.10, (
+        "fill_field gap_s must stay at the empirically-validated slow rate"
+    )
 
 
 # ---------------------------------------------------------------------------

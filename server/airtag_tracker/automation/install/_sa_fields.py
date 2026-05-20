@@ -57,12 +57,17 @@ def fill_field(
     clear: bool = True,
     label: str = "",
     settle_s: float = 0.5,
-    gap_s: float = 0.04,
+    gap_s: float = 0.15,
 ) -> None:
     """Click → optionally clear → type into a regular text field.
 
     *label* is only for logging.  Use ``fill_password_compound`` for the
     password row instead of this; the compound widget has different rules.
+
+    gap_s=0.15 (not the QMP default 0.04) because faster typing drops chars:
+    empirically the SA-8 Full Name field captured only "ai" out of "airtag"
+    at gap_s=0.04 — macOS autocomplete/animation steals focus mid-typing.
+    0.15s gives each keystroke time to register before the next one fires.
     """
     if label:
         emit("info", "sa_fields", f"filling {label}")

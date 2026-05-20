@@ -21,7 +21,12 @@ from ..config import (
 
 MAC_HDD = VM_DIR / "mac_hdd_ng.img"
 OVMF_CODE = VM_DIR / "OVMF_CODE_4M.fd"
-OVMF_VARS = VM_DIR / "OVMF_VARS-1920x1080.fd"
+# OVMF_VARS is qcow2 (not raw) so QEMU's `savevm` writes its snapshot
+# state into the same file and that state survives QEMU process restart.
+# A raw pflash with `snapshot=on` is snapshottable for the duration of
+# the running QEMU but discards snapshots on shutdown — useless for
+# the iter-loop where we restart the container between code edits.
+OVMF_VARS = VM_DIR / "OVMF_VARS-1920x1080.qcow2"
 OPENCORE_QCOW = VM_DIR / "OpenCore" / "OpenCore.qcow2"
 
 # NOTE: +invtsc is intentionally NOT set even though OSX-KVM's reference config
@@ -80,11 +85,9 @@ def base_args() -> list[str]:
         "-smp", "4,cores=2",
         "-device", f"isa-applesmc,osk={_OSK}",
         "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE}",
-        # OVMF_VARS gets snapshot=on so it's snapshottable (savevm/loadvm).
-        # The OpenCore disk below already uses snapshot=on, so NVRAM changes
-        # were already non-persistent — this just makes the pflash device
-        # snapshot-compatible without changing the persistence story.
-        "-drive", f"if=pflash,format=raw,snapshot=on,file={OVMF_VARS}",
+        # OVMF_VARS is qcow2 (see comment above); no snapshot=on so the
+        # savevm state persists across QEMU process restart.
+        "-drive", f"if=pflash,format=qcow2,file={OVMF_VARS}",
         "-smbios", "type=2",
         "-device", "ich9-intel-hda",
         "-device", "hda-duplex",
