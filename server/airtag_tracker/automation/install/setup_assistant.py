@@ -14,6 +14,7 @@ from ...events import emit
 from ..context import AutomationContext
 from ..states import InstallState
 from .. import screen
+from . import _sa_fields
 
 
 _SCREEN_W, _SCREEN_H = 1280, 800
@@ -205,148 +206,73 @@ def screen_terms(ctx: AutomationContext) -> InstallState:
 
 
 def screen_create_account(ctx: AutomationContext) -> InstallState:
-    """Screen 8: Create a Computer/Mac Account."""
+    """Screen 8: Create a Computer/Mac Account.
+
+    Composition of small primitives from ``_sa_fields``.  Each
+    primitive owns its own quirks (Cmd+A pitfalls, focus rules,
+    timing).  When a step fails, the fix lives in one primitive,
+    not in this orchestration function.
+    """
     emit("info", "setup_assistant", "Screen 8: Create a Computer Account")
     password = vm_password.ensure()
 
-    # Dismiss any error modal from a previous Continue attempt.
-    # The "Go Back" button is blue (white text) — OCR-blind.  Return key does NOT
-    # reach the modal sheet in QEMU.  click_text("Go","Back") hits the phrase
-    # "click Go Back" in the body text, not the button — pixel-only.
-    if screen.has_any_text("passwords don't match", "passwords don",
-                           "haven't provided", "requested information",
-                           "hint can't contain", "hint cannot contain"):
-        emit("info", "setup_assistant", "Error dialog on Create Account — clicking Go Back")
-        vm_ui.click_pixel(_GO_BACK_X, _GO_BACK_Y, _SCREEN_W, _SCREEN_H)
-        time.sleep(3.0)  # wait for sheet dismiss animation
+    # Dismiss any leftover error modal from a prior attempt.
+    _sa_fields.dismiss_error_modal_if_present()
 
-    # Wait for the account screen — may take a moment after T&C Agree.
-    # "computer account" / "mac account" is the screen title and is more reliably
-    # OCR'd than "Password" (the password row shows a placeholder that garbles OCR
-    # when the left sub-field is focused).
+    # Wait for the account screen — "computer account" / "mac account" OCRs
+    # more reliably than "Password" (the placeholder dots garble OCR when
+    # the left sub-field is focused).
     if not screen.has_text("computer account", deadline_s=45, poll_s=2.0):
         if not screen.has_text("mac account", deadline_s=5, poll_s=1.0):
             raise RuntimeError("Account creation screen not reached within 45s")
 
-    # Settle: screen transition from T&C may still be animating.
-    time.sleep(2.0)
+    time.sleep(2.0)  # settle: T&C → SA-8 slide animation
 
-    # Critical section: the entire field-fill sequence is fragile.  An
-    # interleaved popup_watcher click (e.g. trying to dismiss a stale prompt
-    # OCR'd in the background) between Cmd+A and Backspace can wipe the wrong
-    # field or steal focus mid-typing.  Wrap everything until Continue.
+    # Critical section: an interleaved popup_watcher click between any
+    # Cmd+A and the next keystroke can wipe the wrong field or steal focus
+    # mid-typing.  Hold from first click through Continue.
     with ctx.critical_section():
-        # Dismiss any macOS character picker that QMP key injection may have
-        # left open.  The picker intercepts ALL subsequent key events until
-        # dismissed (Escape closes it without inserting a character).
-        with qmp.qmp() as c:
-            c.send_chord(["esc"])
-        time.sleep(0.2)
+        _sa_fields.dismiss_character_picker()
 
-        # Clear Hint field — Go Back preserves Hint across retries; any stale
-        # content matching the password triggers "hint can't contain the
-        # password" on re-submit.
-        emit("info", "setup_assistant", "Screen 8: clearing Hint field")
-        vm_ui.click_pixel(_HINT_FIELD_X, _HINT_FIELD_Y, _SCREEN_W, _SCREEN_H)
-        time.sleep(0.3)
-        with qmp.qmp() as c:
-            c.send_chord(["meta_l", "a"])
-            time.sleep(0.1)
-            c.send_chord(["backspace"])
-        time.sleep(0.3)
+        # Hint must be cleared every attempt — Go Back preserves it across
+        # retries; stale Hint matching the password triggers a re-error.
+        _sa_fields.fill_field(
+            _HINT_FIELD_X, _HINT_FIELD_Y, "",
+            clear=True, label="Hint (clearing)",
+        )
 
-        # --- Full Name ---
-        # Use Cmd+A → Backspace to clear stale content — more reliable than
-        # end+N×backspace because the End key mapping in QEMU/macOS VM is
-        # unreliable.
-        emit("info", "setup_assistant", "Screen 8: filling Full Name")
-        vm_ui.click_pixel(_FULLNAME_FIELD_X, _FULLNAME_FIELD_Y, _SCREEN_W, _SCREEN_H)
-        time.sleep(0.5)
-        with qmp.qmp() as c:
-            c.send_chord(["meta_l", "a"])
-            time.sleep(0.1)
-            c.send_chord(["backspace"])
-            time.sleep(0.1)
-            c.type_text("airtag")
-        time.sleep(0.5)
+        _sa_fields.fill_field(
+            _FULLNAME_FIELD_X, _FULLNAME_FIELD_Y, "airtag",
+            label="Full Name",
+        )
+        _sa_fields.fill_field(
+            _ACCOUNT_NAME_FIELD_X, _ACCOUNT_NAME_FIELD_Y, "airtag",
+            label="Account Name",
+        )
 
-        # --- Account Name ---
-        # Pixel-click Account Name — Tab from Full Name is ambiguous (macOS
-        # sometimes skips Account Name entirely when it auto-fills from Full
-        # Name, landing Tab on the password field instead).  Go Back preserves
-        # field content; clear before fill.
-        emit("info", "setup_assistant", "Screen 8: filling Account Name")
-        vm_ui.click_pixel(_ACCOUNT_NAME_FIELD_X, _ACCOUNT_NAME_FIELD_Y, _SCREEN_W, _SCREEN_H)
-        time.sleep(0.5)
-        with qmp.qmp() as c:
-            c.send_chord(["meta_l", "a"])
-            time.sleep(0.1)
-            c.send_chord(["backspace"])
-            time.sleep(0.1)
-            c.type_text("airtag")
-        time.sleep(0.3)
-
-        # --- Password (left sub-field) ---
-        # Pixel-click the left password sub-field.  Tab from Account Name is
-        # not used here because Account Name triggers an auto-focus animation
-        # that can race.  Do NOT use Cmd+A here — in a compound
-        # NSSecureTextField (left+verify halves), Cmd+A selects across both
-        # halves and moves the focus anchor to the verify half, causing the
-        # subsequent type_text to land in verify instead of left.  Go Back
-        # always clears both password sub-fields, so there is nothing to clear.
-        emit("info", "setup_assistant", "Screen 8: filling password")
-        vm_ui.click_pixel(_PW_FIELD_X, _PW_FIELD_Y, _SCREEN_W, _SCREEN_H)
-        time.sleep(0.5)
-        with qmp.qmp() as c:
-            c.type_text(password, gap_s=0.15)
-        # Wait for Requirements Popover to close before Tabbing.  Popover does
-        # NOT auto-close — it closes when Tab is pressed.  3.0s gives the UI
-        # time to render the filled dots before we Tab.
-        time.sleep(3.0)
-
-        # --- Password verify (right sub-field) ---
-        # Pixel-clicking verify NEVER works — the compound NSSecureTextField
-        # always focuses the LEFT half on any click regardless of x-coord.
-        # Tab is the only reliable way to reach verify, and only after the
-        # Requirements Popover has closed (open popover intercepts Tab).
-        # Do NOT use Cmd+A in verify — it would select across both halves and
-        # wipe left.
-        emit("info", "setup_assistant", "Screen 8: Tab to verify, then fill")
-        with qmp.qmp() as c:
-            c.send_chord(["tab"])
-        time.sleep(0.8)  # let focus settle on verify
-        with qmp.qmp() as c:
-            c.type_text(password, gap_s=0.15)
-        time.sleep(0.8)
+        # Password compound (left half + tab + verify half) — see primitive
+        # for the strategy env var that lets us swap typing approaches via
+        # the snapshot/replay harness without code edits.
+        _sa_fields.fill_password_compound(_PW_FIELD_X, _PW_FIELD_Y, password)
 
         emit("info", "setup_assistant", "Screen 8: clicking Continue")
         _press_continue()
 
-    # Wait for the screen to advance.  Return the same state on any error dialog
-    # so the engine retries (RuntimeError would terminate the engine, not retry).
-    # "Haven't provided" means a field was empty (usually Full Name on first
-    # attempt due to form not yet settled); returning SA_CREATE_ACCOUNT causes
-    # the engine to call this handler again, which starts with Go Back to reset.
-    time.sleep(5.0)
-    t0 = time.time()
-    while time.time() - t0 < 25.0:
-        screen_txt = vm_ui.screen_text()
-        if "passwords don't match" in screen_txt or "passwords don" in screen_txt:
-            emit("warning", "setup_assistant",
-                 "Screen 8: passwords don't match after Continue — retrying")
-            return InstallState.SA_CREATE_ACCOUNT
-        if "hint can't contain" in screen_txt or "hint cannot contain" in screen_txt:
-            emit("warning", "setup_assistant",
-                 "Screen 8: hint contains password after Continue — retrying")
-            return InstallState.SA_CREATE_ACCOUNT
-        if "haven't provided" in screen_txt or "requested information" in screen_txt:
-            emit("warning", "setup_assistant",
-                 "Screen 8: required field(s) missing after Continue — retrying")
-            return InstallState.SA_CREATE_ACCOUNT
-        if "computer account" not in screen_txt and "mac account" not in screen_txt:
-            break  # screen advanced successfully
-        time.sleep(2.0)
-
+    # Wait for the screen to advance or classify the error so the engine
+    # can retry (returning SA_CREATE_ACCOUNT triggers a fresh attempt).
+    err = _sa_fields.verify_advanced_or_classify_error()
+    if err == "passwords_mismatch":
+        emit("warning", "setup_assistant",
+             "Screen 8: passwords don't match after Continue — retrying")
+        return InstallState.SA_CREATE_ACCOUNT
+    if err == "hint_contains_password":
+        emit("warning", "setup_assistant",
+             "Screen 8: hint contains password after Continue — retrying")
+        return InstallState.SA_CREATE_ACCOUNT
+    if err == "missing_field":
+        emit("warning", "setup_assistant",
+             "Screen 8: required field(s) missing after Continue — retrying")
+        return InstallState.SA_CREATE_ACCOUNT
     return InstallState.SA_APPLE_ID_2
 
 

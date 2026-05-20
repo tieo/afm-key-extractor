@@ -1,0 +1,45 @@
+{
+  "screen": "sa_create_account",
+  "macos": "14",
+  "resolution": [1280, 800],
+  "captured": null,
+  "note": "Placeholder bboxes — replace with measurements from a captured screendump. Each bbox is currently a generous ±25-pixel window around the code constant so the test fails only if the constant drifts > ~50px (i.e. the screen layout actually changed).",
+  "coords": [
+    {
+      "name": "_FULLNAME_FIELD",
+      "xy": [620, 307],
+      "bbox": [400, 282, 880, 332],
+      "purpose": "Full Name input"
+    },
+    {
+      "name": "_ACCOUNT_NAME_FIELD",
+      "xy": [620, 337],
+      "bbox": [400, 312, 880, 362],
+      "purpose": "Account Name input"
+    },
+    {
+      "name": "_PW_FIELD",
+      "xy": [550, 390],
+      "bbox": [400, 365, 700, 415],
+      "purpose": "Password left sub-field"
+    },
+    {
+      "name": "_PW_VERIFY_FIELD",
+      "xy": [740, 390],
+      "bbox": [700, 365, 880, 415],
+      "purpose": "Password verify sub-field (note: pixel clicks here NEVER focus verify; informational only)"
+    },
+    {
+      "name": "_HINT_FIELD",
+      "xy": [660, 421],
+      "bbox": [400, 396, 900, 446],
+      "purpose": "Password Hint input"
+    },
+    {
+      "name": "_GO_BACK",
+      "xy": [640, 492],
+      "bbox": [560, 467, 720, 517],
+      "purpose": "Error modal Go Back button (white text on blue, OCR-blind)"
+    }
+  ]
+}
