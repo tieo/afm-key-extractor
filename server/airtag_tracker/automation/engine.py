@@ -38,7 +38,7 @@ from typing import Callable
 import os
 
 from ..events import emit
-from . import popup_watcher
+from . import failure_capture, popup_watcher
 from .context import AutomationContext
 from .states import (
     DEFAULT_RETRY_BUDGET,
@@ -78,6 +78,14 @@ def _try_auto_snapshot(state_value: str) -> None:
         vm.snapshot.save(state_value)
     except Exception as e:
         emit("warning", "engine", f"Auto-snapshot at {state_value} failed: {e}")
+
+
+def _safe_capture(state_value: str, error: str) -> None:
+    """Best-effort post-mortem (screen + log + snapshot).  Never raises."""
+    try:
+        failure_capture.capture(state_value, error)
+    except Exception as e:
+        emit("warning", "engine", f"failure_capture raised: {e}")
 
 # States that are terminal — engine exits when reached.
 _INSTALL_TERMINAL = {InstallState.DONE, InstallState.ERROR}
@@ -228,6 +236,7 @@ class StateMachine:
             except (RuntimeError, TimeoutError) as e:
                 msg = str(e)
                 emit("error", "engine", f"State {state.value} failed: {msg}")
+                _safe_capture(state.value, msg)
                 error_state = (
                     InstallState.ERROR
                     if ctx.flow_kind == FlowKind.INSTALL
@@ -237,6 +246,7 @@ class StateMachine:
                 break
             except Exception as e:
                 emit("error", "engine", f"Unexpected error in {state.value}: {e}")
+                _safe_capture(state.value, str(e))
                 error_state = (
                     InstallState.ERROR
                     if ctx.flow_kind == FlowKind.INSTALL
@@ -251,6 +261,7 @@ class StateMachine:
                 if retries >= budget:
                     msg = f"State {state.value} did not advance after {budget} retries"
                     emit("error", "engine", msg)
+                    _safe_capture(state.value, msg)
                     error_state = (
                         InstallState.ERROR
                         if ctx.flow_kind == FlowKind.INSTALL

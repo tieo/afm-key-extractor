@@ -14,12 +14,18 @@ the qcow2 disk files, so they survive QEMU stop/start but not disk wipes.
 
 from __future__ import annotations
 
+import json
+import re
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ... import vm
 from ...automation import engine
 from ...automation.context import AutomationContext
+from ...automation.failure_capture import FAILURE_DIR
 from ...automation.states import (
     INSTALL_STAGE_LABELS,
     RUNTIME_STAGE_LABELS,
@@ -159,3 +165,63 @@ def _label_for(flow: FlowKind, state_val: str) -> str:
         return table[cls(state_val)]
     except (KeyError, ValueError):
         return state_val
+
+
+# ---------------------------------------------------------------------------
+# Failure-capture artifacts
+# ---------------------------------------------------------------------------
+
+_SAFE_DIR_NAME = re.compile(r"^[A-Za-z0-9_\-]+$")
+_SAFE_ARTIFACT = {"screen.png", "log.txt", "meta.json"}
+
+
+@router.get("/failures")
+def list_failures() -> list[dict]:
+    """List failure-capture directories, newest first.
+
+    Each entry includes ``dir``, ``mtime`` (epoch seconds), and the parsed
+    ``meta.json`` if present (state, error, snapshot label, etc.).
+    """
+    if not FAILURE_DIR.exists():
+        return []
+    rows: list[dict] = []
+    for p in sorted(FAILURE_DIR.iterdir(),
+                    key=lambda d: d.stat().st_mtime,
+                    reverse=True):
+        if not p.is_dir():
+            continue
+        entry: dict = {"dir": p.name, "mtime": p.stat().st_mtime}
+        meta_path = p / "meta.json"
+        if meta_path.exists():
+            try:
+                entry["meta"] = json.loads(meta_path.read_text())
+            except Exception:
+                pass
+        entry["artifacts"] = sorted(
+            f.name for f in p.iterdir() if f.is_file()
+        )
+        rows.append(entry)
+    return rows
+
+
+@router.get("/failures/{dir_name}/{artifact}")
+def get_failure_artifact(dir_name: str, artifact: str):
+    """Download a single artifact (screen.png / log.txt / meta.json)."""
+    if not _SAFE_DIR_NAME.match(dir_name):
+        raise HTTPException(status_code=400, detail="invalid dir name")
+    if artifact not in _SAFE_ARTIFACT:
+        raise HTTPException(status_code=400, detail="invalid artifact")
+    path: Path = FAILURE_DIR / dir_name / artifact
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="not found")
+    # Defence in depth: resolved path must still be inside FAILURE_DIR.
+    try:
+        path.resolve().relative_to(FAILURE_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="path escape")
+    media = {
+        "screen.png": "image/png",
+        "log.txt": "text/plain",
+        "meta.json": "application/json",
+    }[artifact]
+    return FileResponse(path, media_type=media, filename=artifact)
