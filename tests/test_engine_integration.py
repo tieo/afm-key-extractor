@@ -63,8 +63,8 @@ def test_engine_install_happy_path():
 
     # Map every InstallState to a handler that immediately advances.
     advance = {
-        InstallState.IDLE:               lambda c: InstallState.SETUP_ASSISTANT,
-        InstallState.SETUP_ASSISTANT:    lambda c: InstallState.DONE,
+        InstallState.IDLE:               lambda c: InstallState.SA_COUNTRY,
+        InstallState.SA_COUNTRY:         lambda c: InstallState.DONE,
         InstallState.DONE:               lambda c: InstallState.DONE,  # terminal
         InstallState.ERROR:              lambda c: InstallState.ERROR,  # terminal
     }
@@ -103,7 +103,7 @@ def test_engine_handler_raises_goes_to_error():
 
 
 def test_engine_retry_exhaustion_goes_to_error():
-    """Same-state returns exceed MAX_RETRIES → ERROR."""
+    """Same-state returns exceed the retry budget → ERROR."""
     _reset_engine()
     ctx = _install_ctx()
 
@@ -123,6 +123,46 @@ def test_engine_retry_exhaustion_goes_to_error():
             time.sleep(0.05)
 
     assert ctx.state == InstallState.ERROR
+
+
+def test_critical_section_blocks_popup_watcher():
+    """ctx.critical_section() suppresses popup_watcher dismissals."""
+    from airtag_tracker.automation import popup_watcher
+
+    ctx = _install_ctx()
+    # Force a non-suppressed state so the watcher's own state check passes.
+    ctx.set_state(InstallState.SA_CREATE_ACCOUNT)
+    fake_text = "keyboard setup assistant is open"
+    dismiss_calls = []
+    rule = popup_watcher.PopupRule(
+        name="test_rule",
+        keywords=("keyboard setup assistant",),
+        dismiss=lambda c, t: dismiss_calls.append(1),
+    )
+
+    with patch.object(popup_watcher, "POPUP_RULES", [rule]), \
+         patch("airtag_tracker.vm_ui.screen_text", return_value=fake_text):
+        # Outside critical section → fires.
+        popup_watcher.PopupWatcher()._check(ctx)
+        assert dismiss_calls == [1]
+
+        dismiss_calls.clear()
+        # Inside critical section → suppressed (re-check fires before dismiss).
+        with ctx.critical_section():
+            popup_watcher.PopupWatcher()._check(ctx)
+        assert dismiss_calls == []
+
+
+def test_state_retry_budget_overrides_default():
+    """SA_CREATE_ACCOUNT has an elevated budget per STATE_RETRY_BUDGET."""
+    from airtag_tracker.automation.states import (
+        DEFAULT_RETRY_BUDGET,
+        STATE_RETRY_BUDGET,
+    )
+    assert STATE_RETRY_BUDGET[InstallState.SA_CREATE_ACCOUNT] > DEFAULT_RETRY_BUDGET
+    assert eng._retry_budget(InstallState.SA_CREATE_ACCOUNT) == \
+        STATE_RETRY_BUDGET[InstallState.SA_CREATE_ACCOUNT]
+    assert eng._retry_budget(InstallState.SA_COUNTRY) == DEFAULT_RETRY_BUDGET
 
 
 def test_engine_abort_stops_cleanly():

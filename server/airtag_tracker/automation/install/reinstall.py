@@ -8,7 +8,9 @@ finished and the fresh macOS is ready for Setup Assistant.
 
 from __future__ import annotations
 
+import re
 import time
+from pathlib import Path
 
 from ... import qmp, vm_ui
 from ...events import emit
@@ -35,31 +37,38 @@ def _click_popup_agree() -> None:
     go to the underlying EULA window, not the modal sheet.  The only reliable
     method is a direct pixel click on the Agree pill button.
 
-    Button geometry (1280×800 VM): Disagree ≈x526-635, Agree ≈x644-753,
-    both at y≈440-465.  Agree center ≈ (sw//2 + 60, popup_body_bottom + 29).
+    Button geometry (1280×800 VM): Agree center ≈ (sw//2 + 60, popup_body_bottom + 29).
+    Background EULA words bleed into OCR — x-band filter (35%-75% of sw) isolates
+    popup body text from background ("agreement is unavailable." at x≈441).
     """
     emit("info", "reinstall", "Step 5: waiting for popup sheet animation…")
     time.sleep(3.0)
 
     for attempt in range(1, 4):
         p = vm_ui._screendump()
-        sw, sh = vm_ui._screen_size(p)
-        words = vm_ui.ocr_words(p)
+        try:
+            sw, sh = vm_ui._screen_size(p)
+            words = vm_ui.ocr_words(p)
+        finally:
+            Path(p).unlink(missing_ok=True)
 
-        # Popup body text has "agree"/"agreement" at y<430.
-        # EULA Agree button OCRs as "Adge"/"A%e" at y≈637 — never matches.
+        # Popup body text has "agree"/"agreement" in the centre x-band.
+        # The background EULA screen bleeds through OCR at x<450 and x>850
+        # (e.g. "The license agreement is unavailable." at x≈441) — those are
+        # excluded by the x filter.  The Agree/Disagree pill buttons at y≈637
+        # OCR as "Adge"/"A%e" or are missed entirely; detect gone via no words.
         popup_words = [
             w for w in words
             if w[0].lower() in ("agree", "agreement", "agreement.")
-            and w[2] < 430
+            and w[2] < 500                          # above button row
+            and sw * 0.35 < w[1] < sw * 0.75       # popup x band (not background bleed)
         ]
         if not popup_words:
             emit("info", "reinstall", f"Step 5 attempt {attempt}: popup gone — proceeding")
             return
 
         body_bottom = max(w[2] + w[4] for w in popup_words)
-        # Agree pill button: right button of the pair, ~60px right of centre,
-        # ~29px below the bottom of the popup body text.
+        # Agree pill: right of centre by ~60px, ~29px below last body text line.
         click_x = sw // 2 + 60
         click_y = body_bottom + 29
         emit("info", "reinstall",
@@ -148,17 +157,18 @@ def click_through(ctx: AutomationContext) -> InstallState:
     _click_popup_agree()
 
     # Step 6 — Select Macintosh-HD as the destination.
-    # Disk scan can take 20-30s before the list appears.
-    # "Macintosh-HD" OCRs as one token "macintoshhd"; _prefix_extend handles
-    # the match since "macintosh" is ≥8 chars and "macintoshhd".startswith it.
-    if not screen.wait_click_text("Macintosh", deadline_s=120):
-        # Emit a debug log with the full OCR word list so we can diagnose
-        import tempfile
-        _p = vm_ui._screendump()
-        _words = vm_ui.ocr_words(_p)
-        emit("error", "reinstall",
-             f"Step 6: disk not found. OCR words: {sorted(set(w[0] for w in _words))}")
-        raise RuntimeError("Could not find 'Macintosh' (destination volume)")
+    # The Sonoma installer shows the disk label ("Macintosh-HD") in small text
+    # below the disk icon on a dark background — Tesseract OCR cannot read it
+    # reliably.  We try OCR first; on failure we pixel-click the HDD icon
+    # directly.  The HDD icon is always the LEFT of the two icons shown
+    # (the right icon is the "macOS Base System" recovery disk which must NOT
+    # be selected).  Coordinates verified against a live 1280×800 screenshot.
+    _DISK_ICON_X, _DISK_ICON_Y = 580, 480  # Macintosh-HD HDD icon centre
+    if not screen.wait_click_text("Macintosh", deadline_s=15):
+        emit("info", "reinstall",
+             "Step 6: OCR missed disk label — pixel-clicking Macintosh-HD icon")
+        vm_ui.click_pixel(_DISK_ICON_X, _DISK_ICON_Y, 1280, 800)
+        time.sleep(2.0)  # wait for Continue to un-gray after disk selection
 
     # Step 7 — Continue to start copying (default button).
     if not screen.wait_click_text("Continue", deadline_s=30):
@@ -168,37 +178,152 @@ def click_through(ctx: AutomationContext) -> InstallState:
     return InstallState.WAITING_INSTALL
 
 
+def _extract_remaining(text: str) -> str | None:
+    """Pull 'about X hours … remaining' or 'less than a minute remaining' from OCR text."""
+    m = re.search(r'((?:about|less than)[\w\s]+remaining)', text)
+    return m.group(1).strip() if m else None
+
+
+def _read_progress_bar(ppm: str) -> float | None:
+    """Read installer progress bar fill (0.0–1.0) via pixel analysis.
+
+    Handles two visual styles seen on 1280×800 QEMU framebuffer:
+
+    Phase 1 (installer UI, gray background):
+    - Bar spans y=548-555, x≈490-789
+    - Fill colour: (23, 105, 231) — macOS blue
+    - Empty track: (62, 62, 62) — mid-gray
+
+    Phase 2 (configure, black background / Apple logo screen):
+    - Bar spans y=715-720, x≈523-756
+    - Fill colour: ~(211, 211, 211) — neutral light gray
+    - Empty track: ~(38, 38, 38) — dark gray
+
+    Does NOT delete the PPM — caller is responsible for cleanup.
+    Returns None if neither bar style is detectable.
+    """
+    try:
+        from PIL import Image
+        with Image.open(ppm) as im:
+            pix = im.convert("RGB").load()
+            w, _ = im.size
+
+            # --- Phase 1: blue-fill bar ---
+            blue = gray1 = 0
+            for y in range(548, 556):
+                for x in range(0, w):
+                    r, g, b = pix[x, y]
+                    if b > 150 and b > r * 4 and b > g * 1.5:
+                        blue += 1
+                    elif 52 <= r <= 75 and abs(r - g) < 8 and abs(g - b) < 8:
+                        gray1 += 1
+            total1 = blue + gray1
+            if total1 >= 10:
+                return round(blue / total1, 2)
+
+            # --- Phase 2: light-gray fill on dark track (Apple logo / configure screen) ---
+            filled = empty = 0
+            for y in range(715, 721):
+                for x in range(480, 800):
+                    r, g, b = pix[x, y]
+                    # Filled: all channels > 180, all equal (neutral gray)
+                    if r > 180 and abs(r - g) < 20 and abs(g - b) < 20:
+                        filled += 1
+                    # Empty track: all channels < 80, all equal (dark gray)
+                    elif r < 80 and abs(r - g) < 20 and abs(g - b) < 20:
+                        empty += 1
+            total2 = filled + empty
+            if total2 >= 10:
+                return round(filled / total2, 2)
+
+            return None
+    except Exception as e:
+        emit("warning", "reinstall", f"progress bar read failed: {e}")
+        return None
+
+
 def wait_complete(ctx: AutomationContext) -> InstallState:
     """Wait for the installer to finish and the VM to reboot.
 
-    The installer takes 20-45 minutes.  We poll for the OpenCore picker to
-    reappear (which happens after the final reboot) every 30 s.
-    Progress events are emitted every 5 minutes so the UI shows activity.
+    Takes one screendump per poll and reuses it for:
+    - Pixel-based progress bar fill ratio
+    - OCR for 'X minutes remaining' text
+    - OpenCore picker detection (install complete)
+    - Setup Assistant detection (install + configure complete, SA already running)
 
-    Deadline: 2700 s (45 min).
+    Deadline: 4 h (macOS installer often overestimates in QEMU).
     """
-    deadline_s = 14400  # 4 hours — macOS installer overestimates in QEMU
+    from .. import screen as _screen
+
+    deadline_s = 14400
     poll_s = 30.0
-    progress_interval_s = 300  # emit a progress event every 5 minutes
     t0 = time.time()
-    last_progress = t0
+    last_remaining: str | None = None
+    last_bar_pct: int | None = None
+    screendump_fails = 0
 
     emit("info", "reinstall", "Waiting for macOS installation to complete (up to 4 h)…")
 
     while time.time() - t0 < deadline_s:
-        now = time.time()
-        elapsed = now - t0
+        if ctx.aborted:
+            return InstallState.WAITING_INSTALL  # engine abort check will catch this
 
-        if now - last_progress >= progress_interval_s:
-            minutes = int(elapsed // 60)
-            emit("info", "reinstall", f"Still installing… ({minutes} min elapsed)")
-            last_progress = now
+        elapsed = time.time() - t0
+        minutes = int(elapsed // 60)
 
-        if screen.detect_opencore_picker():
+        try:
+            ppm = vm_ui._screendump()
+            if screendump_fails:
+                emit("info", "reinstall",
+                     f"Screendump recovered after {screendump_fails} failure(s)")
+                screendump_fails = 0
+        except Exception as exc:
+            screendump_fails += 1
+            if screendump_fails == 1 or screendump_fails % 5 == 0:
+                from ... import vm as _vm
+                running = _vm.is_running()
+                emit("warning", "reinstall",
+                     f"Screendump failed ({screendump_fails}×, {minutes} min elapsed,"
+                     f" vm_running={running}): {exc}")
+                if not running:
+                    raise RuntimeError(
+                        f"QEMU process died during installation after {minutes} min"
+                    )
+            time.sleep(poll_s)
+            continue
+
+        try:
+            bar = _read_progress_bar(ppm)
+            text = vm_ui.screen_text(ppm)
+        finally:
+            Path(ppm).unlink(missing_ok=True)
+
+        remaining = _extract_remaining(text)
+        if remaining and remaining != last_remaining:
+            emit("info", "reinstall", f"Installer ({minutes} min elapsed): {remaining}")
+            last_remaining = remaining
+
+        if bar is not None:
+            bar_pct = int(bar * 100)
+            if last_bar_pct is None or abs(bar_pct - last_bar_pct) >= 1:
+                emit("info", "reinstall", f"Progress bar: ~{bar_pct}%")
+                last_bar_pct = bar_pct
+        elif last_bar_pct is not None:
+            emit("warning", "reinstall", "Progress bar: no longer detectable")
+            last_bar_pct = None  # only warn once per transition, not every poll
+
+        # OpenCore picker markers — base system / REL- version string.
+        if "base system" in text or "rel-" in text:
             emit("info", "reinstall",
-                 f"OpenCore picker detected after {int(elapsed // 60)} min "
-                 "— installation complete")
+                 f"OpenCore picker detected after {minutes} min — installation complete")
             return InstallState.BOOTING_INSTALLED
+
+        # SA already running: install + both configure phases completed while we
+        # were polling (30 s gap missed the picker).  Skip directly to SA_COUNTRY.
+        if _screen.detect_setup_assistant():
+            emit("info", "reinstall",
+                 f"Setup Assistant detected after {minutes} min — skipping BOOTING_INSTALLED")
+            return InstallState.SA_COUNTRY
 
         time.sleep(poll_s)
 

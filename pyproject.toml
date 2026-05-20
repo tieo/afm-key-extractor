@@ -12,14 +12,13 @@ dependencies = [
     "pillow",
     "opencv-python-headless",
     "cryptography",
-
+    "httpx",            # used by fastapi.testclient and as the modern HTTP client
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest",
     "pytest-asyncio",
-    "httpx",
 ]
 
 [tool.pytest.ini_options]

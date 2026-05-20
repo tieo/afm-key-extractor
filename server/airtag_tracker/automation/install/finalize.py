@@ -12,6 +12,7 @@ from __future__ import annotations
 import time
 
 from ... import qmp, vm, vm_password
+from ...config import VM_DIR
 from ...events import emit
 from ..context import AutomationContext
 from ..states import InstallState
@@ -92,10 +93,17 @@ def _configure_autologin(password: str) -> None:
     )
     # Use a Python-side base64 encode so no shell quoting is needed.
     b64 = base64.b64encode(script.encode()).decode()
-    r = vm_ui.ssh(f"echo {b64} | base64 -d | bash", timeout=30)
+    # SSH may not be ready immediately after launchctl load — retry for up to 30 s.
+    for attempt in range(1, 7):
+        r = vm_ui.ssh(f"echo {b64} | base64 -d | bash", timeout=30)
+        if r.returncode == 0:
+            break
+        emit("info", "finalize",
+             f"SSH attempt {attempt}/6 failed (rc={r.returncode}) — retrying in 5 s…")
+        time.sleep(5.0)
     if r.returncode != 0:
         raise RuntimeError(
-            f"Autologin configuration failed: {(r.stderr or r.stdout).strip()[:300]}"
+            f"Autologin configuration failed after 6 attempts: {(r.stderr or r.stdout).strip()[:300]}"
         )
     emit("info", "finalize", "Autologin configured — next boot will skip login window")
 
@@ -130,15 +138,17 @@ def _enable_ssh(password: str) -> None:
 
 
 def shutdown(ctx: AutomationContext) -> InstallState:
-    """Issue a graceful ACPI shutdown via QMP and wait for the VM to stop.
+    """Issue a graceful ACPI shutdown via QMP; force-stop on timeout.
 
-    Polls vm.is_running() every 2 s for up to 60 s.  Raises RuntimeError
-    if the VM has not stopped by then.
+    Waits up to 120 s for a clean shutdown.  If macOS hasn't stopped by
+    then (e.g. blocked by first-boot notification dialogs), falls back to
+    vm.stop() (SIGTERM) and proceeds to bake_golden regardless — the APFS
+    filesystem survives an unclean poweroff.
     """
     emit("info", "finalize", "Sending system_powerdown via QMP")
     qmp.system_powerdown()
 
-    deadline_s = 60
+    deadline_s = 120
     poll_s = 2.0
     t0 = time.time()
     while time.time() - t0 < deadline_s:
@@ -147,9 +157,12 @@ def shutdown(ctx: AutomationContext) -> InstallState:
             return InstallState.BAKING_GOLDEN
         time.sleep(poll_s)
 
-    raise RuntimeError(
-        f"VM still running {deadline_s}s after system_powerdown was issued"
-    )
+    emit("warning", "finalize",
+         f"VM still running after {deadline_s}s — forcing stop via SIGTERM")
+    vm.stop()
+    # Give QEMU a moment to write and close its image files.
+    time.sleep(5.0)
+    return InstallState.BAKING_GOLDEN
 
 
 def bake_golden(ctx: AutomationContext) -> InstallState:
@@ -159,7 +172,9 @@ def bake_golden(ctx: AutomationContext) -> InstallState:
     its own events.  We emit one additional info event here for the SSE
     log so the progress bar advances to DONE.
     """
-    emit("info", "finalize", "Baking golden image from installed disk…")
-    vm.bake_golden()
-    emit("info", "finalize", "Golden image saved — installation complete")
+    golden = ctx.adapter.golden_image_path(VM_DIR)
+    emit("info", "finalize",
+         f"Baking golden image from installed disk → {golden.name}…")
+    vm.bake_golden(golden_path=golden)
+    emit("info", "finalize", f"Golden image saved ({ctx.adapter.display_name}) — installation complete")
     return InstallState.DONE

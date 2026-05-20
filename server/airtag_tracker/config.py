@@ -25,6 +25,11 @@ VM_ENABLED = os.environ.get("AIRTAG_VM_ENABLED", "false").lower() in ("1", "true
 VM_DIR = Path(os.environ.get("AIRTAG_VM_DIR", "/var/lib/airtag-tracker/osx-kvm"))
 VNC_WS_PORT = int(os.environ.get("AIRTAG_VNC_WS_PORT", "6901"))
 VM_USERNAME = os.environ.get("AIRTAG_VM_USERNAME", "airtag")
+VM_SSH_HOST = os.environ.get("AIRTAG_VM_SSH_HOST", "localhost")
+VM_SSH_PORT = int(os.environ.get("AIRTAG_VM_SSH_PORT", "2222"))
+
+# macOS version running in the VM.  Selects the adapter (14=Sonoma, 15=Sequoia).
+MACOS_VERSION = int(os.environ.get("AIRTAG_MACOS_VERSION", "14"))
 
 QEMU_BINARY = os.environ.get("AIRTAG_QEMU_BINARY", "qemu-system-x86_64")
 

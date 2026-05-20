@@ -135,6 +135,18 @@ RUNTIME_STAGE_LABELS: dict[RuntimeState, str] = {
 
 AnyState = Union["InstallState", "RuntimeState"]
 
+
+# Per-state retry quotas.  Engine default is `DEFAULT_RETRY_BUDGET` (3); states
+# listed here override it.  Set a higher number for handlers known to need
+# multiple attempts to make progress (e.g. SA screen 8 dismisses a fresh error
+# dialog and types fields again on each retry — up to ~12 attempts worst case).
+DEFAULT_RETRY_BUDGET = 3
+
+STATE_RETRY_BUDGET: dict[AnyState, int] = {
+    InstallState.SA_CREATE_ACCOUNT: 12,  # error-dialog → Go Back → retype cycle
+}
+
+
 # States where the popup watcher should skip its cycle.
 WATCHER_SUPPRESSED_STATES: frozenset = frozenset({
     InstallState.WAITING_INSTALL,  # 30 min installer run, no GUI interaction

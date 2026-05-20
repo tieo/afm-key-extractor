@@ -43,32 +43,14 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import qmp
+from . import qmp, vm_ssh
 from .config import QMP_SOCK
 from .events import emit
 
-VM_USER = "airtag"
-VM_HOST = "localhost"
-VM_PORT = 2222
-
 
 # ---------------------------------------------------------------------------
-# SSH
+# SSH (thin compatibility shim — real impl lives in vm_ssh)
 # ---------------------------------------------------------------------------
-
-def _ssh_password() -> str:
-    from . import vm_password
-    return vm_password.get() or ""
-
-
-def _find_sshpass() -> str:
-    """Return path to sshpass binary, searching PATH then known Nix store dirs."""
-    if found := shutil.which("sshpass"):
-        return found
-    # Nix-deployed binary — hash-prefixed dirs like "abc123-sshpass-1.x".
-    for candidate in Path("/nix/store").glob("*-sshpass-*/bin/sshpass"):
-        return str(candidate)
-    return "sshpass"   # will fail with a clear FileNotFoundError
 
 
 def _find_tesseract() -> tuple[str, dict[str, str]]:
@@ -91,19 +73,9 @@ def _find_tesseract() -> tuple[str, dict[str, str]]:
 
 
 def ssh(cmd: str, timeout: int = 30) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [
-            _find_sshpass(), "-p", _ssh_password(),
-            "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=5",
-            "-p", str(VM_PORT),
-            f"{VM_USER}@{VM_HOST}",
-            cmd,
-        ],
-        capture_output=True, text=True, timeout=timeout,
-    )
+    """Run *cmd* on the macOS guest.  Thin wrapper around vm_ssh.run for callers
+    that already imported vm_ui."""
+    return vm_ssh.run(cmd, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -166,8 +138,14 @@ def _screendump(path: str | None = None) -> str:
     except FileNotFoundError:
         pass
     qmp.screendump(path)
+    # QEMU writes the PPM asynchronously; under heavy disk I/O (macOS installer)
+    # the file can take several seconds to appear.  Poll up to 10s.
+    for _ in range(9):
+        if Path(path).exists():
+            return path
+        time.sleep(1.0)
     if not Path(path).exists():
-        raise RuntimeError(f"QMP screendump produced no file at {path}")
+        raise RuntimeError(f"QMP screendump produced no file at {path} after 10s")
     return path
 
 
@@ -264,7 +242,6 @@ def ocr_words(ppm: str) -> list[tuple[str, int, int, int, int]]:
         futures = [executor.submit(_run_one, tmp, scale) for tmp, scale in tmps]
         for fut in as_completed(futures):
             words += fut.result()
-    Path(ppm).unlink(missing_ok=True)
     return words
 
 
@@ -338,14 +315,21 @@ def find_phrase(
 def screen_text(ppm: str | None = None) -> str:
     """Flattened OCR text (all variants, lowercased). For keyword checks.
 
+    If *ppm* is None a screendump is taken and deleted after use.
+    If *ppm* is provided the caller owns the file — it is not deleted here.
     Returns empty string if the screendump fails (QEMU still initialising).
     """
+    own = ppm is None
     try:
-        p = ppm or _screendump()
+        p = _screendump() if own else ppm
     except Exception:
         return ""
-    words = ocr_words(p)
-    return " ".join(w[0] for w in words).lower()
+    try:
+        words = ocr_words(p)
+        return " ".join(w[0] for w in words).lower()
+    finally:
+        if own:
+            Path(p).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -412,8 +396,11 @@ def click_right_of(anchor: str, y_tol: int = 15, settle_s: float = 1.5) -> bool:
     Returns False if *anchor* is not found or there is nothing to its right.
     """
     p = _screendump()
-    sw, sh = _screen_size(p)
-    words = ocr_words(p)
+    try:
+        sw, sh = _screen_size(p)
+        words = ocr_words(p)
+    finally:
+        Path(p).unlink(missing_ok=True)
     na = _norm(anchor)
     anchors = [w for w in words if _norm(w[0]) == na]
     if not anchors:
@@ -444,6 +431,7 @@ def click_text(
     band (needed for menu bar items like "Utilities" in macOS Recovery).
     """
     for i in range(tries):
+        p = None
         try:
             p = _screendump()
             sw, sh = _screen_size(p)
@@ -451,6 +439,9 @@ def click_text(
         except Exception:
             time.sleep(1.0)
             continue
+        finally:
+            if p is not None:
+                Path(p).unlink(missing_ok=True)
         hit = find_phrase(
             words, first, last,
             screen_h=sh,

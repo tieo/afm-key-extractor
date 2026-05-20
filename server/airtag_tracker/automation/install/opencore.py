@@ -11,10 +11,23 @@ from __future__ import annotations
 import time
 
 from ... import qmp, vm, vm_ui
+from ...config import VM_DIR
 from ...events import emit
 from ..context import AutomationContext
 from ..states import InstallState
+from ..wait import wait_until
 from .. import screen
+
+
+def _wait_qemu_up(deadline_s: float = 30.0) -> None:
+    """Block until QEMU answers QMP, or the deadline expires.
+
+    Replaces ``time.sleep(10.0)`` after ``vm.start()`` — returns as soon as
+    QMP is reachable instead of waiting a fixed worst-case duration.
+    """
+    if not wait_until(vm.is_running, deadline_s=deadline_s, poll_s=0.5):
+        emit("warning", "opencore",
+             f"QEMU did not answer QMP within {deadline_s}s after start")
 
 
 def wait_for_picker(ctx: AutomationContext) -> InstallState:
@@ -24,10 +37,13 @@ def wait_for_picker(ctx: AutomationContext) -> InstallState:
     Uses template matching as the primary signal, OCR ("EFI") as fallback.
     Deadline: 180 s after VM start.  Raises RuntimeError on timeout.
     """
-    if not vm.is_running():
-        emit("info", "opencore", "VM not running — starting in install mode")
-        vm.start_for_install()
-        time.sleep(5.0)  # give QEMU a moment to initialise before polling
+    if vm.is_running():
+        emit("info", "opencore", "VM already running — stopping before fresh install")
+        vm.stop()
+        time.sleep(3.0)  # let QEMU terminate cleanly
+    emit("info", "opencore", "Starting VM in install mode")
+    vm.start_for_install(base_system=ctx.adapter.base_system_path(VM_DIR))
+    time.sleep(5.0)  # give QEMU a moment to initialise before polling
 
     # 60 s: QEMU launch (~27s) + OVMF POST → OpenCore appears in <5s.
     # mac_hdd_ng.img is always blank at this point so OVMF has nothing to probe.
@@ -191,6 +207,15 @@ def select_installed(ctx: AutomationContext) -> InstallState:
     # First boot is always install mode (BaseSystem.img still attached).
     # After a QEMU restart we use normal mode (no BaseSystem.img).
     in_install_mode = True
+
+    # Start VM if it stopped (e.g. container was rebuilt while install ran).
+    # Use normal mode so only EFI and MacHDD appear in the picker.
+    if not vm.is_running():
+        emit("info", "opencore", "VM not running at select_installed entry — starting in normal mode")
+        vm.start()
+        in_install_mode = False
+        _wait_qemu_up()
+
     emit("info", "opencore", "Waiting for post-install boot sequence…")
     while time.time() - t0 < deadline_s:
         now = time.time()
@@ -208,7 +233,7 @@ def select_installed(ctx: AutomationContext) -> InstallState:
                  f"Post-install picker #{picker_seen} ({'install' if in_install_mode else 'normal'} mode)"
                  " — selecting macOS entry")
             select_macos_entry(ctx)
-            time.sleep(10.0)
+            time.sleep(10.0)  # settle: post-picker boot animation, no actionable signal
             continue
 
         if screen.detect_setup_assistant():
@@ -226,12 +251,9 @@ def select_installed(ctx: AutomationContext) -> InstallState:
                  f"Recovery Utilities appeared after picker #{picker_seen}"
                  f" — wrong entry selected; restarting QEMU in normal mode (restart #{qemu_restarts})")
             vm.stop()
-            for _ in range(20):
-                time.sleep(1)
-                if not vm.is_running():
-                    break
-            vm.start(automation=True)
-            time.sleep(10.0)
+            wait_until(lambda: not vm.is_running(), deadline_s=20.0, poll_s=0.5)
+            vm.start()
+            _wait_qemu_up()
             continue
 
         if screen.detect_tiano_bios() and picker_seen >= 1 \
@@ -244,13 +266,9 @@ def select_installed(ctx: AutomationContext) -> InstallState:
                  f"OVMF boot failure after picker #{picker_seen}"
                  f" — restarting QEMU (restart #{qemu_restarts})")
             vm.stop()
-            # Wait for QEMU to exit (stop() sends SIGTERM, doesn't wait).
-            for _ in range(20):
-                time.sleep(1)
-                if not vm.is_running():
-                    break
-            vm.start(automation=True)
-            time.sleep(10.0)  # let QEMU init before polling
+            wait_until(lambda: not vm.is_running(), deadline_s=20.0, poll_s=0.5)
+            vm.start()
+            _wait_qemu_up()
             continue
 
         time.sleep(poll_s)

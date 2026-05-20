@@ -20,7 +20,7 @@ from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from ... import plist_conversion, qmp, vm, vm_ui, vm_password
+from ... import plist_conversion, qmp, vm, vm_ssh
 from ...config import (
     KEYS_DIR,
     PLISTS_DIR,
@@ -29,50 +29,6 @@ from ...config import (
 from ...events import emit
 from ..context import AutomationContext
 from ..states import RuntimeState
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-VM_USER = "airtag"
-VM_HOST = "localhost"
-VM_PORT = 2222
-
-
-# ---------------------------------------------------------------------------
-# SSH / SCP helpers (mirrors key_extraction.py)
-# ---------------------------------------------------------------------------
-
-def _ssh(cmd: str, timeout: int = 60) -> sp.CompletedProcess:
-    pw = vm_password.get() or ""
-    return sp.run(
-        [
-            "sshpass", "-p", pw,
-            "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=5",
-            "-p", str(VM_PORT),
-            f"{VM_USER}@{VM_HOST}",
-            cmd,
-        ],
-        capture_output=True, text=True, timeout=timeout,
-    )
-
-
-def _scp_from(remote: str, local: Path, timeout: int = 60) -> sp.CompletedProcess:
-    pw = vm_password.get() or ""
-    return sp.run(
-        [
-            "sshpass", "-p", pw,
-            "scp", "-r",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-P", str(VM_PORT),
-            f"{VM_USER}@{VM_HOST}:{remote}", str(local),
-        ],
-        capture_output=True, text=True, timeout=timeout,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -95,77 +51,6 @@ def _decrypt(record_path: Path, key: bytes) -> dict:
 def _records(p: Path) -> list[Path]:
     """All *.record files under p, excluding macOS AppleDouble metadata (._*)."""
     return [r for r in p.rglob("*.record") if not r.name.startswith("._")]
-
-
-def _extract_beacon_key_via_terminal(pw: str) -> str:
-    """Open Terminal in the VM and retrieve the BeaconStore key via keychain.
-
-    SSH-direct 'security' calls return errSecAuthFailed (-25308) because
-    they have no UI session to present the ACL prompt — only Terminal works.
-    Once granted in this GUI session, repeat Terminal calls succeed without
-    re-prompting.
-
-    Ported directly from key_extraction._extract_beacon_key_via_terminal().
-    """
-    cmd = (
-        "clear; security find-generic-password -s BeaconStore "
-        "-a BeaconStoreKey -w > /tmp/beacon-key.hex 2>/tmp/beacon-key.err; "
-        "echo RC=$?"
-    )
-
-    # Spotlight → Terminal
-    with qmp.qmp() as c:
-        c.send_chord(["meta_l", "spc"])
-    time.sleep(1.5)
-    qmp.type_text("Terminal", gap_s=0.10)
-    time.sleep(0.6)
-    qmp.send_keys(["ret"])
-    time.sleep(6.0)  # cold launch
-
-    qmp.type_text(cmd, gap_s=0.04)
-    time.sleep(0.5)
-    qmp.send_keys(["ret"])
-
-    # Poll for SecurityAgent ACL dialog OR for the key file to be populated.
-    # If keychain access is cached for this session, no dialog appears.
-    dialog_seen = False
-    for _ in range(24):
-        time.sleep(0.5)
-        try:
-            dump_path = "/tmp/_keychain_dialog.ppm"
-            qmp.screendump(dump_path)
-            time.sleep(0.2)
-            txt = vm_ui.screen_text(dump_path).lower()
-        except Exception:
-            txt = ""
-        if "beaconstore" in txt and "always allow" in txt:
-            dialog_seen = True
-            emit("info", "extract", "Keychain ACL prompt visible — entering password")
-            break
-        # If no dialog and key file is already populated, we're done.
-        check = _ssh("test -s /tmp/beacon-key.hex && echo READY", timeout=5)
-        if "READY" in check.stdout:
-            break
-
-    if dialog_seen:
-        qmp.type_text(pw, gap_s=0.06)
-        time.sleep(0.4)
-        qmp.send_keys(["ret"])  # Default button is Allow
-        time.sleep(3.0)
-
-    # Quit Terminal so windows don't pile up across runs.
-    with qmp.qmp() as c:
-        c.send_chord(["meta_l", "q"])
-    time.sleep(0.5)
-
-    r = _ssh("cat /tmp/beacon-key.hex 2>/dev/null", timeout=10)
-    key_hex = r.stdout.strip()
-    if not key_hex:
-        err = _ssh("cat /tmp/beacon-key.err 2>/dev/null", timeout=5).stdout.strip()
-        raise RuntimeError(
-            f"Beacon key empty after Terminal extraction: {err or '(no error output)'}"
-        )
-    return key_hex
 
 
 # ---------------------------------------------------------------------------
@@ -191,9 +76,10 @@ def wait_icloud_sync(ctx: AutomationContext) -> RuntimeState:
          f"Waiting for iCloud OwnedBeacons sync (timeout {deadline_s}s)")
 
     while time.time() - t0 < deadline_s:
-        r = _ssh(
+        r = vm_ssh.run(
             "ls ~/Library/com.apple.icloud.searchpartyd/OwnedBeacons/ "
             "2>/dev/null | wc -l",
+            password=ctx.vm_password,
             timeout=15,
         )
         try:
@@ -235,11 +121,17 @@ def run(ctx: AutomationContext) -> RuntimeState:
 
     Raises RuntimeError on any unrecoverable failure.
     """
-    emit("info", "extract", "Starting AirTag key extraction")
+    emit("info", "extract", f"Starting AirTag key extraction ({ctx.adapter.display_name})")
 
-    pw = vm_password.get() or ""
+    pw = ctx.vm_password
     if not pw:
         raise RuntimeError("VM password not available — cannot extract keychain key")
+
+    def ssh(cmd: str, timeout: int = 60) -> sp.CompletedProcess:
+        return vm_ssh.run(cmd, password=pw, timeout=timeout)
+
+    def scp_from(remote: str, local: Path, timeout: int = 60) -> sp.CompletedProcess:
+        return vm_ssh.scp_from(remote, local, password=pw, timeout=timeout)
 
     # Step 1: tar OwnedBeacons (and BeaconNamingRecord) inside the VM.
     emit("info", "extract", "Archiving AirTag beacon records")
@@ -254,7 +146,7 @@ def run(ctx: AutomationContext) -> RuntimeState:
         "OwnedBeacons $(test -d BeaconNamingRecord && echo BeaconNamingRecord) && "
         "echo OK"
     )
-    r = _ssh(tar_cmd, timeout=60)
+    r = ssh(tar_cmd, timeout=60)
     if r.returncode != 0 or ("OK" not in r.stdout and "EMPTY" not in r.stdout):
         raise RuntimeError(
             f"VM tar failed (rc={r.returncode}): "
@@ -264,22 +156,22 @@ def run(ctx: AutomationContext) -> RuntimeState:
         emit("info", "extract", "No AirTags paired in VM yet — nothing to extract")
         return RuntimeState.SHUTTING_DOWN
 
-    # Step 2: fetch the BeaconStore encryption key via Terminal GUI trick.
-    emit("info", "extract", "Fetching BeaconStore key via GUI Terminal")
-    key_hex = _extract_beacon_key_via_terminal(pw)
+    # Step 2: fetch the BeaconStore encryption key via the adapter's method.
+    emit("info", "extract", f"Fetching BeaconStore key ({ctx.adapter.display_name})")
+    key_hex = ctx.adapter.extract_beacon_key(vm_password=pw)
     # Persist hex key in VM so the scp path below is uniform.
-    _ssh(f"printf '%s' {key_hex} > /tmp/beacon-key.hex", timeout=10)
+    ssh(f"printf '%s' {key_hex} > /tmp/beacon-key.hex", timeout=10)
 
     # Step 3: scp artefacts to host tempdir.
     emit("info", "extract", "Copying records and key to server")
     with tempfile.TemporaryDirectory() as td:
         local = Path(td)
 
-        r = _scp_from("/tmp/beacon-key.hex", local / "key.hex")
+        r = scp_from("/tmp/beacon-key.hex", local / "key.hex")
         if r.returncode != 0:
             raise RuntimeError(f"scp key failed: {r.stderr.strip()}")
 
-        r = _scp_from("/tmp/airtag-records.tar.gz", local / "records.tar.gz")
+        r = scp_from("/tmp/airtag-records.tar.gz", local / "records.tar.gz")
         if r.returncode != 0:
             raise RuntimeError(f"scp records failed: {r.stderr.strip()}")
 
@@ -350,10 +242,10 @@ def shutdown(ctx: AutomationContext) -> RuntimeState:
     # sudo -S reads password from stdin; pipe via base64 to avoid quoting.
     try:
         import base64 as _b64
-        _pw = vm_password.get() or ""
+        _pw = ctx.vm_password
         _script = f"echo {_pw!r} | sudo -S shutdown -h now\n"
         _b64_cmd = _b64.b64encode(_script.encode()).decode()
-        vm_ui.ssh(f"echo {_b64_cmd} | base64 -d | bash", timeout=15)
+        vm_ssh.run(f"echo {_b64_cmd} | base64 -d | bash", password=_pw, timeout=15)
     except Exception as e:
         emit("warning", "extract", f"SSH shutdown failed (will try QMP): {e}")
 

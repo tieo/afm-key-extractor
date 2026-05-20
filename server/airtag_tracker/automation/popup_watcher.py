@@ -172,7 +172,9 @@ class PopupWatcher:
             time.sleep(POLL_INTERVAL_S)
             if self._stop.is_set():
                 break
-            if ctx.state in WATCHER_SUPPRESSED_STATES:
+            # Skip if the engine entered a state that suppresses the watcher,
+            # or if a handler explicitly opened a critical section.
+            if ctx.state in WATCHER_SUPPRESSED_STATES or ctx.in_critical_section:
                 continue
             try:
                 self._check(ctx)
@@ -188,6 +190,11 @@ class PopupWatcher:
 
         for rule in POPUP_RULES:
             if all(kw.lower() in text for kw in rule.keywords):
+                # Final re-check right before any QMP write: the engine thread
+                # may have transitioned into a suppressed state or opened a
+                # critical section while OCR was running (~hundreds of ms).
+                if ctx.state in WATCHER_SUPPRESSED_STATES or ctx.in_critical_section:
+                    return
                 emit("info", "popup_watcher", f"Dismissing: {rule.name}")
                 try:
                     rule.dismiss(ctx, text)

@@ -22,8 +22,12 @@ down and mouse-up issued by the main flow thread.
 from __future__ import annotations
 
 import threading
+from typing import TYPE_CHECKING
 
 from .states import AnyState, FlowKind, InstallState, RuntimeState
+
+if TYPE_CHECKING:
+    from ..macos_adapter import MacOSAdapter
 
 
 class AutomationContext:
@@ -36,6 +40,7 @@ class AutomationContext:
         restore_golden: bool = True,
         icloud_sync_timeout_s: int = 1800,
         initial_state: AnyState | None = None,
+        macos_adapter: "MacOSAdapter | None" = None,
     ) -> None:
         self.flow_kind = flow_kind
         self.vm_password = vm_password
@@ -43,6 +48,11 @@ class AutomationContext:
         self.apple_password = apple_password
         self.restore_golden = restore_golden
         self.icloud_sync_timeout_s = icloud_sync_timeout_s
+
+        if macos_adapter is None:
+            from ..macos_adapter import get_active_adapter
+            macos_adapter = get_active_adapter()
+        self.adapter: "MacOSAdapter" = macos_adapter
 
         self._lock = threading.Lock()
         self.qmp_lock = threading.RLock()
@@ -67,6 +77,12 @@ class AutomationContext:
 
         # SSE broadcast hook — set by the engine after construction.
         self._broadcast: "callable[[dict], None] | None" = None
+
+        # Critical-section flag — when set, popup_watcher skips its cycle
+        # entirely.  Handlers use `with ctx.critical_section():` around any
+        # multi-step QMP sequence (Cmd+A, password entry, field clears) where
+        # an interleaved watcher click would corrupt the state.
+        self._critical = threading.Event()
 
     # ------------------------------------------------------------------
     # State
@@ -165,6 +181,38 @@ class AutomationContext:
                 })
             except Exception:
                 pass
+
+    # ------------------------------------------------------------------
+    # Critical section (popup watcher exclusion)
+    # ------------------------------------------------------------------
+
+    def critical_section(self):
+        """Context manager that pauses popup_watcher for the duration.
+
+        Use around any multi-step QMP sequence where an interleaved watcher
+        click would corrupt state (Cmd+A clears, password entry, etc.)::
+
+            with ctx.critical_section():
+                qmp.send_chord(["meta_l", "a"])
+                qmp.send_chord(["backspace"])
+                qmp.type_text(secret)
+        """
+        ctx = self
+
+        class _Critical:
+            def __enter__(self_):
+                ctx._critical.set()
+                return ctx
+
+            def __exit__(self_, exc_type, exc, tb):
+                ctx._critical.clear()
+                return False
+
+        return _Critical()
+
+    @property
+    def in_critical_section(self) -> bool:
+        return self._critical.is_set()
 
     def clear_2fa(self) -> None:
         with self._lock:

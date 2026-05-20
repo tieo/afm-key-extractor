@@ -1,21 +1,39 @@
 """Disk formatting via Disk Utility's Terminal in macOS Recovery.
 
-Opens the Terminal from the Utilities menu bar and runs diskutil to erase
-disk0 as a single APFS volume named "Macintosh-HD".  This is the target
-disk for the subsequent reinstall step.
+Opens the Terminal from the Utilities menu bar and runs diskutil to
+partition and format the target disk as a single APFS volume.
+
+QEMU SATA disk mapping inside macOS Recovery (install mode) is NOT stable:
+  disk0 = OpenCore.qcow2  (bootloader, ~402 MB)   OR   BaseSystem.img
+  disk1 = mac_hdd_ng.img  (80 GB blank target)    OR   OpenCore.qcow2
+  disk2 = BaseSystem.img  (3.2 GB, boot/recovery) OR   mac_hdd_ng.img
+
+The disk number assigned to mac_hdd_ng.img varies between boots.  The
+target is always identified by its size (≥50 GB) — OpenCore is ~400 MB
+and BaseSystem is ~3.2 GB, so the 85.9 GB disk is always the install
+target regardless of its disk number.
 """
 
 from __future__ import annotations
 
 import time
 
-from ... import qmp
+from ... import qmp, vm_ui
 from ...events import emit
 from ..context import AutomationContext
 from ..states import InstallState
 from .. import screen
 
-_ERASE_CMD = "diskutil eraseDisk APFS Macintosh-HD disk0"
+# The QEMU SATA bus assigns disk numbers non-deterministically across boots
+# (disk0=OpenCore/disk1=target/disk2=BaseSystem OR disk0=BaseSystem/disk1=OpenCore/disk2=target).
+# Find the target disk reliably by its size: mac_hdd_ng.img is always created
+# as "80G" qcow2 which macOS reports as 85.9 GB — the only disk ≥50 GB in
+# the QEMU set (OpenCore ~402 MB, BaseSystem ~3.2 GB).
+_ERASE_CMD = (
+    "TARGET=$(diskutil list internal physical"
+    r" | awk '/[5-9][0-9]\.[0-9].*GB/{print $NF; exit}');"
+    " diskutil eraseDisk APFS Macintosh-HD $TARGET"
+)
 
 
 def run(ctx: AutomationContext) -> InstallState:
@@ -55,13 +73,20 @@ def run(ctx: AutomationContext) -> InstallState:
 
 
 def wait_done(ctx: AutomationContext) -> InstallState:
-    """Poll OCR until diskutil reports that the erase is complete.
+    """Poll OCR until diskutil partitionDisk reports success.
 
-    Watches for either "Finished erase" or "erase on disk0" in the Terminal
-    output.  Deadline: 90 s, poll every 3 s.
+    Watches for "finished partitioning" (partitionDisk completion) or
+    "finished erase" (eraseDisk completion — kept as fallback).
+    Does NOT match "Macintosh-HD" which appears in the typed command text
+    and would cause an immediate false-positive.
+    Deadline: 120 s, poll every 3 s.
     On success, quits Terminal with cmd+q and advances the flow.
     """
-    deadline_s = 90
+    # Wait past the command line so OCR doesn't pick up keywords from the
+    # typed command text itself (e.g. "Macintosh-HD" in the command).
+    time.sleep(5.0)
+
+    deadline_s = 120
     poll_s = 3.0
     progress_interval_s = 20
     t0 = time.time()
@@ -74,11 +99,19 @@ def wait_done(ctx: AutomationContext) -> InstallState:
             emit("info", "format_disk",
                  f"Still waiting for disk erase… ({elapsed:.0f}s)")
             last_progress = now
-        if screen.has_any_text("Finished erase", "erase on disk0"):
-            emit("info", "format_disk", "Disk erase complete — quitting Terminal")
+        text = vm_ui.screen_text()
+        if now - last_progress >= progress_interval_s:
+            emit("info", "format_disk",
+                 f"Still waiting for disk erase… ({elapsed:.0f}s) — screen: {text[:120]!r}")
+            last_progress = now
+        if any(kw in text for kw in ("finished partitioning", "finished erase")):
+            emit("info", "format_disk", "Disk erase complete")
+            ctx.adapter.pre_reboot_recovery_setup(ctx)
+            emit("info", "format_disk", "Quitting Terminal")
             qmp.send_chord(["meta_l", "q"])
             return InstallState.REINSTALL_CLICKING
         time.sleep(poll_s)
+    screen_text = vm_ui.screen_text()
     raise RuntimeError(
-        f"diskutil erase did not complete within {deadline_s}s"
+        f"diskutil erase did not complete within {deadline_s}s — screen: {screen_text[:200]!r}"
     )

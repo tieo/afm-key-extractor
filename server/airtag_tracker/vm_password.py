@@ -25,7 +25,7 @@ def ensure() -> str:
     existing = get()
     if existing:
         return existing
-    pw = secrets.token_urlsafe(18)
+    pw = secrets.token_hex(6)   # 12-char hex [0-9a-f]: no Shift needed; 32-char fails verify
     VM_PASSWORD_PATH.parent.mkdir(parents=True, exist_ok=True)
     VM_PASSWORD_PATH.write_text(pw)
     VM_PASSWORD_PATH.chmod(0o600)

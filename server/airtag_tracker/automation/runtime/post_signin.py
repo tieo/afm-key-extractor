@@ -17,20 +17,11 @@ from ...events import emit
 from ..context import AutomationContext
 from ..states import RuntimeState
 from .. import screen
+from ._apple_id import APPLE_ID_LANDED_KEYWORDS, APPLE_ID_URLS, open_apple_id_pane
 
 # ---------------------------------------------------------------------------
-# Constants (mirrors vm_apple_signin.py)
+# Constants specific to this module
 # ---------------------------------------------------------------------------
-
-APPLE_ID_URLS = (
-    ("com.apple.systempreferences.AppleIDSettings", None),
-    ("com.apple.preferences.AppleIDPrefPane", None),
-)
-
-APPLE_ID_LANDED_KEYWORDS = (
-    "one account for everything", "apple id", "sign in",
-    "icloud", "family sharing", "media & purchases", "sign out",
-)
 
 POST_SIGNIN_DISMISSIBLE = (
     # Passcode / "Enter your Mac password" sheet.
@@ -67,19 +58,8 @@ def _is_find_my_mac_on() -> bool:
         return False
 
 
-def _open_apple_id_pane() -> None:
-    """Try each URL scheme in order until the Apple ID pane renders."""
-    last = ""
-    for bundle, anchor in APPLE_ID_URLS:
-        try:
-            vm_ui.open_settings_pane(bundle, anchor, settle_s=6.0)
-        except Exception as e:
-            last = str(e)
-            continue
-        if vm_ui.wait_for_text(APPLE_ID_LANDED_KEYWORDS, deadline_s=20):
-            return
-        last = f"{bundle} opened but Apple ID pane never rendered"
-    raise RuntimeError(f"could not open Apple ID pane: {last[:200]}")
+# Backwards-compat alias — older lines call _open_apple_id_pane().
+_open_apple_id_pane = open_apple_id_pane
 
 
 def _is_apple_id_update_pending() -> bool:

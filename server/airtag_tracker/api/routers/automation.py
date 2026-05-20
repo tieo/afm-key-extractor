@@ -18,12 +18,11 @@ from ...automation.states import (
     RuntimeState,
 )
 from ...config import VM_DIR
+from ...macos_adapter import get_active_adapter
 from ...vm_password import ensure as ensure_vm_password
 from .. import sse
 
 router = APIRouter(prefix="/api/automation", tags=["automation"])
-
-_GOLDEN_HDD = VM_DIR / "mac_hdd_golden.img"
 
 
 def _label_for(flow: str | None, state_val: str) -> str:
@@ -87,10 +86,14 @@ class RuntimeStartBody(BaseModel):
 def start_runtime(body: RuntimeStartBody) -> dict:
     if engine._engine.is_running:
         raise HTTPException(status_code=409, detail="An automation flow is already running")
-    if body.restore_golden and not _GOLDEN_HDD.exists():
+    adapter = get_active_adapter()
+    if body.restore_golden and not adapter.golden_image_path(VM_DIR).exists():
         raise HTTPException(
             status_code=400,
-            detail="No golden image found. Run the install flow first.",
+            detail=(
+                f"No golden image found for {adapter.display_name}. "
+                "Run the install flow first."
+            ),
         )
     vm_password = ensure_vm_password()
     ctx = AutomationContext(

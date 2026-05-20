@@ -18,9 +18,10 @@ catches both and logs the message.
 Retry
 -----
 Transient failures are expected (screendump times out, OCR misses,
-network hiccup).  The engine retries each state up to MAX_RETRIES times
-before giving up.  Handlers signal "not done yet, retry me" by returning
-the *same* state they were called with.
+network hiccup).  The engine retries each state up to its retry budget
+(`STATE_RETRY_BUDGET[state]`, defaulting to `DEFAULT_RETRY_BUDGET`) before
+giving up.  Handlers signal "not done yet, retry me" by returning the
+*same* state they were called with.
 
 Abort
 -----
@@ -37,10 +38,21 @@ from typing import Callable
 from ..events import emit
 from . import popup_watcher
 from .context import AutomationContext
-from .states import AnyState, FlowKind, InstallState, RuntimeState
+from .states import (
+    DEFAULT_RETRY_BUDGET,
+    STATE_RETRY_BUDGET,
+    AnyState,
+    FlowKind,
+    InstallState,
+    RuntimeState,
+)
 
-MAX_RETRIES = 3
 RETRY_DELAY_S = 3.0
+
+
+def _retry_budget(state: AnyState) -> int:
+    """Per-state retry quota (defaults to DEFAULT_RETRY_BUDGET)."""
+    return STATE_RETRY_BUDGET.get(state, DEFAULT_RETRY_BUDGET)
 
 # States that are terminal — engine exits when reached.
 _INSTALL_TERMINAL = {InstallState.DONE, InstallState.ERROR}
@@ -200,8 +212,9 @@ class StateMachine:
 
             if next_state == state:
                 retries += 1
-                if retries >= MAX_RETRIES:
-                    msg = f"State {state.value} did not advance after {MAX_RETRIES} retries"
+                budget = _retry_budget(state)
+                if retries >= budget:
+                    msg = f"State {state.value} did not advance after {budget} retries"
                     emit("error", "engine", msg)
                     error_state = (
                         InstallState.ERROR
@@ -211,7 +224,7 @@ class StateMachine:
                     ctx.set_state(error_state, error=msg)
                     break
                 emit("warning", "engine",
-                     f"State {state.value} retry {retries}/{MAX_RETRIES}")
+                     f"State {state.value} retry {retries}/{budget}")
                 time.sleep(RETRY_DELAY_S)
             else:
                 retries = 0

@@ -9,10 +9,10 @@ services:
     volumes:
       - ${AIRTAG_DATA_DIR:-airtag-data}:/data
       - ./server/static:/app/server/static:ro
+      - /tmp:/tmp     # QMP/monitor sockets survive container restarts
     environment:
       AIRTAG_VM_ENABLED: "1"
       AIRTAG_DATA_DIR: /data
       AIRTAG_VM_DIR: /data/osx-kvm
-    tmpfs:
-      - /tmp          # QMP sockets, QEMU snapshots, screendump PPMs
+      AIRTAG_MACOS_VERSION: "14"
     restart: unless-stopped

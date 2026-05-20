@@ -33,27 +33,27 @@ def restore_golden(ctx: AutomationContext) -> RuntimeState:
         emit("info", "boot", "restore_golden=False — skipping image copy")
         return RuntimeState.BOOTING
 
-    if not vm.GOLDEN_HDD.exists():
+    golden = ctx.adapter.golden_image_path(vm.VM_DIR)
+    if not golden.exists():
         raise RuntimeError(
-            f"Golden HDD image not found at {vm.GOLDEN_HDD}. "
+            f"Golden image not found at {golden}. "
             "Run the installation flow first."
         )
 
-    emit("info", "boot", f"Restoring golden image: {vm.GOLDEN_HDD} → {vm.MAC_HDD}")
-    shutil.copy2(vm.GOLDEN_HDD, vm.MAC_HDD)
+    emit("info", "boot", f"Restoring golden image: {golden.name} → {vm.MAC_HDD.name}")
+    shutil.copy2(golden, vm.MAC_HDD)
     emit("info", "boot", "Golden image restored")
     return RuntimeState.BOOTING
 
 
 def start_vm(ctx: AutomationContext) -> RuntimeState:
-    """Start the QEMU VM in automation mode (no autotyper, no blind boot picks).
+    """Bring the QEMU VM up.
 
-    Passes automation=True to vm.start() so the login autotyper and the
-    blind OpenCore key-mash are suppressed — the state machine handles
-    both via OCR-based detection.
+    OpenCore picker and login are handled by the state machine via OCR —
+    `vm.start()` just launches QEMU.
     """
-    emit("info", "boot", "Starting VM (automation mode)")
-    vm.start(automation=True)
+    emit("info", "boot", "Starting VM")
+    vm.start()
     emit("info", "boot", "VM started — waiting for OpenCore picker")
     return RuntimeState.PICKER_SELECTING
 

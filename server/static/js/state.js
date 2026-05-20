@@ -58,6 +58,43 @@ export const RUNTIME_STAGES = [
   "done",
 ];
 
+// SA stages collapsed to one display entry in the install stage bar.
+const _SA_STAGES = [
+  "sa_country", "sa_languages", "sa_accessibility", "sa_data_privacy",
+  "sa_migration", "sa_apple_id", "sa_terms", "sa_create_account",
+  "sa_apple_id_2", "sa_terms_2", "sa_location", "sa_timezone",
+  "sa_analytics", "sa_screen_time", "sa_appearance",
+];
+
+const _INSTALL_BAR = [
+  "idle", "booting_picker", "picker_selecting", "waiting_recovery",
+  "format_disk", "waiting_format_done", "reinstall_clicking",
+  "waiting_install", "booting_installed",
+  "__sa__",
+  "dismiss_first_boot", "shutting_down", "baking_golden", "done",
+];
+
+function _renderInstallBar(state) {
+  const realIdx = INSTALL_STAGES.indexOf(state);
+  const saEnd = INSTALL_STAGES.indexOf("sa_appearance");
+  const saSubIdx = _SA_STAGES.indexOf(state);
+
+  return _INSTALL_BAR.map((s) => {
+    if (s === "__sa__") {
+      let cls = "stage";
+      let lbl = "Setup Assistant";
+      if (realIdx > saEnd) cls += " stage--done";
+      else if (saSubIdx !== -1) { cls += " stage--active"; lbl += ` (${saSubIdx + 1}/15)`; }
+      return `<span class="${cls}">${lbl}</span>`;
+    }
+    const idx = INSTALL_STAGES.indexOf(s);
+    let cls = "stage";
+    if (realIdx > idx) cls += " stage--done";
+    else if (realIdx === idx) cls += " stage--active";
+    return `<span class="${cls}">${INSTALL_LABELS[s] ?? s}</span>`;
+  }).join("");
+}
+
 // Human-readable labels for each stage (mirrors INSTALL/RUNTIME_STAGE_LABELS in states.py).
 const INSTALL_LABELS = {
   idle: "Idle",
@@ -179,12 +216,14 @@ export function updateUI(status) {
 
   if (flow && stages.length > 0) {
     stageSection.style.display = "";
-    stageBar.innerHTML = stages.map((s, i) => {
-      let cls = "stage";
-      if (i < activeIdx) cls += " stage--done";
-      else if (i === activeIdx) cls += " stage--active";
-      return `<span class="${cls}">${labelFor(flow, s)}</span>`;
-    }).join("");
+    stageBar.innerHTML = flow === "install"
+      ? _renderInstallBar(state)
+      : stages.map((s, i) => {
+          let cls = "stage";
+          if (i < activeIdx) cls += " stage--done";
+          else if (i === activeIdx) cls += " stage--active";
+          return `<span class="${cls}">${labelFor(flow, s)}</span>`;
+        }).join("");
     stageLabelEl.textContent = label || labelFor(flow, state);
   } else {
     stageSection.style.display = "none";

@@ -134,6 +134,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "findmy" },
+    { name = "httpx" },
     { name = "opencv-python-headless" },
     { name = "pillow" },
     { name = "pytesseract" },
@@ -143,7 +144,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
 ]
@@ -153,7 +153,7 @@ requires-dist = [
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "findmy" },
-    { name = "httpx", marker = "extra == 'dev'" },
+    { name = "httpx" },
     { name = "opencv-python-headless" },
     { name = "pillow" },
     { name = "pytesseract" },
