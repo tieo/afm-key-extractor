@@ -92,7 +92,16 @@ def base_args() -> list[str]:
         "-device", "ich9-intel-hda",
         "-device", "hda-duplex",
         "-device", "ich9-ahci,id=sata",
-        "-drive", f"id=OpenCoreBoot,if=none,snapshot=on,format=qcow2,file={OPENCORE_QCOW}",
+        # OpenCore must NOT have snapshot=on: savevm writes its per-disk
+        # delta into the device's qcow2, and snapshot=on routes those
+        # writes to a temp overlay that's discarded when QEMU exits — so
+        # any saved snapshot becomes "non-loadable on MacHDD's peer
+        # device" on the next QEMU launch.  Dropping snapshot=on means
+        # OpenCore's NVRAM emulation writes (macOS sets EFI vars during
+        # configure phase) now persist; the existing OVMF-failure
+        # recovery in install/opencore.py handles any resulting boot
+        # issues via a qemu_restarts loop.
+        "-drive", f"id=OpenCoreBoot,if=none,format=qcow2,file={OPENCORE_QCOW}",
         "-device", "ide-hd,bus=sata.2,drive=OpenCoreBoot",
         "-drive", f"id=MacHDD,if=none,file={MAC_HDD},format=qcow2",
         "-device", "ide-hd,bus=sata.4,drive=MacHDD",

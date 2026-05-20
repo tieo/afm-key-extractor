@@ -241,13 +241,21 @@ def screen_create_account(ctx: AutomationContext) -> InstallState:
             clear=True, label="Hint (clearing)",
         )
 
+        # clear=False — Cmd+A on an EMPTY text field puts macOS into a
+        # "pending-replacement" state.  Subsequent typing is provisional;
+        # when focus shifts (we click Account Name next) macOS reverts the
+        # last char(s) of the previously-focused field.  Empirical: with
+        # Cmd+A first, Full Name "airtag" → "airt" (last 2 chars dropped).
+        # Without Cmd+A, Full Name keeps all 6.  Go Back already clears
+        # Full Name / Account Name across retries — only Hint persists —
+        # so we never need Cmd+A on these two.
         _sa_fields.fill_field(
             _FULLNAME_FIELD_X, _FULLNAME_FIELD_Y, "airtag",
-            label="Full Name",
+            clear=False, label="Full Name",
         )
         _sa_fields.fill_field(
             _ACCOUNT_NAME_FIELD_X, _ACCOUNT_NAME_FIELD_Y, "airtag",
-            label="Account Name",
+            clear=False, label="Account Name",
         )
 
         # Password compound (left half + tab + verify half) — see primitive

@@ -162,9 +162,8 @@ def test_verify_advanced_or_classify_error(screen_text, expected):
         result = _sa_fields.verify_advanced_or_classify_error(
             settle_s=0.0, deadline_s=0.05, poll_s=0.01,
         )
-    if expected is None and screen_text == "computer account":
-        # Stuck on screen with no error keyword → classifier falls through to
-        # "missing_field" on timeout (handler then re-runs to recover).
-        assert result == "missing_field"
-    else:
-        assert result == expected
+    # On timeout (still on SA-8 screen), classifier returns None so engine
+    # advances optimistically — account creation often spins for 30-60s with
+    # the title still visible, and a false missing_field retry would re-enter
+    # SA-8 just as macOS moves to the next screen.
+    assert result == expected

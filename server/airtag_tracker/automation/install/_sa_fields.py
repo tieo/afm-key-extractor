@@ -187,7 +187,7 @@ def dismiss_error_modal_if_present() -> bool:
 def verify_advanced_or_classify_error(
     *,
     settle_s: float = 5.0,
-    deadline_s: float = 25.0,
+    deadline_s: float = 90.0,
     poll_s: float = 2.0,
 ) -> str | None:
     """After Continue, wait for the screen to advance or return a known error.
@@ -199,6 +199,16 @@ def verify_advanced_or_classify_error(
     - ``"missing_field"`` — at least one required field was left empty.
 
     Caller maps these to the appropriate retry signal.
+
+    Deadline is 90 s because account creation shows a "Creating account..."
+    spinner state where the SA-8 title text "computer account" is still on
+    screen for 30-60 s after Continue while macOS finalises the local user.
+    Treating that as "still on SA-8" would otherwise trigger a false-
+    positive missing_field retry — empirically the account IS created
+    successfully but the next screen (Location Services etc.) hasn't
+    rendered yet.  On timeout we now return None (assume advanced) so the
+    engine moves forward; subsequent SA handlers detect what they actually
+    see.
     """
     time.sleep(settle_s)
     t0 = time.monotonic()
@@ -213,5 +223,7 @@ def verify_advanced_or_classify_error(
         if "computer account" not in screen_txt and "mac account" not in screen_txt:
             return None  # advanced past the create-account screen
         time.sleep(poll_s)
-    # Timed out without advancing — treat as missing_field so the engine retries.
-    return "missing_field"
+    # Timed out without seeing the screen change — most likely the account
+    # creation spinner is just taking longer than expected.  Assume success;
+    # the next handler will detect what's actually on screen.
+    return None
