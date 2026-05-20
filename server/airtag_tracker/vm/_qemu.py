@@ -100,12 +100,18 @@ def runtime_args() -> list[str]:
 
 
 def install_args(base_system: Path) -> list[str]:
-    """Install mode: base_system image attached as sata.3 (recovery installer)."""
+    """Install mode: base_system image attached as sata.3 (recovery installer).
+
+    InstallMedia is attached ``readonly=on`` so QEMU's internal snapshot
+    machinery (``savevm``/``loadvm``) skips it — the recovery image never
+    needs to be written.  Without readonly, savevm fails because a raw-
+    format read-write disk has no place to store its snapshot data.
+    """
     args = base_args()
     oc_dev_idx = args.index("ide-hd,bus=sata.2,drive=OpenCoreBoot")
     insert_at = oc_dev_idx + 1
     args[insert_at:insert_at] = [
-        "-drive", f"id=InstallMedia,if=none,file={base_system},format=raw",
+        "-drive", f"id=InstallMedia,if=none,file={base_system},format=raw,readonly=on",
         "-device", "ide-hd,bus=sata.3,drive=InstallMedia",
     ]
     return args

@@ -35,6 +35,8 @@ import threading
 import time
 from typing import Callable
 
+import os
+
 from ..events import emit
 from . import popup_watcher
 from .context import AutomationContext
@@ -53,6 +55,29 @@ RETRY_DELAY_S = 3.0
 def _retry_budget(state: AnyState) -> int:
     """Per-state retry quota (defaults to DEFAULT_RETRY_BUDGET)."""
     return STATE_RETRY_BUDGET.get(state, DEFAULT_RETRY_BUDGET)
+
+
+def _auto_snapshot_states() -> set[str]:
+    """Parse ``AIRTAG_AUTO_SNAPSHOT_STATES`` (comma-separated state values).
+
+    When a state listed here is *entered*, the engine snapshots the VM under
+    that state's name.  Use to checkpoint right before flaky handlers (e.g.
+    ``sa_create_account``) so a retry restores instead of replaying the
+    install from scratch.
+    """
+    raw = os.environ.get("AIRTAG_AUTO_SNAPSHOT_STATES", "").strip()
+    if not raw:
+        return set()
+    return {s.strip() for s in raw.split(",") if s.strip()}
+
+
+def _try_auto_snapshot(state_value: str) -> None:
+    """Best-effort auto-checkpoint — never aborts the flow on failure."""
+    from .. import vm
+    try:
+        vm.snapshot.save(state_value)
+    except Exception as e:
+        emit("warning", "engine", f"Auto-snapshot at {state_value} failed: {e}")
 
 # States that are terminal — engine exits when reached.
 _INSTALL_TERMINAL = {InstallState.DONE, InstallState.ERROR}
@@ -177,6 +202,9 @@ class StateMachine:
         if ctx.flow_kind == FlowKind.RUNTIME:
             popup_watcher.start(ctx)
 
+        snapshot_states = _auto_snapshot_states()
+        snapshotted: set[str] = set()
+
         retries = 0
         while True:
             state = ctx.state
@@ -185,6 +213,13 @@ class StateMachine:
             if ctx.aborted:
                 emit("info", "engine", "Abort requested — stopping engine")
                 break
+
+            # Optional auto-snapshot: once per state per run, take a snapshot
+            # at the entry to debug-flagged states so retries can restore
+            # rather than replay the whole install.
+            if state.value in snapshot_states and state.value not in snapshotted:
+                _try_auto_snapshot(state.value)
+                snapshotted.add(state.value)
 
             emit("info", "engine", f"→ {state.value}")
             try:

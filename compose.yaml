@@ -9,6 +9,10 @@ services:
     volumes:
       - ${AIRTAG_DATA_DIR:-airtag-data}:/data
       - ./server/static:/app/server/static:ro
+      # Bind the Python package so code edits are picked up by a container
+      # restart (no image rebuild needed).  Read-only so the container can't
+      # corrupt the host tree.
+      - ./server/airtag_tracker:/app/server/airtag_tracker:ro
       - /tmp:/tmp     # QMP/monitor sockets survive container restarts
     environment:
       AIRTAG_VM_ENABLED: "1"

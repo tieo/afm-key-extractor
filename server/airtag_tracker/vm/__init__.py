@@ -17,6 +17,7 @@ itself.
 from __future__ import annotations
 
 # Public exports — keep these stable across the split.
+from . import _snapshot as snapshot
 from ._golden import bake_golden, reset_to_golden
 from ._lifecycle import (
     VmError,
@@ -39,6 +40,7 @@ __all__ = [
     "bake_golden",
     "is_running",
     "reset_to_golden",
+    "snapshot",
     "start",
     "start_for_install",
     "status",

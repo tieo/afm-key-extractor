@@ -144,11 +144,65 @@ def system_reset() -> None:
 
 def screendump(output_path: str, monitor_path: str = MONITOR_SOCK) -> None:
     """Ask the HMP monitor to dump the framebuffer to `output_path` (PPM)."""
+    hmp(f"screendump {output_path}", monitor_path=monitor_path, settle_s=1.0)
+
+
+def hmp(
+    command: str,
+    *,
+    monitor_path: str = MONITOR_SOCK,
+    settle_s: float = 0.0,
+    read_timeout_s: float = 30.0,
+) -> str:
+    """Send a human-monitor-protocol command and return the raw response text.
+
+    HMP is what QEMU's interactive monitor speaks (`savevm`, `loadvm`,
+    `info snapshots`, `screendump`, etc.).  Output format is not stable,
+    so callers parse with care.
+
+    *settle_s* is a post-write sleep for commands where the response is
+    fire-and-forget (screendump, etc.).  Long-running commands like
+    ``savevm`` should leave settle_s=0 and rely on the socket read to
+    block until QEMU is ready for the next prompt.
+    """
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(5.0)
+    s.settimeout(read_timeout_s)
     s.connect(monitor_path)
     try:
-        s.sendall(f"screendump {output_path}\n".encode())
-        time.sleep(1.0)
+        # Drain the QEMU greeting + prompt before sending the command,
+        # otherwise it interleaves with our response.
+        _drain_until_prompt(s)
+        s.sendall((command + "\n").encode())
+        if settle_s > 0:
+            time.sleep(settle_s)
+            return ""
+        # Read until the next prompt — that's how we know the command finished.
+        return _read_until_prompt(s)
     finally:
         s.close()
+
+
+def _drain_until_prompt(s: socket.socket, max_bytes: int = 65536) -> bytes:
+    """Read whatever QEMU has buffered up to and including the `(qemu) ` prompt."""
+    return _read_until_prompt(s, max_bytes=max_bytes)
+
+
+def _read_until_prompt(s: socket.socket, max_bytes: int = 1 << 20) -> str:
+    """Read text from *s* until we see the `(qemu) ` prompt or *max_bytes*."""
+    buf = b""
+    while len(buf) < max_bytes:
+        try:
+            chunk = s.recv(4096)
+        except socket.timeout:
+            break
+        if not chunk:
+            break
+        buf += chunk
+        # QEMU prints "(qemu) " after each command finishes.
+        if buf.endswith(b"(qemu) ") or buf.rstrip().endswith(b"(qemu)"):
+            break
+    text = buf.decode(errors="replace")
+    # Strip the trailing prompt from the visible output.
+    if text.endswith("(qemu) "):
+        text = text[: -len("(qemu) ")]
+    return text.rstrip("\r\n")

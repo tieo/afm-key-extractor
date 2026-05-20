@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from ..config import DATA_DIR, KEYS_DIR, STATIC_DIR
 from ..events import emit, set_broadcast_hook
 from . import sse
-from .routers import automation, events, keys, twofa
+from .routers import automation, debug, events, keys, twofa
 
 
 @asynccontextmanager
@@ -66,6 +66,7 @@ def create_app() -> FastAPI:
     app.include_router(twofa)
     app.include_router(keys)
     app.include_router(events)
+    app.include_router(debug)
 
     # Static files (CSS, JS, …).
     if STATIC_DIR.exists():
