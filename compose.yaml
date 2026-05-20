@@ -19,4 +19,8 @@ services:
       AIRTAG_DATA_DIR: /data
       AIRTAG_VM_DIR: /data/osx-kvm
       AIRTAG_MACOS_VERSION: "14"
+      # Engine takes a snapshot on first entry to each listed state, so
+      # subsequent SA-8 iteration can restore via /api/debug/restore in
+      # seconds instead of replaying ~45 min of install.
+      AIRTAG_AUTO_SNAPSHOT_STATES: "sa_create_account"
     restart: unless-stopped

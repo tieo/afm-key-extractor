@@ -134,14 +134,14 @@ def _parse_info_snapshots(text: str) -> list[dict]:
             continue
         if not started:
             continue
+        # Skip the header separator line if present (e.g. all dashes).
+        if set(line) <= set("- "):
+            continue
         parts = line.split()
         if len(parts) < 2:
             continue
-        # ID and TAG are always first two columns; the rest is variable.
-        try:
-            int(parts[0])
-        except ValueError:
-            continue  # not a data row
+        # First column is ID (numeric or "--" when the qcow2 has no internal
+        # ID assigned).  Second column is TAG — the human-friendly name.
         rows.append({
             "id": parts[0],
             "tag": parts[1],

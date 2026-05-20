@@ -24,8 +24,14 @@ OVMF_CODE = VM_DIR / "OVMF_CODE_4M.fd"
 OVMF_VARS = VM_DIR / "OVMF_VARS-1920x1080.fd"
 OPENCORE_QCOW = VM_DIR / "OpenCore" / "OpenCore.qcow2"
 
+# NOTE: +invtsc is intentionally NOT set even though OSX-KVM's reference config
+# includes it.  invtsc makes the CPU device non-migratable, which causes QEMU's
+# `savevm` to fail with "State blocked by non-migratable CPU device (invtsc flag)"
+# — even for same-host snapshots.  Disabling invtsc trades a small amount of
+# guest TSC accuracy for the snapshot/replay harness becoming usable.  macOS
+# Sonoma still boots fine without it.
 _CPU = (
-    "Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,+invtsc,"
+    "Skylake-Client,-hle,-rtm,kvm=on,vendor=GenuineIntel,"
     "vmware-cpuid-freq=on,+ssse3,+sse4.2,+popcnt,+avx,+aes,+xsave,+xsaveopt,check"
 )
 _OSK = "ourhardworkbythesewordsguardedpleasedontsteal(c)AppleComputerInc"
@@ -74,7 +80,11 @@ def base_args() -> list[str]:
         "-smp", "4,cores=2",
         "-device", f"isa-applesmc,osk={_OSK}",
         "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE}",
-        "-drive", f"if=pflash,format=raw,file={OVMF_VARS}",
+        # OVMF_VARS gets snapshot=on so it's snapshottable (savevm/loadvm).
+        # The OpenCore disk below already uses snapshot=on, so NVRAM changes
+        # were already non-persistent — this just makes the pflash device
+        # snapshot-compatible without changing the persistence story.
+        "-drive", f"if=pflash,format=raw,snapshot=on,file={OVMF_VARS}",
         "-smbios", "type=2",
         "-device", "ich9-intel-hda",
         "-device", "hda-duplex",

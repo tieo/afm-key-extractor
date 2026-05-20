@@ -154,37 +154,37 @@ def hmp(
     settle_s: float = 0.0,
     read_timeout_s: float = 30.0,
 ) -> str:
-    """Send a human-monitor-protocol command and return the raw response text.
+    """Send a human-monitor-protocol command and return the response text.
 
     HMP is what QEMU's interactive monitor speaks (`savevm`, `loadvm`,
-    `info snapshots`, `screendump`, etc.).  Output format is not stable,
-    so callers parse with care.
+    `info snapshots`, `screendump`, etc.).
 
-    *settle_s* is a post-write sleep for commands where the response is
-    fire-and-forget (screendump, etc.).  Long-running commands like
-    ``savevm`` should leave settle_s=0 and rely on the socket read to
-    block until QEMU is ready for the next prompt.
+    QEMU's monitor is in cooked-terminal mode and echoes every byte we
+    send back with ANSI line-redraw escapes (\\x1b[K, \\x1b[D).  Long
+    commands echo as 100+ characters of redraw garbage before the real
+    output appears.  This function strips the echo + ANSI codes and
+    returns just the command's actual stdout/stderr response.
+
+    *settle_s* is a post-write sleep for fire-and-forget commands
+    (screendump).  Other callers leave it 0 and rely on prompt detection.
     """
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(read_timeout_s)
     s.connect(monitor_path)
     try:
-        # Drain the QEMU greeting + prompt before sending the command,
-        # otherwise it interleaves with our response.
         _drain_until_prompt(s)
         s.sendall((command + "\n").encode())
         if settle_s > 0:
             time.sleep(settle_s)
             return ""
-        # Read until the next prompt — that's how we know the command finished.
-        return _read_until_prompt(s)
+        raw = _read_until_prompt(s)
     finally:
         s.close()
+    return _extract_hmp_response(raw, command)
 
 
 def _drain_until_prompt(s: socket.socket, max_bytes: int = 65536) -> bytes:
-    """Read whatever QEMU has buffered up to and including the `(qemu) ` prompt."""
-    return _read_until_prompt(s, max_bytes=max_bytes)
+    return _read_until_prompt(s, max_bytes=max_bytes).encode("utf-8", errors="replace")
 
 
 def _read_until_prompt(s: socket.socket, max_bytes: int = 1 << 20) -> str:
@@ -198,11 +198,31 @@ def _read_until_prompt(s: socket.socket, max_bytes: int = 1 << 20) -> str:
         if not chunk:
             break
         buf += chunk
-        # QEMU prints "(qemu) " after each command finishes.
         if buf.endswith(b"(qemu) ") or buf.rstrip().endswith(b"(qemu)"):
             break
     text = buf.decode(errors="replace")
-    # Strip the trailing prompt from the visible output.
     if text.endswith("(qemu) "):
         text = text[: -len("(qemu) ")]
     return text.rstrip("\r\n")
+
+
+_ANSI_RE = __import__("re").compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _extract_hmp_response(raw: str, command: str) -> str:
+    """Strip ANSI escape sequences and the echoed command from a monitor read.
+
+    QEMU echoes each char of our command with cursor-left + line-erase
+    redraws.  After the full command is echoed, it emits \\r\\n and then
+    the command's actual response (if any) followed by another \\r\\n
+    before the next prompt.
+
+    Strategy: drop ANSI codes, then take everything AFTER the echoed
+    command's terminating newline.
+    """
+    clean = _ANSI_RE.sub("", raw)
+    # Find the echoed command — it appears verbatim once ANSI codes are gone.
+    idx = clean.find(command)
+    if idx >= 0:
+        clean = clean[idx + len(command):]
+    return clean.lstrip("\r\n").rstrip("\r\n")
