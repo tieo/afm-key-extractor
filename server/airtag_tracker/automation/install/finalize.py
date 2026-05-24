@@ -33,6 +33,12 @@ def dismiss_first_boot(ctx: AutomationContext) -> InstallState:
     """
     password = vm_password.ensure()
 
+    # If we arrive here from the lock screen (e.g. resumed after QEMU restart
+    # mid-SA), log in so Spotlight and SSH are accessible.
+    if screen.detect_login_screen():
+        emit("info", "finalize", "Lock screen detected — logging in before finalising")
+        _login_at_lock_screen(password)
+
     # Dismiss Keyboard Setup Assistant if present.
     emit("info", "finalize", "Waiting for Keyboard Setup Assistant modal…")
     if screen.has_text("Keyboard", "Setup", deadline_s=30, poll_s=2.0):
@@ -50,6 +56,22 @@ def dismiss_first_boot(ctx: AutomationContext) -> InstallState:
     _configure_autologin(password)
 
     return InstallState.SHUTTING_DOWN
+
+
+def _login_at_lock_screen(password: str) -> None:
+    """Click the lock-screen password field, type the password, wait for desktop."""
+    from ... import vm_ui
+    # Click on the password input — centered horizontally, roughly 60% down.
+    vm_ui.click_pixel(640, 590, 1280, 800)
+    time.sleep(0.5)
+    qmp.type_text(password)
+    time.sleep(0.3)
+    qmp.send_keys(["ret"])
+    # Wait for Finder to confirm we reached the desktop (up to 60 s).
+    if not screen.has_text("Finder", deadline_s=60, poll_s=3.0):
+        raise RuntimeError("Desktop (Finder) not reached within 60s after lock-screen login")
+    emit("info", "finalize", "Logged in — desktop reached")
+    time.sleep(2.0)  # let the desktop settle before Spotlight commands
 
 
 def _configure_autologin(password: str) -> None:

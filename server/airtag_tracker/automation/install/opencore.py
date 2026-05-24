@@ -240,6 +240,14 @@ def select_installed(ctx: AutomationContext) -> InstallState:
             emit("info", "opencore", "Setup Assistant detected — advancing flow")
             return InstallState.SA_COUNTRY
 
+        # SA completed before this handler ran (e.g. resumed after QEMU was
+        # killed mid-SA and rebooted to the login screen).  Skip SA and go
+        # straight to the finalize stage.
+        if screen.detect_login_screen() or screen.detect_desktop():
+            emit("info", "opencore",
+                 "Login screen/desktop detected — SA already complete, skipping to finalize")
+            return InstallState.DISMISS_FIRST_BOOT
+
         if screen.detect_recovery_utilities() \
                 and qemu_restarts < MAX_QEMU_RESTARTS:
             # Booted to Recovery instead of macOS — picker navigation landed on

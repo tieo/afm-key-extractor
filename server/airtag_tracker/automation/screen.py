@@ -263,10 +263,21 @@ def detect_tiano_bios() -> bool:
 
 
 def detect_login_screen() -> bool:
-    """True if the macOS login window is visible."""
+    """True if the macOS login window or lock screen is visible.
+
+    Covers two cases:
+    - Login window: power buttons (shut down / restart / sleep) + account name
+    - Lock screen: "your password is required" + account name (no power buttons)
+    """
     text = vm_ui.screen_text()
+    if "airtag" not in text:
+        return False
+    # Lock screen (e.g. after QEMU restart when user was logged out)
+    if "your password is required" in text:
+        return True
+    # Standard login window with power buttons at bottom
     hits = sum(1 for kw in ("shut down", "restart", "sleep") if kw in text)
-    return hits >= 2 and "airtag" in text
+    return hits >= 2
 
 
 def detect_desktop() -> bool:
