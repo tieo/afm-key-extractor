@@ -364,18 +364,15 @@ def screen_appearance(ctx: AutomationContext) -> InstallState:
         # Continue is temporarily disabled (grayed) while macOS processes the new
         # account in the background (spinner visible at bottom-left).  Retry until
         # the screen advances.
-        advanced = False
+        # Use has_text with a short deadline (not single-shot has_any_text) so a
+        # transient OCR miss doesn't falsely conclude the screen has advanced.
         for _attempt in range(12):
             _press_continue()
-            if not screen.has_any_text("choose your look"):
-                advanced = True
+            if not screen.has_text("choose your look", deadline_s=4, poll_s=1.0):
                 break
             emit("info", "setup_assistant",
                  f"Screen 15: Continue still grayed (attempt {_attempt + 1}) — waiting…")
-            time.sleep(3.0)
-        if not advanced:
-            emit("warning", "setup_assistant",
-                 "Screen 15: Appearance did not advance after 12 attempts")
+            time.sleep(2.0)
 
     # macOS Sequoia: Update Mac Automatically screen.
     if screen.has_text("Update", "Automatically", deadline_s=10, poll_s=2.0):
@@ -387,9 +384,20 @@ def screen_appearance(ctx: AutomationContext) -> InstallState:
         emit("info", "setup_assistant", "Welcome splash — clicking Continue")
         _click_blue_pill("Continue", 640, 722)
 
+    # Wait for Finder/desktop.  Periodically re-press Continue if the Appearance
+    # screen is still visible (handles the case where the advancement check above
+    # got a false-negative and exited the loop too early).
     emit("info", "setup_assistant", "Waiting for desktop (Finder)…")
-    if not screen.has_text("Finder", deadline_s=300, poll_s=3.0):
-        raise RuntimeError("Desktop (Finder) not detected within 300s after Setup Assistant")
-
-    emit("info", "setup_assistant", "Setup Assistant complete — desktop reached")
-    return InstallState.DISMISS_FIRST_BOOT
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        if screen.has_any_text("choose your look"):
+            emit("info", "setup_assistant",
+                 "Appearance screen still visible in Finder wait — re-pressing Continue")
+            _press_continue()
+            time.sleep(2.0)
+            continue
+        if screen.has_any_text("Finder"):
+            emit("info", "setup_assistant", "Setup Assistant complete — desktop reached")
+            return InstallState.DISMISS_FIRST_BOOT
+        time.sleep(3.0)
+    raise RuntimeError("Desktop (Finder) not detected within 300s after Setup Assistant")
