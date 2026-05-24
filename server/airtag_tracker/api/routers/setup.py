@@ -5,6 +5,7 @@ Prefix: /api/setup
 
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 import threading
@@ -21,7 +22,7 @@ router = APIRouter(prefix="/api/setup", tags=["setup"])
 # Helpers
 # ---------------------------------------------------------------------------
 
-_ASSETS_DIR = Path("/app/assets")
+_ASSETS_DIR = Path(os.environ.get("AIRTAG_ASSETS_DIR", "/app/assets"))
 
 
 def _adapter():

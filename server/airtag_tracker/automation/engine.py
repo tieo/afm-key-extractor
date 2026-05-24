@@ -71,13 +71,20 @@ def _auto_snapshot_states() -> set[str]:
     return {s.strip() for s in raw.split(",") if s.strip()}
 
 
-def _try_auto_snapshot(state_value: str) -> None:
+def _try_auto_snapshot(state_value: str, flow_kind: "FlowKind") -> None:
     """Best-effort auto-checkpoint — never aborts the flow on failure."""
     from .. import vm
     try:
         vm.snapshot.save(state_value)
     except Exception as e:
-        emit("warning", "engine", f"Auto-snapshot at {state_value} failed: {e}")
+        msg = str(e)
+        # During install, InstallMedia is a raw disk that can't store snapshot
+        # data — this is expected and not actionable. Log at info, not warning.
+        if flow_kind == FlowKind.INSTALL and "does not support snapshots" in msg:
+            emit("info", "engine",
+                 f"Auto-snapshot skipped at {state_value} (InstallMedia is raw — expected during install)")
+        else:
+            emit("warning", "engine", f"Auto-snapshot at {state_value} failed: {e}")
 
 
 def _safe_capture(state_value: str, error: str) -> None:
@@ -226,7 +233,7 @@ class StateMachine:
             # at the entry to debug-flagged states so retries can restore
             # rather than replay the whole install.
             if state.value in snapshot_states and state.value not in snapshotted:
-                _try_auto_snapshot(state.value)
+                _try_auto_snapshot(state.value, ctx.flow_kind)
                 snapshotted.add(state.value)
 
             emit("info", "engine", f"→ {state.value}")

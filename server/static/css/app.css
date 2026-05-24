@@ -346,3 +346,32 @@ body {
 .log-entry.error .log-msg { color: #e74c3c; }
 .log-entry.warning .log-msg { color: #f39c12; }
 .log-entry.info .log-msg { color: #bbb; }
+
+/* ============ Setup wizard ============ */
+.setup-progress {
+  margin-top: 6px;
+  font-size: 0.82em;
+  color: #888;
+  word-break: break-word;
+}
+
+.setup-progress-bar {
+  height: 4px;
+  background: #222;
+  border-radius: 2px;
+  margin-bottom: 6px;
+  overflow: hidden;
+}
+
+.setup-progress-fill {
+  height: 100%;
+  background: #0af;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.setup-notice {
+  font-size: 0.82em;
+  color: #f39c12;
+  margin-top: 4px;
+}

@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..config import DATA_DIR, KEYS_DIR, STATIC_DIR
+from ..config import DATA_DIR, KEYS_DIR, STATIC_DIR, VM_ENABLED
 from ..events import emit, set_broadcast_hook
 from . import sse
 from .routers import automation, debug, events, keys, setup, twofa
@@ -32,6 +32,20 @@ async def _lifespan(app: FastAPI):
     except Exception:
         pass
     KEYS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Kill any QEMU process left over from a previous server instance.
+    # QEMU runs with -daemonize so it survives container restarts; without
+    # this the automation engine would start a fresh install against a VM
+    # that's already mid-install from a prior (now dead) server process.
+    if VM_ENABLED:
+        from .. import vm as _vm
+        if _vm.is_running():
+            emit("warning", "system",
+                 "Orphaned QEMU process found on startup — stopping it")
+            try:
+                _vm.stop()
+            except Exception as _e:
+                emit("warning", "system", f"Failed to stop orphaned QEMU: {_e}")
 
     emit("info", "system", "AirTag Key Extractor API started")
     yield

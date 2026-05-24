@@ -2,6 +2,7 @@
 
 import { initSSE, updateUI, fetchInitialStatus } from "./state.js";
 import { wireButtons, setVncPort, ensureVncLoaded, setSmsPhone } from "./vm-panel.js";
+import { checkSetupStatus, wireSetupButtons } from "./setup-wizard.js";
 import { get } from "./api.js";
 
 // Maximum number of log entries to show in the UI.
@@ -67,6 +68,10 @@ function onSseEvent(event) {
     if (vncSection && vncSection.style.display !== "none") {
       ensureVncLoaded();
     }
+    // After install finishes, refresh setup status to reveal the runtime card.
+    if (event.state === "done" || event.state === "idle") {
+      checkSetupStatus();
+    }
   } else if (event.type === "log") {
     appendLogEntry(event);
   } else if (event.type === "sms_phone") {
@@ -93,6 +98,10 @@ async function refreshStatus() {
 
 document.addEventListener("DOMContentLoaded", async () => {
   wireButtons();
+  wireSetupButtons();
+
+  // Check setup status first — hides install/runtime cards if BaseSystem missing.
+  await checkSetupStatus();
 
   // Load initial automation status.
   const initial = await fetchInitialStatus();

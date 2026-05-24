@@ -41,10 +41,22 @@
 
     <!-- Action cards -->
     <section class="actions-section" id="actions-section">
+      <!-- First-time setup: download macOS (hidden once BaseSystem is present) -->
+      <div class="action-card" id="card-setup" style="display:none">
+        <h3>First-Time Setup</h3>
+        <p>Download the macOS Sonoma recovery image from Apple (~3 GB, one-time). Stored on this server — not downloaded on every run.</p>
+        <button id="btn-download-macos" class="btn btn-primary">Download macOS</button>
+        <div id="download-progress" class="setup-progress" style="display:none">
+          <div class="setup-progress-bar"><div class="setup-progress-fill" id="download-progress-fill" style="width:0%"></div></div>
+          <span id="download-progress-text"></span>
+        </div>
+        <div id="download-error" class="setup-notice" style="display:none"></div>
+      </div>
+
       <!-- Install flow -->
       <div class="action-card" id="card-install">
         <h3>Install macOS</h3>
-        <p>Run the one-time macOS installation to create the golden VM image. Takes 20-45 minutes.</p>
+        <p>Run the one-time macOS installation to create the golden VM image. Takes 20–45 minutes.</p>
         <button id="btn-start-install" class="btn btn-primary">Start Install</button>
       </div>
 
