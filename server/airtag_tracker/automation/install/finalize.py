@@ -59,19 +59,31 @@ def dismiss_first_boot(ctx: AutomationContext) -> InstallState:
 
 
 def _login_at_lock_screen(password: str) -> None:
-    """Click the lock-screen password field, type the password, wait for desktop."""
+    """Click the lock-screen password field, type the password, wait for desktop.
+
+    Tries multiple strategies because macOS Sonoma's loginwindow can be picky
+    about which input events it honours depending on how QEMU was started.
+    """
     from ... import vm_ui
-    # Click on the password input — centered horizontally, roughly 60% down.
-    vm_ui.click_pixel(640, 590, 1280, 800)
-    time.sleep(0.5)
-    qmp.type_text(password)
-    time.sleep(0.3)
-    qmp.send_keys(["ret"])
-    # Wait for Finder to confirm we reached the desktop (up to 60 s).
-    if not screen.has_text("Finder", deadline_s=60, poll_s=3.0):
-        raise RuntimeError("Desktop (Finder) not reached within 60s after lock-screen login")
-    emit("info", "finalize", "Logged in — desktop reached")
-    time.sleep(2.0)  # let the desktop settle before Spotlight commands
+
+    for attempt in range(3):
+        # Pixel analysis of 1280×800 Sonoma lock screen shows the password
+        # input box at y≈625-645; user icon at y≈547.  Try both focal points.
+        y_targets = [632, 547, 590]
+        y = y_targets[attempt % len(y_targets)]
+        vm_ui.click_pixel(640, y, 1280, 800)
+        time.sleep(0.8)
+        qmp.type_text(password)
+        time.sleep(0.3)
+        qmp.send_keys(["ret"])
+        if screen.has_text("Finder", deadline_s=25, poll_s=3.0):
+            emit("info", "finalize", "Logged in — desktop reached")
+            time.sleep(2.0)
+            return
+        emit("info", "finalize",
+             f"Lock-screen login attempt {attempt + 1}/3 did not reach desktop — retrying")
+
+    raise RuntimeError("Desktop (Finder) not reached within 3 lock-screen login attempts")
 
 
 def _configure_autologin(password: str) -> None:
