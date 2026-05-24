@@ -90,18 +90,30 @@ def screen_languages(ctx: AutomationContext) -> InstallState:
 
 
 def screen_accessibility(ctx: AutomationContext) -> InstallState:
-    """Screen 3: Accessibility."""
-    if screen.has_any_text("accessibility"):
-        emit("info", "setup_assistant", "Screen 3: Accessibility")
-        _press_continue()
+    """Screen 3: Accessibility.
+
+    Uses a deadline wait (not single-shot) because the previous screen's
+    Continue pixel-fallback can take >2 s to animate — a single-shot check
+    runs before the screen renders, returns False, and the engine silently
+    skips screen 3 onward, leaving SA stuck on Accessibility.
+    """
+    if not screen.has_text("accessibility", deadline_s=10, poll_s=2.0):
+        return InstallState.SA_DATA_PRIVACY
+    emit("info", "setup_assistant", "Screen 3: Accessibility")
+    # Button is "Not Now" (no "Continue" label) — try OCR then pixel fallback.
+    if not vm_ui.click_text("Not", "Now", include_menubar=True, tries=3):
+        emit("info", "setup_assistant", "Continue not found by OCR — using pixel fallback")
+        vm_ui.click_pixel(_CONTINUE_X, _CONTINUE_Y, _SCREEN_W, _SCREEN_H)
+    time.sleep(2.0)
     return InstallState.SA_DATA_PRIVACY
 
 
 def screen_data_privacy(ctx: AutomationContext) -> InstallState:
     """Screen 4: Data & Privacy."""
-    if screen.has_any_text("data & privacy", "data and privacy"):
-        emit("info", "setup_assistant", "Screen 4: Data & Privacy")
-        _press_continue()
+    if not screen.has_text("privacy", deadline_s=8, poll_s=2.0):
+        return InstallState.SA_MIGRATION
+    emit("info", "setup_assistant", "Screen 4: Data & Privacy")
+    _press_continue()
     return InstallState.SA_MIGRATION
 
 
@@ -111,8 +123,7 @@ def screen_migration(ctx: AutomationContext) -> InstallState:
     A case-sensitive-filesystem alert may appear automatically when macOS
     detects an incompatible source disk.  Dismiss it before clicking Not Now.
     """
-    if not screen.has_any_text("migration assistant", "transfer your information",
-                               "transfer information"):
+    if not screen.has_text("migration", deadline_s=8, poll_s=2.0):
         return InstallState.SA_APPLE_ID
 
     emit("info", "setup_assistant", "Screen 5: Migration Assistant")
@@ -161,7 +172,7 @@ def _dismiss_apple_id_skip_dialog() -> None:
 
 def screen_apple_id(ctx: AutomationContext) -> InstallState:
     """Screen 6: Apple ID sign-in — skip."""
-    if not screen.has_any_text("sign in with your apple id", "apple id"):
+    if not screen.has_text("apple id", deadline_s=8, poll_s=2.0):
         return InstallState.SA_TERMS
 
     emit("info", "setup_assistant", "Screen 6: Apple ID")
@@ -196,7 +207,7 @@ def _dismiss_terms_agree_popup() -> None:
 
 def screen_terms(ctx: AutomationContext) -> InstallState:
     """Screen 7: Terms and Conditions."""
-    if not screen.has_any_text("terms and conditions"):
+    if not screen.has_text("terms and conditions", deadline_s=8, poll_s=2.0):
         return InstallState.SA_CREATE_ACCOUNT
 
     emit("info", "setup_assistant", "Screen 7: Terms and Conditions")
