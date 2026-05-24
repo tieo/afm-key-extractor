@@ -65,12 +65,16 @@ def select_installer(ctx: AutomationContext) -> InstallState:
     """Navigate the picker to the macOS installer entry and confirm.
 
     The macOS Installer (BaseSystem) entry is immediately to the right of
-    the default EFI entry.  Send right + ret under qmp_lock to prevent
-    the popup watcher from injecting a keypress mid-sequence.
+    the default EFI entry.  Send right, wait for the selection to register,
+    then send ret.  Batching both keys caused a race where ret fired before
+    the picker finished processing right, leaving EFI selected and Recovery
+    never loading.
     """
     emit("info", "opencore", "Selecting installer entry (right + ret)")
     with ctx.qmp_lock:
-        qmp.send_keys(["right", "ret"])
+        qmp.send_keys(["right"])
+        time.sleep(0.5)
+        qmp.send_keys(["ret"])
     return InstallState.WAITING_RECOVERY
 
 
