@@ -109,10 +109,11 @@ def click_through(ctx: AutomationContext) -> InstallState:
         _press_return_with_log("Step 2")
 
     # Step 3 — Continue on the Install macOS splash (loads slowly).
-    # The splash body text contains the word "continue" (e.g. "click Continue"),
-    # so any OCR search for "Continue" hits the body text instead of the button
-    # and clicks the wrong place.  The Continue button IS the default action,
-    # so pressing Return after the splash appears is both correct and reliable.
+    # The splash body text contains "click Continue", so OCR for "Continue"
+    # hits the body text instead of the button.  Return is the default action
+    # but requires the window to have keyboard focus.  Strategy: press Return,
+    # then if EULA hasn't appeared within 10 s, pixel-click the Continue
+    # button directly (center of screen, y≈370 in the 1280×800 layout).
     emit("info", "reinstall", "Step 3: waiting for installer splash…")
     if screen.has_text("install macos", deadline_s=60):
         emit("info", "reinstall", "Step 3: installer splash detected — pressing Return")
@@ -120,6 +121,11 @@ def click_through(ctx: AutomationContext) -> InstallState:
         emit("warning", "reinstall",
              "Step 3: splash not detected in 60s — pressing Return anyway")
     _press_return_with_log("Step 3")
+    if not screen.has_text("Disagree", deadline_s=10):
+        emit("info", "reinstall",
+             "Step 3: Return may not have registered — clicking Continue (pixel fallback)")
+        vm_ui.click_pixel(640, 370, 1280, 800)
+        time.sleep(1.5)
 
     # Step 4 — Agree to the licence. "Agree" is NOT the default button.
     # The licence text must be scrolled to the bottom first — macOS disables
@@ -128,7 +134,7 @@ def click_through(ctx: AutomationContext) -> InstallState:
     # showing the licence, which can take 60-120 s in QEMU.
     # The "Agree" button OCRs unreliably ("Ag&e", "Agge") due to font size.
     # "Disagree" always OCRs correctly; click the button to its right instead.
-    if not screen.has_text("Disagree", deadline_s=180):
+    if not screen.has_text("Disagree", deadline_s=170):
         raise RuntimeError("Could not find EULA screen (no 'Disagree' button)")
     # Scroll the EULA text view to the bottom using the mouse scroll wheel.
     # Keyboard Page Down requires focus on the text view, which is unreliable
