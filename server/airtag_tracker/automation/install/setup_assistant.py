@@ -346,18 +346,25 @@ def screen_screen_time(ctx: AutomationContext) -> InstallState:
 
 def screen_appearance(ctx: AutomationContext) -> InstallState:
     """Screen 15: Appearance + optional extra screens, then wait for desktop."""
-    if screen.has_any_text("choose your look"):
+    # Use a short deadline so a transient OCR miss (screen animating in) doesn't
+    # cause us to skip the Continue click and get stuck on this screen forever.
+    if screen.has_text("choose your look", deadline_s=8, poll_s=2.0):
         emit("info", "setup_assistant", "Screen 15: Appearance")
         # Continue is temporarily disabled (grayed) while macOS processes the new
         # account in the background (spinner visible at bottom-left).  Retry until
         # the screen advances.
+        advanced = False
         for _attempt in range(12):
             _press_continue()
             if not screen.has_any_text("choose your look"):
+                advanced = True
                 break
             emit("info", "setup_assistant",
                  f"Screen 15: Continue still grayed (attempt {_attempt + 1}) — waiting…")
             time.sleep(3.0)
+        if not advanced:
+            emit("warning", "setup_assistant",
+                 "Screen 15: Appearance did not advance after 12 attempts")
 
     # macOS Sequoia: Update Mac Automatically screen.
     if screen.has_text("Update", "Automatically", deadline_s=10, poll_s=2.0):

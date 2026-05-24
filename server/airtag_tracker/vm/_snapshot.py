@@ -5,9 +5,11 @@ Wraps the QEMU monitor's ``savevm`` / ``loadvm`` / ``info snapshots`` /
 and replay handlers without re-running 90 minutes of install.
 
 Constraint: internal snapshots store data inside qcow2 disks.  All
-*writable* attached disks must therefore be qcow2.  ``InstallMedia``
-(raw BaseSystem image) is attached read-only in install mode so QEMU
-skips it for snapshots; ``MacHDD`` and ``OpenCoreBoot`` are both qcow2.
+*writable* attached disks must therefore be qcow2.  ``MacHDD`` and
+``OpenCoreBoot`` are qcow2; ``InstallMedia`` (raw BaseSystem image) is
+writeable raw so QEMU cannot store snapshot data in it — savevm during
+install fails with "Device 'InstallMedia' is writable but does not
+support snapshots".  failure_capture handles this gracefully (best-effort).
 
 Snapshots persist across the *current* QEMU process only when written
 to MacHDD's qcow2 file.  Container restart preserves them; ``vm.stop``
