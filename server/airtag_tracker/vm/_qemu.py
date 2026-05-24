@@ -19,8 +19,11 @@ from ..config import (
     VM_PID_FILE,
 )
 
+_BUNDLED_ASSETS = Path("/app/assets")
+
 MAC_HDD = VM_DIR / "mac_hdd_ng.img"
-OVMF_CODE = VM_DIR / "OVMF_CODE_4M.fd"
+OVMF_CODE_DEFAULT = VM_DIR / "OVMF_CODE_4M.fd"
+OVMF_CODE = OVMF_CODE_DEFAULT if OVMF_CODE_DEFAULT.exists() else _BUNDLED_ASSETS / "OVMF_CODE_4M.fd"
 # OVMF_VARS is qcow2 (not raw) so QEMU's `savevm` writes its snapshot
 # state into the same file and that state survives QEMU process restart.
 # A raw pflash with `snapshot=on` is snapshottable for the duration of

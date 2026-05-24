@@ -3,3 +3,8 @@ result
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Large generated VM disk images (in data dir, not repo)
+*.img
+# Keep assets/OpenCore.qcow2 and assets/OVMF* tracked
+!assets/

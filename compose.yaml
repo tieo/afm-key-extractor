@@ -7,7 +7,7 @@ services:
       - "8042:8042"
       - "6901:6901"   # noVNC
     volumes:
-      - ${AIRTAG_DATA_DIR:-airtag-data}:/data
+      - airtag-data:/data
       - ./server/static:/app/server/static:ro
       # Bind the Python package so code edits are picked up by a container
       # restart (no image rebuild needed).  Read-only so the container can't
@@ -18,9 +18,13 @@ services:
       AIRTAG_VM_ENABLED: "1"
       AIRTAG_DATA_DIR: /data
       AIRTAG_VM_DIR: /data/osx-kvm
+      AIRTAG_ASSETS_DIR: /app/assets
       AIRTAG_MACOS_VERSION: "14"
       # Engine takes a snapshot on first entry to each listed state, so
       # subsequent SA-8 iteration can restore via /api/debug/restore in
       # seconds instead of replaying ~45 min of install.
       AIRTAG_AUTO_SNAPSHOT_STATES: "sa_create_account"
     restart: unless-stopped
+
+volumes:
+  airtag-data:
