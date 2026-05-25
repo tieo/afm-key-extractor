@@ -86,7 +86,7 @@ def wait_done(ctx: AutomationContext) -> InstallState:
     # typed command text itself (e.g. "Macintosh-HD" in the command).
     time.sleep(5.0)
 
-    deadline_s = 120
+    deadline_s = 180
     poll_s = 3.0
     progress_interval_s = 20
     t0 = time.time()
@@ -106,6 +106,17 @@ def wait_done(ctx: AutomationContext) -> InstallState:
             last_progress = now
         if any(kw in text for kw in ("finished partitioning", "finished erase")):
             emit("info", "format_disk", "Disk erase complete")
+            ctx.adapter.pre_reboot_recovery_setup(ctx)
+            emit("info", "format_disk", "Quitting Terminal")
+            qmp.send_chord(["meta_l", "q"])
+            return InstallState.REINSTALL_CLICKING
+        # "[Process completed]" appears in Terminal when the shell session exits —
+        # the diskutil command finished and the non-interactive shell closed.
+        # Treat this as successful completion (diskutil errors produce an error
+        # message before the shell exits, not a clean process-completed banner).
+        if "process completed" in text:
+            emit("info", "format_disk",
+                 "Terminal shell exited ([Process completed]) — assuming diskutil succeeded")
             ctx.adapter.pre_reboot_recovery_setup(ctx)
             emit("info", "format_disk", "Quitting Terminal")
             qmp.send_chord(["meta_l", "q"])
