@@ -263,9 +263,11 @@ def wait_complete(ctx: AutomationContext) -> InstallState:
 
     deadline_s = 14400
     poll_s = 30.0
+    heartbeat_interval_s = 300  # emit a heartbeat every 5 min even if nothing changes
     t0 = time.time()
     last_remaining: str | None = None
     last_bar_pct: int | None = None
+    last_heartbeat_min: int = -1
     screendump_fails = 0
 
     emit("info", "reinstall", "Waiting for macOS installation to complete (up to 4 h)…")
@@ -317,6 +319,14 @@ def wait_complete(ctx: AutomationContext) -> InstallState:
         elif last_bar_pct is not None:
             emit("warning", "reinstall", "Progress bar: no longer detectable")
             last_bar_pct = None  # only warn once per transition, not every poll
+
+        # Heartbeat every 5 min so the log never goes completely silent.
+        heartbeat_due = int(elapsed // heartbeat_interval_s)
+        if heartbeat_due > last_heartbeat_min:
+            last_heartbeat_min = heartbeat_due
+            bar_str = f"~{last_bar_pct}%" if last_bar_pct is not None else "undetectable"
+            emit("info", "reinstall",
+                 f"Still installing… ({minutes} min elapsed, bar={bar_str})")
 
         # OpenCore picker markers — base system / REL- version string.
         if "base system" in text or "rel-" in text:

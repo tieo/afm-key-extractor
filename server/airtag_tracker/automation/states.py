@@ -84,7 +84,7 @@ INSTALL_STAGE_LABELS: dict[InstallState, str] = {
     InstallState.FORMAT_DISK: "Formatting disk",
     InstallState.WAITING_FORMAT_DONE: "Formatting disk",
     InstallState.REINSTALL_CLICKING: "Starting installer",
-    InstallState.WAITING_INSTALL: "Installing macOS (20–45 min)",
+    InstallState.WAITING_INSTALL: "Installing macOS (~60–90 min)",
     InstallState.BOOTING_INSTALLED: "Rebooting",
     InstallState.SA_COUNTRY: "Setup Assistant (1/15)",
     InstallState.SA_LANGUAGES: "Setup Assistant (2/15)",
