@@ -10,7 +10,9 @@ All logic is adapted from vm_apple_signin.py.
 
 from __future__ import annotations
 
+import base64
 import time
+from pathlib import Path
 
 from ... import qmp, vm_ui
 from ...events import emit
@@ -58,14 +60,147 @@ def _is_find_my_mac_on() -> bool:
         return False
 
 
+def _check_ls_enabled(ctx: AutomationContext) -> bool:
+    """Return True if the Location Services master switch is on in the VM.
+
+    SIP protects the locationd pref file, so we read it via sudo -S.
+    """
+    pw = ctx.vm_password
+    script = f"echo {pw!r} | sudo -S defaults read /var/db/locationd/Library/Preferences/ByHost/com.apple.locationd LocationServicesEnabled 2>/dev/null"
+    b64 = base64.b64encode(script.encode()).decode()
+    r = vm_ui.ssh(f"echo {b64} | base64 -d | bash", timeout=15)
+    out = r.stdout.replace("Password:", "").strip()
+    return out == "1"
+
+
+def _enable_location_services(ctx: AutomationContext) -> None:
+    """Enable the Location Services master toggle via System Settings GUI.
+
+    SIP blocks direct writes to locationd prefs even as root, so this
+    navigates to Privacy & Security → Location Services, clicks the master
+    toggle, and authenticates the change with the VM password.
+
+    In Sonoma 14, clicking the toggle triggers "Privacy & Security is trying to
+    modify your system settings. Enter your password to allow this." — this
+    function handles that authentication step automatically.
+
+    The toggle widget sits at x≈940 in the 1280×800 golden-image layout; its y
+    is found via OCR so minor window placement drift is tolerated.
+    """
+    if _check_ls_enabled(ctx):
+        emit("info", "post_signin", "Location Services already enabled")
+        return
+
+    emit("info", "post_signin", "Location Services is OFF — enabling via System Settings GUI")
+
+    LS_URLS = (
+        ("com.apple.settings.PrivacySecurity.extension", "Privacy_LocationServices"),
+        ("com.apple.preference.security", "Privacy_LocationServices"),
+    )
+    for bundle, anchor in LS_URLS:
+        try:
+            vm_ui.open_settings_pane(bundle, anchor, settle_s=4.0)
+        except Exception:
+            continue
+        if vm_ui.wait_for_text(("location services",), deadline_s=10):
+            break
+    else:
+        emit("warning", "post_signin", "Could not open Location Services pane — trying anyway")
+
+    # Find the master toggle row (y > 100 to skip the nav-bar "Location Services"
+    # text at y≈83).  The toggle SWITCH is to the right of the label text;
+    # in the 1280×800 golden image it is at x≈940.
+    p = vm_ui._screendump()
+    try:
+        words = vm_ui.ocr_words(p)
+    finally:
+        Path(p).unlink(missing_ok=True)
+
+    toggle_row_y = 134  # pixel fallback for the 1280×800 Sonoma layout
+    for t, x, y, w, h in words:
+        if t.lower() == "location" and y > 100:
+            toggle_row_y = y + h // 2
+            break
+
+    vm_ui.click_pixel(940, toggle_row_y, 1280, 800)
+    time.sleep(1.5)
+
+    # macOS requires password authentication to modify Location Services.
+    text = vm_ui.screen_text()
+    if "modify settings" in text or "enter your password" in text:
+        emit("info", "post_signin",
+             "Location Services auth dialog — entering VM password")
+        vm_ui.paste_text(ctx.vm_password)
+        time.sleep(0.5)
+        with ctx.qmp_lock:
+            qmp.send_keys(["ret"])
+        time.sleep(2.0)
+
+    if _check_ls_enabled(ctx):
+        emit("info", "post_signin", "Location Services enabled")
+    else:
+        emit("warning", "post_signin",
+             "Location Services still appears off — OwnedBeacons sync may not work")
+
+
 # Backwards-compat alias — older lines call _open_apple_id_pane().
 _open_apple_id_pane = open_apple_id_pane
+
+
+def _handle_icloud_password_prompt(ctx: AutomationContext) -> bool:
+    """Detect and dismiss the 'Sign in to iCloud' password sheet.
+
+    macOS sometimes shows this modal after iCloud sign-in completes —
+    typically when navigating back into the Apple ID pane.  It asks for
+    the Apple ID password and has OK / Cancel buttons.
+
+    Returns True if the prompt was found and handled, False otherwise.
+    """
+    text = vm_ui.screen_text()
+    if "sign in to icloud" not in text and "enter the password for your apple id" not in text:
+        return False
+
+    emit("info", "post_signin", "iCloud password prompt detected — entering password")
+    if ctx.apple_password:
+        vm_ui.paste_text(ctx.apple_password)
+        time.sleep(0.4)
+    # Click OK (or press Return which defaults to the affirmative button).
+    if not vm_ui.click_text("OK", tries=2):
+        with ctx.qmp_lock:
+            qmp.send_keys(["ret"])
+    time.sleep(2.0)
+    return True
+
+
+def _handle_cant_connect_dialog(ctx: AutomationContext) -> bool:
+    """Detect and dismiss the 'can't connect to iCloud' notification dialog.
+
+    macOS shows this alert when iCloud can't reach Apple servers during
+    the sign-in flow.  It covers System Settings and prevents navigation.
+    The primary button ('Apple ID Settings...') just navigates back to the
+    Apple ID pane we're already in, so we click 'Later' to dismiss cleanly.
+
+    Returns True if the dialog was found and dismissed.
+    """
+    text = vm_ui.screen_text()
+    if "connect to icloud" not in text and "problem with" not in text:
+        return False
+
+    emit("info", "post_signin", "'Can't connect to iCloud' dialog detected — dismissing")
+    if not vm_ui.click_text("Later", tries=2):
+        with ctx.qmp_lock:
+            qmp.send_keys(["esc"])
+    time.sleep(1.5)
+    return True
 
 
 def _is_apple_id_update_pending() -> bool:
     """Look for the red-badge 'Update Apple ID Settings' row in sidebar."""
     p = vm_ui._screendump()
-    words = vm_ui.ocr_words(p)
+    try:
+        words = vm_ui.ocr_words(p)
+    finally:
+        Path(p).unlink(missing_ok=True)
     # Single-line phrase match: the row reads "Update Apple ID Settings".
     # OCR usually splits it; accept any co-located occurrence of
     # "Update" and "Settings" on a sidebar row.
@@ -104,6 +239,15 @@ def dismiss_prompts(ctx: AutomationContext) -> RuntimeState:
                  f"Still dismissing post-signin dialogs… ({elapsed:.0f}s)")
             last_progress = now
         text = vm_ui.screen_text()
+
+        # The "Sign in to iCloud" password sheet must be handled by entering
+        # the password and clicking OK — clicking Cancel would abort iCloud
+        # activation and leave the Apple ID pane stuck on the sign-in form.
+        if "sign in to icloud" in text or "enter the password for your apple id" in text:
+            _handle_icloud_password_prompt(ctx)
+            clean_rounds = 0
+            continue
+
         matched = [kw for kw in POST_SIGNIN_DISMISSIBLE if kw in text]
         if not matched:
             clean_rounds += 1
@@ -121,8 +265,7 @@ def dismiss_prompts(ctx: AutomationContext) -> RuntimeState:
                 break
         if not clicked:
             with ctx.qmp_lock:
-                with qmp.qmp() as c:
-                    c.send_keys(["esc"])
+                qmp.send_keys(["esc"])
             time.sleep(1.0)
         time.sleep(1.5)
 
@@ -166,8 +309,7 @@ def resolve_update(ctx: AutomationContext) -> RuntimeState:
     time.sleep(2.0)
     # Accept any onboarding/Continue dialog that overlaps the button.
     with ctx.qmp_lock:
-        with qmp.qmp() as c:
-            c.send_keys(["ret"])
+        qmp.send_keys(["ret"])
     time.sleep(2.0)
 
     # Paste password if prompted.
@@ -175,8 +317,7 @@ def resolve_update(ctx: AutomationContext) -> RuntimeState:
         vm_ui.paste_text(password)
         time.sleep(0.4)
         with ctx.qmp_lock:
-            with qmp.qmp() as c:
-                c.send_keys(["ret"])
+            qmp.send_keys(["ret"])
         emit("info", "post_signin", "Apple ID update: password submitted")
     else:
         emit("info", "post_signin",
@@ -218,35 +359,56 @@ def enable_find_my(ctx: AutomationContext) -> RuntimeState:
     """
     deadline_s = 60
 
+    # Location Services must be on for Find My Mac to work AND for
+    # searchpartyuseragent to sync OwnedBeacons.  Enable it first so that
+    # clicking "Turn On" for Find My Mac shows the location-permission dialog
+    # (not a "Location Services is off" alert that our Return press can't resolve).
+    _enable_location_services(ctx)
+
     if _is_find_my_mac_on():
         emit("info", "post_signin", "Find My Mac already enabled")
         return RuntimeState.WAITING_ICLOUD_SYNC
 
     emit("info", "post_signin", "Enabling Find My Mac")
 
-    # The correct Ventura pane is com.apple.systempreferences.AppleIDSettings.
-    _open_apple_id_pane()
+    # Indicators that only appear in the logged-in Apple ID view, not the
+    # sign-in form.  "sign out" is the gold standard but may be off-screen;
+    # "family sharing" and "media & purchases" appear as sidebar rows that
+    # the sign-in form body never contains.  Any one suffices.
+    LOGGED_IN_KEYWORDS = (
+        "sign out",
+        "family sharing",
+        "media & purchases",
+        "icloud data",        # sync-status badge, only visible when signed in
+    )
 
-    if not vm_ui.click_text("iCloud", tries=3):
-        raise RuntimeError("Could not locate 'iCloud' row in Apple ID pane")
-    time.sleep(1.5)
+    def _wait_for_logged_in_pane(deadline_s: int) -> bool:
+        _open_apple_id_pane()
+        _handle_icloud_password_prompt(ctx)
+        _handle_cant_connect_dialog(ctx)
+        return vm_ui.wait_for_text(LOGGED_IN_KEYWORDS, deadline_s=deadline_s)
 
-    if not vm_ui.click_text("Show", "All", tries=3):
-        emit("warning", "post_signin",
-             "Could not click 'Show All' — Find My row may still be visible")
-    time.sleep(1.0)
+    if not _wait_for_logged_in_pane(30):
+        for attempt in range(1, 4):
+            emit("warning", "post_signin",
+                 f"Apple ID pane still in sign-in state (attempt {attempt}) — "
+                 f"restarting System Settings; OCR: {vm_ui.screen_text()[:120]!r}")
+            vm_ui.ssh("pkill 'System Settings'", timeout=5)
+            time.sleep(5.0)
+            if _wait_for_logged_in_pane(45):
+                break
+        else:
+            raise RuntimeError(
+                "Apple ID pane not in logged-in state after 3 System Settings restarts"
+            )
 
-    if not vm_ui.click_text("Find", "Mac", tries=3):
-        raise RuntimeError("Could not locate 'Find My Mac' row in iCloud features list")
-    time.sleep(1.5)
-
-    vm_ui.click_text("Turn", "On", tries=2)
-    time.sleep(1.0)
+    # Navigation to the Find My Mac toggle is adapter-specific so future macOS
+    # versions can override the path without touching this handler.
+    ctx.adapter.navigate_to_find_my_mac(ctx)
 
     # Location permission prompt — press Return to accept the default button.
     with ctx.qmp_lock:
-        with qmp.qmp() as c:
-            c.send_keys(["ret"])
+        qmp.send_keys(["ret"])
 
     progress_interval_s = 20
     t0 = time.time()

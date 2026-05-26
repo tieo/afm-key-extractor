@@ -10,6 +10,7 @@ Extraction logic is ported directly from key_extraction._run().
 
 from __future__ import annotations
 
+import base64
 import plistlib
 import shutil
 import subprocess as sp
@@ -57,11 +58,63 @@ def _records(p: Path) -> list[Path]:
 # State handlers
 # ---------------------------------------------------------------------------
 
+def _restart_apsd_and_searchparty(ctx: AutomationContext) -> None:
+    """Kick apsd and searchpartyuseragent to bypass APNs reconnect backoff.
+
+    After snapshot/restore the persistent APNs TCP connection is gone.
+    apsd detects this and enters a ~30-minute retry backoff before trying
+    again.  Killing and restarting apsd via launchctl forces an immediate
+    reconnect attempt, which normally succeeds in a few seconds.  Then
+    restarting searchpartyuseragent triggers it to pull OwnedBeacons from
+    CloudKit as soon as it receives the APNs push.
+    """
+    pw = ctx.vm_password
+
+    # system/com.apple.apsd requires sudo.  Kill the existing process so launchd
+    # restarts it immediately, bypassing the ~30-minute APNs reconnect backoff.
+    # `kickstart -k system/com.apple.apsd` requires SIP-level privileges and fails
+    # with EPERM over SSH; kill + implicit launchd restart is equivalent.
+    try:
+        apsd_pid_r = vm_ssh.run("pgrep apsd", password=pw, timeout=5)
+        apsd_pid = apsd_pid_r.stdout.strip()
+        if apsd_pid:
+            script = f"echo {pw!r} | sudo -S kill -9 {apsd_pid}"
+            b64 = base64.b64encode(script.encode()).decode()
+            r = vm_ssh.run(f"echo {b64} | base64 -d | bash", password=pw, timeout=15)
+            if r.returncode == 0:
+                emit("info", "extract", "apsd killed — launchd will restart it for APNs reconnect")
+            else:
+                emit("warning", "extract",
+                     f"apsd kill rc={r.returncode}: {(r.stdout + r.stderr).strip()[:200]}")
+    except Exception as e:
+        emit("warning", "extract", f"apsd restart failed (non-fatal): {e}")
+
+    time.sleep(5.0)  # Let apsd start and attempt the APNs connection.
+
+    # searchpartyuseragent is a per-user agent.  `kickstart -k` fails with EPERM
+    # over SSH; use pkill + kickstart (without -k) as a reliable alternative.
+    try:
+        vm_ssh.run("pkill -9 -f searchpartyuseragent 2>/dev/null; true", password=pw, timeout=10)
+        time.sleep(2.0)
+        vm_ssh.run(
+            "launchctl kickstart gui/$(id -u)/com.apple.icloud.searchpartyuseragent",
+            password=pw, timeout=15,
+        )
+        emit("info", "extract", "searchpartyuseragent restarted")
+    except Exception as e:
+        emit("warning", "extract", f"searchpartyuseragent restart failed (non-fatal): {e}")
+
+    time.sleep(3.0)
+
+
 def wait_icloud_sync(ctx: AutomationContext) -> RuntimeState:
     """Poll until iCloud has synced at least one OwnedBeacons record.
 
     Uses SSH to count entries in the OwnedBeacons directory.  Polls every
     30 s.  Emits a progress event every 5 minutes so the UI stays alive.
+
+    On entry, restarts apsd and searchpartyuseragent to bypass the APNs
+    reconnect backoff that apsd enters after a snapshot/restore cycle.
 
     Deadline comes from ``ctx.icloud_sync_timeout_s`` (default 1800 s /
     30 min).  Raises RuntimeError on timeout.
@@ -69,11 +122,14 @@ def wait_icloud_sync(ctx: AutomationContext) -> RuntimeState:
     deadline_s = ctx.icloud_sync_timeout_s
     poll_s = 30
     progress_interval_s = 300
-    t0 = time.time()
-    last_progress = t0
 
     emit("info", "extract",
          f"Waiting for iCloud OwnedBeacons sync (timeout {deadline_s}s)")
+
+    _restart_apsd_and_searchparty(ctx)
+
+    t0 = time.time()
+    last_progress = t0
 
     while time.time() - t0 < deadline_s:
         r = vm_ssh.run(
@@ -229,9 +285,10 @@ def run(ctx: AutomationContext) -> RuntimeState:
 def shutdown(ctx: AutomationContext) -> RuntimeState:
     """Gracefully shut down the VM and wait for it to stop.
 
-    Attempts a clean shutdown via SSH first ('sudo shutdown -h now'),
-    then sends QMP system_powerdown as a fallback.  Polls vm.is_running()
-    every 2 s for up to 60 s.
+    Attempts a clean SSH shutdown first, then sends QMP system_powerdown.
+    Polls vm.is_running() every 2 s for up to 120 s; if macOS hasn't
+    stopped by then (first-boot notifications can delay ACPI shutdown),
+    falls back to SIGTERM via vm.stop().
 
     Always writes VM_ICLOUD_SIGNED_IN_MARKER so the next run knows the
     image is already signed into iCloud (skips credential entry).
@@ -255,20 +312,25 @@ def shutdown(ctx: AutomationContext) -> RuntimeState:
     except Exception as e:
         emit("warning", "extract", f"QMP system_powerdown failed: {e}")
 
-    # Wait for VM to stop.
-    deadline_s = 60
+    # Wait for VM to stop.  120 s budget matches finalize.shutdown() — the
+    # "Upgrade to macOS Tahoe" notification can delay ACPI shutdown on first
+    # runtime boot just as it does after install.  Fall back to SIGTERM.
+    deadline_s = 120
+    poll_s = 2.0
     t0 = time.time()
     while time.time() - t0 < deadline_s:
         if not vm.is_running():
-            emit("info", "extract", "VM stopped")
+            emit("info", "extract", "VM stopped cleanly")
             break
-        time.sleep(2)
+        time.sleep(poll_s)
     else:
-        emit("warning", "extract", "VM did not stop within 60 s — forcing stop")
+        emit("warning", "extract",
+             f"VM still running after {deadline_s}s — forcing stop via SIGTERM")
         try:
             vm.stop()
         except Exception as e:
             emit("warning", "extract", f"vm.stop() failed: {e}")
+        time.sleep(5.0)
 
     # Write signed-in marker so next run can skip credentials.
     try:
