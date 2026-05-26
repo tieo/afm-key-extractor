@@ -343,13 +343,83 @@ def resolve_update(ctx: AutomationContext) -> RuntimeState:
     return RuntimeState.ENABLING_FIND_MY
 
 
+def _open_find_my_and_complete_onboarding(ctx: AutomationContext) -> None:
+    """Open the Find My app and dismiss all first-launch onboarding dialogs.
+
+    On the first open after iCloud sign-in, Find My shows up to three dialogs:
+    1. TCC location permission: "Find My would like to use your current location"
+       Don't Allow | Allow  — click Allow (right button, ~x=730 in 1280×800).
+    2. "What's New in Find My" feature overview — click Continue.
+    3. "Find Your Friends & Lost Items" notification prompt — click Not Now.
+
+    Completing these dialogs grants Find My's TCC location permission and
+    activates its CloudKit zone, both of which searchpartyuseragent needs
+    before it will populate OwnedBeacons.
+
+    Safe to call even when Find My is already set up — the main interface
+    (People/Devices/Items tabs) is detected immediately and the function returns.
+    """
+    emit("info", "post_signin", "Opening Find My app to complete onboarding")
+
+    vm_ui.ssh("pkill 'System Settings' 2>/dev/null; true", timeout=5)
+    time.sleep(1)
+    vm_ui.ssh("open -a FindMy", timeout=10)
+    time.sleep(5.0)  # cold launch
+
+    deadline_s = 60
+    t0 = time.time()
+    while time.time() - t0 < deadline_s:
+        text = vm_ui.screen_text().lower()
+
+        if "would like to use your current location" in text:
+            emit("info", "post_signin",
+                 "Find My location permission dialog — clicking Allow")
+            # Native macOS buttons are invisible to OCR; use a pixel click for the
+            # right-side Allow button.  Dialog is centered on the 1280×800 display
+            # with body text ending at ~y=337; buttons sit ~40px below at y≈375.
+            # Allow (right) is at ~x=730; Don't Allow (left) is at ~x=570.
+            vm_ui.click_pixel(730, 375, 1280, 800)
+            time.sleep(2.0)
+            continue
+
+        if "what's new in find my" in text:
+            emit("info", "post_signin", "Find My 'What's New' screen — clicking Continue")
+            if not vm_ui.click_text("Continue", tries=2):
+                with ctx.qmp_lock:
+                    qmp.send_keys(["ret"])
+            time.sleep(2.0)
+            continue
+
+        if "find your friends" in text or ("lost items" in text and "not now" in text):
+            emit("info", "post_signin",
+                 "Find My notifications prompt — clicking Not Now")
+            if not vm_ui.click_text("Not", "Now", tries=2):
+                with ctx.qmp_lock:
+                    qmp.send_keys(["esc"])
+            time.sleep(2.0)
+            continue
+
+        if "people" in text and "devices" in text and "items" in text:
+            emit("info", "post_signin", "Find My app onboarding complete")
+            return
+
+        time.sleep(2.0)
+
+    emit("warning", "post_signin",
+         "Find My onboarding timed out — continuing; OwnedBeacons sync may be delayed")
+
+
 def enable_find_my(ctx: AutomationContext) -> RuntimeState:
-    """Navigate to iCloud → Find My Mac and enable it.
+    """Navigate to iCloud → Find My Mac and enable it, then complete Find My onboarding.
 
     Ventura nests Find My Mac inside the iCloud feature list — there is
     no direct URL anchor.  The path is:
         Apple ID pane → click 'iCloud' row → 'Show All' → 'Find My Mac'
         → 'Turn On' → confirm location-permission dialog (Return).
+
+    After enabling, opens the Find My app to dismiss its first-launch
+    onboarding dialogs (location permission, What's New, notifications),
+    which is required for searchpartyuseragent to sync OwnedBeacons.
 
     Returns silently if already enabled (authoritative defaults check).
 
@@ -367,6 +437,7 @@ def enable_find_my(ctx: AutomationContext) -> RuntimeState:
 
     if _is_find_my_mac_on():
         emit("info", "post_signin", "Find My Mac already enabled")
+        _open_find_my_and_complete_onboarding(ctx)
         return RuntimeState.WAITING_ICLOUD_SYNC
 
     emit("info", "post_signin", "Enabling Find My Mac")
@@ -422,6 +493,7 @@ def enable_find_my(ctx: AutomationContext) -> RuntimeState:
             last_progress = now
         if _is_find_my_mac_on():
             emit("info", "post_signin", "Find My Mac enabled")
+            _open_find_my_and_complete_onboarding(ctx)
             return RuntimeState.WAITING_ICLOUD_SYNC
         time.sleep(3)
 
