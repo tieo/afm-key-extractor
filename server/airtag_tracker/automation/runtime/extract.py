@@ -158,10 +158,10 @@ def wait_icloud_sync(ctx: AutomationContext) -> RuntimeState:
 
         time.sleep(poll_s)
 
-    raise RuntimeError(
-        f"iCloud OwnedBeacons never appeared after {deadline_s}s. "
-        "Check that Find My is enabled and the Apple ID is signed in."
-    )
+    emit("warning", "extract",
+         f"iCloud OwnedBeacons never appeared after {deadline_s}s — "
+         "no AirTag records found for this Apple ID; shutting down")
+    return RuntimeState.SHUTTING_DOWN
 
 
 def run(ctx: AutomationContext) -> RuntimeState:
