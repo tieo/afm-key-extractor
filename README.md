@@ -56,20 +56,13 @@ After changing `.env`: `docker compose up -d --force-recreate`
 
 ## Automating 2FA with Tasker
 
-Import [`tasker/AirTag_2FA_Relay.prf.xml`](tasker/AirTag_2FA_Relay.prf.xml) — it forwards every Apple SMS to the server, which extracts the OTP automatically.
+Forwards every Apple SMS to the server — fully unattended 2FA. One tap to confirm in Tasker.
 
-**After importing:** open the task in Tasker → set the HTTP Request URL to:
-```
-https://<your-server>/api/vm/apple-signin/sms-relay
-```
-
-**Import via ADB** (one tap to confirm):
 ```bash
-adb push tasker/AirTag_2FA_Relay.prf.xml /sdcard/Tasker/AirTag_2FA_Relay.prf.xml
-adb shell am start -a android.intent.action.VIEW \
-  -d "file:///sdcard/Tasker/AirTag_2FA_Relay.prf.xml" \
-  -t "text/xml" net.dinglisch.android.taskerm
+bash tasker/install.sh
 ```
+
+Asks for the phone's ADB device and the server address, pushes the profile, opens the import dialog.
 
 ---
 
