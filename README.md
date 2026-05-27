@@ -1,117 +1,87 @@
 # nix-airtag-tracker
 
-Automated AirTag location key extraction via a macOS VM running under QEMU/KVM.
-Extracted keys are compatible with [OpenTagViewer](https://github.com/OpenTagViewer).
+Extracts AirTag private keys from iCloud via an automated macOS VM.
+Keys are compatible with [OpenTagViewer](https://github.com/OpenTagViewer).
 
-## Requirements
+**Requires:** Linux with KVM, Docker + Compose.
 
-- Linux with KVM (`/dev/kvm`)
-- Docker + Docker Compose
+---
 
-## Quick Start
+## Quick start
 
 ```bash
-git clone <repo>
-cd nix-airtag-tracker
-cp .env.example .env        # fill in your Apple ID
+cp .env.example .env   # fill in Apple ID + passcode
 docker compose up -d
 ```
 
-Open **http://localhost:8042** — the UI walks you through:
+Open **http://localhost:8042**
 
-1. **First-time setup** — downloads macOS Sonoma recovery (~3 GB, from Apple, one-time)
-2. **Install flow** — automated macOS install + golden image creation (~45–90 min, one-time)
-3. **Runtime flow** — signs into Apple ID, syncs iCloud Keychain, extracts AirTag keys (~6–8 min per run)
+---
 
-Once at least one runtime run has completed, a **Download Keys** button appears in the header that gives you a ZIP of all extracted JSON key files.
+## First time only (~60–90 min, fully automatic)
 
-## Configuration
+1. Click **Download macOS** — fetches Sonoma recovery from Apple (~3 GB)
+2. Click **Start Install** — installs macOS and saves a golden VM snapshot
 
-Copy `.env.example` to `.env` and fill in your values:
+After that, the golden image is reused on every run. You never do this again.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AIRTAG_APPLE_EMAIL` | — | Apple ID email |
-| `AIRTAG_APPLE_PASSWORD` | — | Apple ID password (app-specific password recommended) |
-| `AIRTAG_SMS_PHONE_SUFFIX` | — | Last 4+ digits of the phone number for SMS 2FA. If Apple shows multiple trusted numbers, picks the right one. |
-| `AIRTAG_IPHONE_PASSCODE` | — | iPhone passcode. Required the first time a new Mac signs into iCloud — macOS shows "Some iCloud Data Isn't Syncing" and needs this to enable iCloud Keychain. |
-| `AIRTAG_AUTO_RUN` | `false` | Set to `true` to trigger extraction automatically every `AIRTAG_POLL_INTERVAL` seconds. |
-| `AIRTAG_POLL_INTERVAL` | `900` | Auto-run interval in seconds (default 15 min). |
-| `AIRTAG_MACOS_VERSION` | `14` | macOS version in the VM (14 = Sonoma). |
-| `AIRTAG_PORT` | `8042` | API/UI port. |
-| `AIRTAG_VNC_WS_PORT` | `6901` | noVNC WebSocket port (live VM view). |
+---
 
-## Two-Factor Authentication
+## Extracting keys (~6–8 min per run)
 
-When Apple requires 2FA, the runtime flow pauses at the **"Two-Factor Authentication Required"** screen and waits for a code. You can:
+Click **Start Extraction** (or set `AIRTAG_AUTO_RUN=true` to run on a schedule).
 
-- **Enter it manually** — type the 6-digit code into the UI form and click Verify.
-- **Automate it with Tasker** — import [`tasker/AirTag_2FA_Relay.prf.xml`](tasker/AirTag_2FA_Relay.prf.xml) into Tasker on Android. It triggers on any SMS from "Apple", forwards the full message body to the server, and the server extracts the OTP automatically:
-  ```
-  POST /api/vm/apple-signin/sms-relay
-  {"sms": "<full SMS body>"}
-  ```
-  After importing, open the task in Tasker and set the HTTP Request URL to `https://<your-server>/api/vm/apple-signin/sms-relay`.
+The flow signs into Apple ID, enables iCloud Keychain, syncs OwnedBeacons, extracts keys, shuts down.
 
-Setting `AIRTAG_SMS_PHONE_SUFFIX` ensures Apple sends the code to the right number when you have multiple trusted devices.
+**2FA:** if Apple requires a code, a prompt appears in the UI. Enter it, or automate it with Tasker (see below) — then it's fully unattended.
 
-## Automatic Scheduling
+When done, **Download Keys** appears in the header → ZIP of all key JSONs.
 
-Set `AIRTAG_AUTO_RUN=true` in `.env` (and `--force-recreate` the container once to pick it up):
+---
 
+## Configuration (`.env`)
+
+| Variable | Description |
+|----------|-------------|
+| `AIRTAG_APPLE_EMAIL` | Apple ID email |
+| `AIRTAG_APPLE_PASSWORD` | Apple ID password |
+| `AIRTAG_SMS_PHONE_SUFFIX` | Last 4+ digits of trusted phone number for SMS 2FA |
+| `AIRTAG_IPHONE_PASSCODE` | iPhone passcode — needed once to unlock iCloud Keychain on a new Mac |
+| `AIRTAG_AUTO_RUN` | `true` = extract keys automatically on a schedule |
+| `AIRTAG_POLL_INTERVAL` | Seconds between auto-runs (default `900` = 15 min) |
+
+After changing `.env`: `docker compose up -d --force-recreate`
+
+---
+
+## Automating 2FA with Tasker
+
+Import [`tasker/AirTag_2FA_Relay.prf.xml`](tasker/AirTag_2FA_Relay.prf.xml) — it forwards every Apple SMS to the server, which extracts the OTP automatically.
+
+**After importing:** open the task in Tasker → set the HTTP Request URL to:
+```
+https://<your-server>/api/vm/apple-signin/sms-relay
+```
+
+**Import via ADB** (one tap to confirm):
 ```bash
-docker compose up -d --force-recreate
+adb push tasker/AirTag_2FA_Relay.prf.xml /sdcard/Tasker/AirTag_2FA_Relay.prf.xml
+adb shell am start -a android.intent.action.VIEW \
+  -d "file:///sdcard/Tasker/AirTag_2FA_Relay.prf.xml" \
+  -t "text/xml" net.dinglisch.android.taskerm
 ```
 
-The server will automatically start a new runtime run every `AIRTAG_POLL_INTERVAL` seconds (default 15 min) whenever no flow is currently running and a golden image exists. Combined with Tasker for 2FA forwarding, this is fully unattended.
+---
 
-## Key File Format
-
-Each extracted key is a JSON file in `/data/keys/` (inside the container):
-
-```json
-{
-  "type": "accessory",
-  "master_key": "...",
-  "skn": "...",
-  "sks": "...",
-  "paired_at": "2025-03-29T10:00:35+00:00",
-  "name": "My AirTag",
-  "identifier": "..."
-}
-```
-
-Download all keys at once: `GET /api/keys/zip` (or the **Download Keys** button in the UI).
-
-## API Reference
+## API
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/automation/status` | Current flow state |
-| `POST` | `/api/automation/start-install` | Start the install flow |
-| `POST` | `/api/automation/start-runtime` | Start a runtime/extraction run |
-| `POST` | `/api/automation/abort` | Abort the running flow |
-| `POST` | `/api/twofa/submit` | Submit 2FA code `{"code":"123456"}` |
-| `POST` | `/api/twofa/request-sms` | Request SMS code instead of device prompt |
-| `GET` | `/api/keys/` | List extracted key files |
+| `POST` | `/api/automation/start-install` | Start install flow |
+| `POST` | `/api/automation/start-runtime` | Start extraction run |
+| `POST` | `/api/automation/abort` | Abort running flow |
+| `GET` | `/api/automation/status` | Current state |
+| `POST` | `/api/vm/apple-signin/sms-relay` | Submit raw Apple SMS (Tasker posts here) |
+| `POST` | `/api/vm/apple-signin/2fa` | Submit 2FA code manually `{"code":"123456"}` |
 | `GET` | `/api/keys/zip` | Download all keys as ZIP |
-| `GET` | `/api/keys/{filename}` | Download a single key JSON |
-| `GET` | `/api/log` | Recent activity log entries |
-| `GET` | `/api/events` | SSE stream (state changes + log) |
-
-## VNC
-
-A live view of the VM is available at **http://localhost:6901** (noVNC) or via the **Open VM** button in the UI header.
-
-## Development
-
-```bash
-# Run tests
-PYTHONPATH=server uv run --with pytest pytest tests/
-
-# Rebuild container after Dockerfile changes
-docker compose up --build -d
-
-# Code changes in server/ are picked up by a plain restart (bind-mounted):
-docker compose restart airtag-tracker
-```
+| `GET` | `/api/events` | SSE stream |
