@@ -70,12 +70,13 @@ def _cmd_replay(args: argparse.Namespace) -> int:
     if args.restore:
         vm.snapshot.load(args.restore)
 
+    from ..config import APPLE_EMAIL, APPLE_PASSWORD
     flow = FlowKind.INSTALL if isinstance(state, InstallState) else FlowKind.RUNTIME
     ctx = AutomationContext(
         flow_kind=flow,
         vm_password=ensure_vm_password(),
-        apple_email=args.apple_email,
-        apple_password=args.apple_password,
+        apple_email=args.apple_email or APPLE_EMAIL,
+        apple_password=args.apple_password or APPLE_PASSWORD,
         initial_state=state,
     )
     handler = engine._get_handler(state)

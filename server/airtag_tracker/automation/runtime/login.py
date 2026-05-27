@@ -25,14 +25,14 @@ def wait_for_login_screen(ctx: AutomationContext) -> RuntimeState:
     without a login window.  We check for that first each poll so we
     don't time-out waiting for a screen that will never appear.
 
-    Polls every 3 s for up to 180 s.  Raises RuntimeError on timeout.
+    Polls every 3 s for up to 360 s.  Raises RuntimeError on timeout.
     """
-    deadline_s = 180
+    deadline_s = 360
     poll_s = 3.0
     progress_interval_s = 30
     t0 = time.time()
     last_progress = t0
-    emit("info", "login", "Waiting for macOS login screen or autologin (up to 180 s)")
+    emit("info", "login", "Waiting for macOS login screen or autologin (up to 360 s)")
     while time.time() - t0 < deadline_s:
         now = time.time()
         elapsed = now - t0
@@ -42,10 +42,14 @@ def wait_for_login_screen(ctx: AutomationContext) -> RuntimeState:
                  f"Still waiting for login screen… ({elapsed:.0f}s) screen: {repr(screen_snippet)}")
             last_progress = now
         # Fast path: autologin booted straight to desktop — skip login entirely.
-        r = vm_ui.ssh("pgrep -x Dock", timeout=8)
-        if r.returncode == 0:
-            emit("info", "login", "Dock already running — autologin succeeded, skipping login")
-            return RuntimeState.WAITING_DESKTOP
+        # SSH may accept connections but hang during early boot; catch and retry.
+        try:
+            r = vm_ui.ssh("pgrep -x Dock", timeout=8)
+            if r.returncode == 0:
+                emit("info", "login", "Dock already running — autologin succeeded, skipping login")
+                return RuntimeState.WAITING_DESKTOP
+        except Exception:
+            pass
         if screen.detect_login_screen():
             emit("info", "login", "Login screen detected")
             return RuntimeState.LOGGING_IN
@@ -99,10 +103,13 @@ def wait_for_desktop(ctx: AutomationContext) -> RuntimeState:
             emit("info", "login", "Login screen re-appeared — retrying password")
             return RuntimeState.LOGGING_IN
 
-        r = vm_ui.ssh("pgrep -x Dock", timeout=8)
-        if r.returncode == 0:
-            emit("info", "login", "Dock is running — desktop is up")
-            return RuntimeState.DISABLING_SLEEP
+        try:
+            r = vm_ui.ssh("pgrep -x Dock", timeout=8)
+            if r.returncode == 0:
+                emit("info", "login", "Dock is running — desktop is up")
+                return RuntimeState.DISABLING_SLEEP
+        except Exception:
+            pass
 
         time.sleep(poll_s)
     raise RuntimeError(f"Desktop (Dock) did not come up within {deadline_s}s")
@@ -125,11 +132,12 @@ def disable_sleep(ctx: AutomationContext) -> RuntimeState:
     pw = _vm_password.get() or ctx.vm_password
     script = (
         f"PW={pw!r}\n"
-        "echo \"$PW\" | sudo -S pmset -a displaysleep 0 sleep 0 disksleep 0\n"
+        "echo \"$PW\" | sudo -S pmset -a displaysleep 0 sleep 0 disksleep 0 hibernatemode 0\n"
+        "sudo rm -f /var/vm/sleepimage\n"
         "defaults -currentHost write com.apple.screensaver idleTime -int 0\n"
         "defaults write com.apple.screensaver askForPassword -int 0\n"
     )
     b64 = _base64.b64encode(script.encode()).decode()
     vm_ui.ssh(f"echo {b64} | base64 -d | bash", timeout=30)
-    emit("info", "login", "Sleep and screensaver disabled")
+    emit("info", "login", "Sleep, screensaver, and hibernation disabled")
     return RuntimeState.OPENING_APPLE_ID

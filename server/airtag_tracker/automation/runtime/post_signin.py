@@ -211,6 +211,133 @@ def _is_apple_id_update_pending() -> bool:
     )
 
 
+def _is_keychain_sync_pending() -> bool:
+    """Return True if 'Some iCloud Data Isn't Syncing' badge is visible."""
+    text = vm_ui.screen_text().lower()
+    return "icloud data" in text and "syncing" in text
+
+
+def _try_resume_keychain_once(ctx: AutomationContext) -> bool:
+    """One attempt at the badge → detail page → Resume → Mac password flow.
+
+    Returns True if KEYCHAIN_SYNC is Enabled=1 afterwards.
+    """
+    # "isn't syncing" is more unique than "iCloud Data" which also matches the
+    # regular iCloud sidebar item (navigates to iCloud settings instead of badge).
+    clicked = (
+        vm_ui.click_text("isn't", "syncing", tries=3)
+        or vm_ui.click_text("Syncing", tries=3)
+        or vm_ui.click_text("iCloud", "Data", tries=3)
+    )
+    if not clicked:
+        emit("warning", "post_signin", "Could not click iCloud Data badge")
+        return False
+
+    time.sleep(2.0)
+
+    # The badge opens a detail page.  "Resume Data Sync" triggers Mac password.
+    # OCR occasionally misreads "Sync" as "Syne".
+    _ocr_detail = vm_ui.screen_text()
+    emit("info", "post_signin", f"Detail page OCR: {_ocr_detail[:400]!r}")
+    time.sleep(1.0)
+
+    _found_secondary = (
+        vm_ui.click_text("Resume", "Data", tries=3)
+        or vm_ui.click_text("Resume", tries=3)
+        or vm_ui.click_text("Enter", "Passcode", tries=3)
+        or vm_ui.click_text("Verify", tries=3)
+    )
+    emit("info", "post_signin",
+         f"Secondary button: {'found' if _found_secondary else 'NOT found'}")
+
+    # macOS shows "Enter Mac Password" to authorize iCloud Keychain access.
+    _ocr_after = vm_ui.screen_text().lower()
+    if "mac password" in _ocr_after or "unlock this mac" in _ocr_after or \
+            vm_ui.wait_for_text(("mac password", "unlock this mac"), deadline_s=15):
+        emit("info", "post_signin", "Mac password dialog — entering VM password")
+        with ctx.critical_section():
+            vm_ui.paste_text(ctx.vm_password)
+            time.sleep(0.4)
+            if not vm_ui.click_text("Continue", tries=2):
+                if not vm_ui.click_text("OK", tries=2):
+                    with ctx.qmp_lock:
+                        qmp.send_keys(["ret"])
+        time.sleep(3.0)
+    else:
+        emit("warning", "post_signin",
+             f"No Mac password dialog detected; OCR: {_ocr_after[:150]!r}")
+
+    # Some setups additionally prompt for the former iPhone passcode.
+    if ctx.iphone_passcode and vm_ui.wait_for_text(("passcode",), deadline_s=10):
+        emit("info", "post_signin", "iPhone passcode prompt — entering PIN")
+        with ctx.critical_section():
+            with ctx.qmp_lock:
+                qmp.type_text(ctx.iphone_passcode)
+            time.sleep(0.5)
+            if not vm_ui.click_text("Continue", tries=2):
+                if not vm_ui.click_text("OK", tries=2):
+                    with ctx.qmp_lock:
+                        qmp.send_keys(["ret"])
+        time.sleep(5.0)
+
+    return _check_keychain_enabled()
+
+
+def _handle_icloud_keychain_sync(ctx: AutomationContext) -> bool:
+    """Handle the 'Some iCloud Data Isn't Syncing' badge in the Apple ID pane.
+
+    Flow (discovered empirically on Sonoma 14):
+      1. Click the sidebar badge row ("isn't syncing") → opens a detail page.
+      2. Click "Resume Data Sync" on that page → macOS shows "Enter Mac Password".
+      3. Paste the VM login password and confirm → KEYCHAIN_SYNC becomes Enabled=1
+         and SEARCHPARTY is provisioned, allowing OwnedBeacons to sync.
+
+    Retries up to 3 times if SSH verification shows KEYCHAIN_SYNC still Enabled=0.
+    Returns True if the badge was found (regardless of outcome).
+    """
+    if not _is_keychain_sync_pending():
+        return False
+
+    emit("info", "post_signin", "iCloud Keychain not syncing — clicking badge to resume")
+
+    for attempt in range(1, 4):
+        ok = _try_resume_keychain_once(ctx)
+        if ok:
+            emit("info", "post_signin",
+                 f"KEYCHAIN_SYNC confirmed Enabled=1 via SSH (attempt {attempt})")
+            return True
+        emit("warning", "post_signin",
+             f"KEYCHAIN_SYNC still Enabled=0 after attempt {attempt}")
+        if attempt < 3:
+            # Re-open the Apple ID pane and try again.
+            try:
+                _open_apple_id_pane()
+            except Exception:
+                pass
+            time.sleep(3.0)
+            if not _is_keychain_sync_pending():
+                emit("info", "post_signin",
+                     "iCloud Data badge gone — possibly resolved between attempts")
+                return _check_keychain_enabled()
+
+    emit("warning", "post_signin",
+         "KEYCHAIN_SYNC still Enabled=0 after 3 attempts — OwnedBeacons may not sync")
+    return True
+
+
+def _check_keychain_enabled() -> bool:
+    """Return True if KEYCHAIN_SYNC is Enabled=1 in MobileMeAccounts."""
+    try:
+        r = vm_ui.ssh(
+            "defaults read MobileMeAccounts Accounts 2>/dev/null "
+            "| grep -B1 KEYCHAIN_SYNC | grep -c 'Enabled = 1'",
+            timeout=10,
+        )
+        return int(r.stdout.strip() or "0") > 0
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # State handlers
 # ---------------------------------------------------------------------------
@@ -293,6 +420,7 @@ def resolve_update(ctx: AutomationContext) -> RuntimeState:
 
     if not _is_apple_id_update_pending():
         emit("info", "post_signin", "No Apple ID update pending")
+        _handle_icloud_keychain_sync(ctx)
         return RuntimeState.ENABLING_FIND_MY
 
     emit("info", "post_signin", "Apple ID update pending — driving prompt")
@@ -336,10 +464,12 @@ def resolve_update(ctx: AutomationContext) -> RuntimeState:
             last_progress = now
         if not _is_apple_id_update_pending():
             emit("info", "post_signin", "Apple ID settings up to date")
+            _handle_icloud_keychain_sync(ctx)
             return RuntimeState.ENABLING_FIND_MY
         time.sleep(3)
 
     emit("warning", "post_signin", "Apple ID update badge did not clear — continuing")
+    _handle_icloud_keychain_sync(ctx)
     return RuntimeState.ENABLING_FIND_MY
 
 

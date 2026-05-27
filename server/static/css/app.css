@@ -273,6 +273,16 @@ body {
 
 .runtime-fields input::placeholder { color: #555; }
 
+.credentials-hint {
+  margin: 0;
+  padding: 7px 10px;
+  background: #0a1f0a;
+  border: 1px solid #1a4d1a;
+  border-radius: 6px;
+  font-size: 0.82em;
+  color: #5c5;
+}
+
 .check-label {
   display: flex;
   align-items: center;

@@ -33,6 +33,7 @@ from ...automation.states import (
     InstallState,
     RuntimeState,
 )
+from ...config import APPLE_EMAIL, APPLE_PASSWORD
 from ...vm_password import ensure as ensure_vm_password
 from .. import sse
 
@@ -134,8 +135,8 @@ def run_handler(body: _ReplayBody) -> dict:
     ctx = AutomationContext(
         flow_kind=flow,
         vm_password=ensure_vm_password(),
-        apple_email=body.apple_email,
-        apple_password=body.apple_password,
+        apple_email=body.apple_email or APPLE_EMAIL,
+        apple_password=body.apple_password or APPLE_PASSWORD,
         initial_state=state,
     )
     ctx._broadcast = sse.broadcast

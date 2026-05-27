@@ -37,8 +37,10 @@ _MIGRATION_ALERT_OK_X, _MIGRATION_ALERT_OK_Y = 640, 486
 # Modal sheet covers y≈285-515; button centered at (640, 492). Confirmed interactively.
 _GO_BACK_X, _GO_BACK_Y = 640, 492
 
-# Screen 9: "Don't Use" in location confirmation sheet (blue button, top of dialog).
-_DONT_USE_X, _DONT_USE_Y = 640, 476
+# Screen 11: "Enable Location Services" confirmation button (below "Don't Use" in sheet).
+# "Don't Use" is at y≈476; "Enable Location Services" is below it at y≈506.
+# Pixel coords need verification with a screendump — OCR is preferred.
+_ENABLE_LOC_X, _ENABLE_LOC_Y = 640, 506
 
 # Apple ID skip confirmation dialog: blue "Skip" button (right of "Don't Skip").
 # White text on blue — OCR misses it; pixel fallback only.
@@ -324,10 +326,11 @@ def screen_location(ctx: AutomationContext) -> InstallState:
     if screen.has_any_text("location services"):
         emit("info", "setup_assistant", "Screen 11: Location Services")
         _press_continue()
-        # Confirmation sheet: "Don't Use" is the blue/default button at centre-top.
-        if not vm_ui.click_text("Don't", "Use", include_menubar=True, tries=3):
-            emit("info", "setup_assistant", "'Don't Use' not found — using pixel fallback")
-            vm_ui.click_pixel(_DONT_USE_X, _DONT_USE_Y, _SCREEN_W, _SCREEN_H)
+        # Confirmation sheet: click "Enable Location Services" (not "Don't Use") so
+        # searchpartyd can sync AirTag keys from iCloud.
+        if not vm_ui.click_text("Enable", include_menubar=True, tries=3):
+            emit("info", "setup_assistant", "'Enable' not found — using pixel fallback")
+            vm_ui.click_pixel(_ENABLE_LOC_X, _ENABLE_LOC_Y, _SCREEN_W, _SCREEN_H)
         time.sleep(1.5)
     return InstallState.SA_TIMEZONE
 

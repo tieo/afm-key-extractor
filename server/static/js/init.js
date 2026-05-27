@@ -71,6 +71,7 @@ function onSseEvent(event) {
     // After install finishes, refresh setup status to reveal the runtime card.
     if (event.state === "done" || event.state === "idle") {
       checkSetupStatus();
+      refreshDownloadButton();
     }
   } else if (event.type === "log") {
     appendLogEntry(event);
@@ -90,6 +91,12 @@ function onSseEvent(event) {
 async function refreshStatus() {
   const data = await get("/api/automation/status");
   if (data) updateUI(data);
+}
+
+async function refreshDownloadButton() {
+  const keys = await get("/api/keys/");
+  const btn = document.getElementById("btn-download-keys");
+  if (btn) btn.style.display = Array.isArray(keys) && keys.length ? "" : "none";
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +125,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       ensureVncLoaded();
     }
   }
+
+  await refreshDownloadButton();
 
   // Load the last log entries.
   await loadInitialLog();

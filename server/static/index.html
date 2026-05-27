@@ -10,6 +10,8 @@
   <header class="app-header">
     <h1>AirTag Key Extractor</h1>
     <div class="header-actions">
+      <a href="/api/keys/zip" class="btn btn-secondary" id="btn-download-keys" style="display:none" download="airtag-keys.zip">Download Keys</a>
+      <a href="http://localhost:6901" target="_blank" class="btn btn-secondary" id="btn-open-vm">Open VM</a>
       <button id="btn-abort" class="btn btn-danger" style="display:none">Abort</button>
     </div>
   </header>
@@ -65,6 +67,9 @@
         <h3>Extract AirTag Keys</h3>
         <p>Sign in to Apple ID inside the VM and extract your AirTag keys.</p>
         <div class="runtime-fields">
+          <p id="credentials-preset-hint" class="credentials-hint" style="display:none">
+            Apple ID saved in server config — leave blank to use saved credentials.
+          </p>
           <input type="email" id="input-email" placeholder="Apple ID email" autocomplete="username">
           <input type="password" id="input-password" placeholder="Apple ID password" autocomplete="current-password">
           <label class="check-label">

@@ -17,7 +17,7 @@ import re
 import time
 
 from ... import qmp, vm_ui
-from ...config import VM_ICLOUD_SIGNED_IN_MARKER
+from ...config import VM_ICLOUD_SIGNED_IN_MARKER, APPLE_SMS_PHONE_SUFFIX
 from ...events import emit
 from ..context import AutomationContext
 from ..states import RuntimeState
@@ -28,8 +28,6 @@ from ._apple_id import APPLE_ID_LANDED_KEYWORDS, APPLE_ID_URLS, open_apple_id_pa
 # Constants specific to this module
 # ---------------------------------------------------------------------------
 
-PASSWORD_PROMPT_KEYWORDS = ("password",)
-
 TWOFA_KEYWORDS = (
     "verification code", "two-factor", "enter the code", "trust this",
 )
@@ -37,6 +35,20 @@ TWOFA_KEYWORDS = (
 SIGNIN_FAIL_KEYWORDS = (
     "incorrect", "could not sign in", "try again",
     "verification failed", "cannot verify",
+)
+
+# Text that ONLY appears in the logged-in Apple ID view, never in the sign-in
+# form or any transitional state.  Any one match (+ plist confirmation) is
+# sufficient to declare the account signed in.
+# "sign out"        — the gold standard, but may be off-screen (requires scroll)
+# "family sharing"  — sidebar row in logged-in view
+# "media & purchases" — sidebar row in logged-in view
+# "icloud data"     — iCloud sync badge visible only when signed in
+LOGGEDIN_INDICATORS = (
+    "sign out",
+    "family sharing",
+    "media & purchases",
+    "icloud data",
 )
 
 
@@ -65,13 +77,13 @@ def _extract_masked_phone() -> str | None:
     """Scan OCR text for an Apple-style masked phone number.
 
     Apple shows things like '+49 •••• ••12 34' on the SMS-sent sheet.
-    OCR often turns •/● into '.', '-', '*' or drops them, so we match
-    the tail digits with any noise in between.
+    OCR often turns •/● into '.', '-', '*', '+' or drops them entirely,
+    so we match the tail digits with any noise in between.
     """
     text = vm_ui.screen_text()
     for pat in (
-        r"\+\d[\d\s\-\.\*•●x]{3,}\d{2,4}",
-        r"[\*•●\.x]{2,}[\s\-]?\d{2,4}",
+        r"\+\d[\d\s\-\.\*\+•●x]{3,}\d{2,4}",
+        r"[\*•●\.\+x]{2,}[\s\-]?\d{2,4}",
     ):
         m = re.search(pat, text)
         if m:
@@ -80,12 +92,36 @@ def _extract_masked_phone() -> str | None:
 
 
 def _request_sms_code() -> str | None:
-    """Drive the three-click 'didn't receive → trusted devices → Send Code' path.
+    """Ensure an SMS verification code is dispatched to a phone number.
 
-    Returns the masked phone number OCR'd from the confirmation sheet,
-    or None if any click failed.
+    Two paths:
+    1. Fast path — Apple already sent the code (screen shows "resend code" or
+       "can't use this number?").  Extract and return the masked phone number.
+    2. Navigation path — screen shows the trusted-device prompt ("Didn't receive
+       a code?").  Navigate: didn't-receive → can't-get-to-devices → [select
+       number] → Send Code.
+
+    If AIRTAG_SMS_PHONE_SUFFIX is set and a number-selection sheet appears,
+    clicks the row containing that suffix before clicking Send Code.
+    Returns the masked phone number, or None on failure.
     """
     emit("info", "apple_signin", "Requesting SMS verification code")
+
+    # Fast path: Apple already dispatched the code (SMS-sent state).
+    # Poll up to 10 s for the screen to settle — the dialog may still be
+    # animating when this function is called.
+    for _ in range(5):
+        text = vm_ui.screen_text()
+        if "resend code" in text or "can't use this number" in text:
+            phone = _extract_masked_phone()
+            if phone:
+                emit("info", "apple_signin", f"SMS already sent by Apple to {phone}")
+            else:
+                emit("info", "apple_signin", "SMS already sent by Apple (phone not OCR'd)")
+            return phone
+        time.sleep(2.0)
+
+    # Navigation path: trusted-device prompt → request SMS.
     if not vm_ui.click_text("receive", "code", tries=3):
         emit("warning", "apple_signin",
              "SMS flow: 'Didn't receive a verification code?' not found")
@@ -96,6 +132,21 @@ def _request_sms_code() -> str | None:
              "SMS flow: 'Can't get to your trusted devices?' not found")
         return None
     time.sleep(1.5)
+
+    # When the Apple ID has multiple trusted numbers, Apple shows a selection
+    # list before the Send Code button.  Click the configured number if present.
+    if APPLE_SMS_PHONE_SUFFIX:
+        suffix_digits = "".join(c for c in APPLE_SMS_PHONE_SUFFIX if c.isdigit())
+        if suffix_digits:
+            if vm_ui.click_text(suffix_digits, tries=2):
+                emit("info", "apple_signin",
+                     f"Selected phone number ending in {suffix_digits}")
+                time.sleep(1.0)
+            else:
+                emit("warning", "apple_signin",
+                     f"Phone number suffix '{suffix_digits}' not found on screen — "
+                     "proceeding with Apple's default selection")
+
     if not vm_ui.click_text("Send", "Code", tries=3):
         emit("warning", "apple_signin", "SMS flow: 'Send Code' button not found")
         return None
@@ -145,8 +196,17 @@ def open_apple_id(ctx: AutomationContext) -> RuntimeState:
                 already = False
 
             if already:
-                emit("info", "apple_signin", "Already signed into iCloud — skipping credentials")
-                return RuntimeState.DISMISSING_POST_SIGNIN
+                # Also verify the UI shows the logged-in view.  MobileMeAccounts can
+                # have a stale AccountID from a prior run whose session has since expired;
+                # System Settings correctly shows the sign-in form in that case.
+                # "Sign Out" only appears in the logged-in view, never in the sign-in form.
+                ui_logged_in = vm_ui.wait_for_text(LOGGEDIN_INDICATORS, deadline_s=8)
+                if ui_logged_in:
+                    emit("info", "apple_signin", "Already signed into iCloud — skipping credentials")
+                    return RuntimeState.DISMISSING_POST_SIGNIN
+                emit("info", "apple_signin",
+                     "MobileMeAccounts has AccountID but UI shows sign-in form "
+                     "(stale session) — re-entering credentials")
 
             emit("info", "apple_signin", "Apple ID pane open — ready to enter credentials")
             return RuntimeState.TYPING_CREDENTIALS
@@ -160,49 +220,37 @@ def type_credentials(ctx: AutomationContext) -> RuntimeState:
     """Focus the email field, enter Apple ID email and password.
 
     Uses clipboard paste for both values so special characters are not
-    mangled by QMP keystroke layout mapping.  Retries once if the
-    password prompt does not appear after the email is submitted.
+    mangled by QMP keystroke layout mapping.
 
-    Raises RuntimeError if the password prompt never appears after two
-    attempts.
+    The email and password are entered as two separate steps: the macOS sign-in
+    sheet is a wizard that transitions from the email step to the password step
+    after Return/Continue.  OCR cannot see the form content area (gray
+    background) so the transition is timed with a fixed sleep rather than a
+    keyword poll.  macOS auto-focuses the password field after the transition.
     """
     emit("info", "apple_signin", "Entering Apple ID credentials")
 
-    for attempt in (1, 2):
-        # Focus email field: cmd-a clears sidebar search, tab advances into
-        # the sign-in sheet where Ventura lands on the first text field.
-        with ctx.qmp_lock:
-            with qmp.qmp() as c:
-                c.send_chord(["meta_l", "a"])
-            time.sleep(0.2)
-            with qmp.qmp() as c:
-                c.send_keys(["delete"])
-            time.sleep(0.2)
-            with qmp.qmp() as c:
-                c.send_keys(["tab"])
-            time.sleep(0.5)
+    # Focus email field via adapter — uses a pixel click so sidebar search
+    # never captures the paste.
+    with ctx.qmp_lock:
+        ctx.adapter.focus_apple_id_email_field(ctx)
 
-        vm_ui.paste_text(ctx.apple_email)
-        time.sleep(0.4)
-        with ctx.qmp_lock:
-            with qmp.qmp() as c:
-                c.send_keys(["ret"])
-
-        emit("info", "apple_signin", "Email submitted — waiting for password prompt")
-        if vm_ui.wait_for_text(PASSWORD_PROMPT_KEYWORDS, deadline_s=20):
-            break
-        if attempt == 2:
-            raise RuntimeError("Password prompt never appeared after typing Apple ID email")
-        emit("warning", "apple_signin",
-             "Password prompt missing after attempt 1 — retrying")
-        _open_apple_id_pane()
-
+    vm_ui.paste_text(ctx.apple_email)
     time.sleep(0.4)
+    with ctx.qmp_lock:
+        qmp.send_keys(["ret"])
+
+    # Apple validates the account server-side before showing the password field.
+    # OCR cannot reliably detect this transition (form content is outside
+    # Tesseract's readable area), so a fixed wait is the only reliable option.
+    emit("info", "apple_signin", "Email submitted — waiting 10 s for password field")
+    time.sleep(10.0)
+
+    # macOS auto-focuses the password field after the email step.
     vm_ui.paste_text(ctx.apple_password)
     time.sleep(0.4)
     with ctx.qmp_lock:
-        with qmp.qmp() as c:
-            c.send_keys(["ret"])
+        qmp.send_keys(["ret"])
     vm_ui.wipe_clipboard()
 
     return RuntimeState.WAITING_2FA_OR_SIGNED_IN
@@ -232,11 +280,20 @@ def wait_2fa_or_signed_in(ctx: AutomationContext) -> RuntimeState:
                  f"Still waiting for Apple response… ({elapsed:.0f}s) screen: {repr(screen_snippet)}")
             last_progress = now
 
-        if _is_signed_in():
-            emit("info", "apple_signin", "Signed in without 2FA")
-            return RuntimeState.DISMISSING_POST_SIGNIN
-
         text = vm_ui.screen_text()
+
+        # macOS may show "Enter Mac Password" before showing 2FA, to set up
+        # iCloud Keychain.  Enter the VM password and continue waiting.
+        if "enter mac password" in text or "enter your mac password" in text:
+            emit("info", "apple_signin",
+                 "Enter Mac Password prompt (pre-2FA) — entering VM password")
+            vm_ui.paste_text(ctx.vm_password)
+            time.sleep(0.4)
+            with ctx.qmp_lock:
+                qmp.send_keys(["ret"])
+            time.sleep(2.0)
+            continue
+
         if any(kw in text for kw in TWOFA_KEYWORDS):
             emit("info", "apple_signin", "2FA prompt detected")
             return RuntimeState.AWAITING_2FA
@@ -245,6 +302,13 @@ def wait_2fa_or_signed_in(ctx: AutomationContext) -> RuntimeState:
             raise RuntimeError(
                 "Apple rejected credentials — check Apple ID email and password"
             )
+
+        # LOGGEDIN_INDICATORS only appear in the logged-in Apple ID view —
+        # never in the sign-in form or any transitional state.  Require one
+        # alongside the plist check to prevent stale-AccountID false positives.
+        if any(kw in text for kw in LOGGEDIN_INDICATORS) and _is_signed_in():
+            emit("info", "apple_signin", "Signed in — logged-in Apple ID view detected")
+            return RuntimeState.DISMISSING_POST_SIGNIN
 
         time.sleep(poll_s)
 
@@ -275,18 +339,22 @@ def await_2fa_input(ctx: AutomationContext) -> RuntimeState:
         except Exception:
             pass
 
-    # Poll for SMS request while waiting for the 2FA event.
-    # ctx.wait_for_2fa blocks internally on a threading.Event; we want to
-    # interleave SMS checks, so we use short waits in a loop instead.
+    # Automatically request an SMS code so Tasker can relay it — no manual
+    # intervention needed.  Wait 5 s first for the VM's 2FA dialog to settle.
+    time.sleep(5.0)
+    with ctx._lock:
+        code_ready = ctx._2fa_code is not None
+    if not code_ready:
+        phone = _request_sms_code()
+        ctx.set_sms_phone(phone)
+
     progress_interval_s = 60
     t0 = time.time()
     last_progress = t0
     deadline = t0 + 600.0
     while time.time() < deadline:
-        # Short wait — lets the event fire quickly when code is delivered.
         ctx._2fa_event.wait(timeout=2.0)
 
-        # If code is already in, stop polling.
         with ctx._lock:
             code_ready = ctx._2fa_code is not None
 
@@ -297,13 +365,8 @@ def await_2fa_input(ctx: AutomationContext) -> RuntimeState:
         elapsed = now - t0
         if now - last_progress >= progress_interval_s:
             emit("info", "apple_signin",
-                 f"Waiting for 2FA code from user… ({elapsed:.0f}s)")
+                 f"Waiting for 2FA code from Tasker relay… ({elapsed:.0f}s)")
             last_progress = now
-
-        # Check whether the user requested an SMS code while we waited.
-        if ctx.sms_was_requested():
-            phone = _request_sms_code()
-            ctx.set_sms_phone(phone)
     else:
         raise TimeoutError("2FA code not supplied within 600 s")
 
@@ -319,11 +382,9 @@ def type_2fa(ctx: AutomationContext) -> RuntimeState:
     code = ctx._2fa_code or ""
     emit("info", "apple_signin", "Typing 2FA code")
     with ctx.qmp_lock:
-        with qmp.qmp() as c:
-            c.type_text(code, gap_s=0.15)
+        qmp.type_text(code, gap_s=0.15)
         time.sleep(0.5)
-        with qmp.qmp() as c:
-            c.send_keys(["ret"])
+        qmp.send_keys(["ret"])
     ctx.clear_2fa()
     return RuntimeState.WAITING_SIGNED_IN
 
@@ -352,7 +413,41 @@ def wait_signed_in(ctx: AutomationContext) -> RuntimeState:
                  f"Still waiting for sign-in… ({elapsed:.0f}s) screen: {repr(screen_snippet)}")
             last_progress = now
 
-        if _is_signed_in():
+        text = vm_ui.screen_text()
+
+        if _screen_has_fail():
+            raise RuntimeError("Apple rejected the 2FA code — sign-in failed")
+
+        # After sign-in, macOS may show "Enter Mac Password" to set up iCloud
+        # Keychain.  Enter the VM password and press Return.
+        if "enter mac password" in text or "enter your mac password" in text:
+            emit("info", "apple_signin",
+                 "Enter Mac Password prompt — entering VM password")
+            vm_ui.paste_text(ctx.vm_password)
+            time.sleep(0.4)
+            with ctx.qmp_lock:
+                qmp.send_keys(["ret"])
+            time.sleep(2.0)
+            continue
+
+        # macOS may also show "Enter iPhone Passcode" to import iCloud Keychain
+        # from the paired phone.  We can't provide the phone passcode here, so
+        # click "Don't Know Passcode?" / "Cancel" to skip Keychain import.
+        if ("iphone" in text or "unlock" in text) and (
+            "passcode" in text or "some icloud data" in text
+        ):
+            emit("info", "apple_signin",
+                 "iPhone passcode prompt detected — cancelling Keychain import")
+            if not vm_ui.click_text("don't", "know", tries=2):
+                if not vm_ui.click_text("Cancel", tries=2):
+                    with ctx.qmp_lock:
+                        qmp.send_keys(["esc"])
+            time.sleep(2.0)
+            continue
+
+        # LOGGEDIN_INDICATORS only appear in the logged-in Apple ID view —
+        # require one alongside the plist check to avoid false positives.
+        if any(kw in text for kw in LOGGEDIN_INDICATORS) and _is_signed_in():
             emit("info", "apple_signin", "iCloud sign-in confirmed")
             try:
                 VM_ICLOUD_SIGNED_IN_MARKER.parent.mkdir(parents=True, exist_ok=True)
@@ -360,9 +455,6 @@ def wait_signed_in(ctx: AutomationContext) -> RuntimeState:
             except Exception:
                 pass
             return RuntimeState.DISMISSING_POST_SIGNIN
-
-        if _screen_has_fail():
-            raise RuntimeError("Apple rejected the 2FA code — sign-in failed")
 
         time.sleep(poll_s)
 

@@ -31,6 +31,37 @@ export function ensureVncLoaded() {
 }
 
 // ---------------------------------------------------------------------------
+// Credentials preset — server may have Apple ID saved via env vars
+// ---------------------------------------------------------------------------
+
+let _credentialsPreset = false;
+
+/**
+ * Check whether the server has Apple ID credentials pre-configured.
+ * Updates the form labels/placeholders so the user knows they're optional.
+ */
+export async function checkCredentialsPreset() {
+  try {
+    const { ok, data } = await get("/api/automation/credentials-preset");
+    if (!ok) return;
+    _credentialsPreset = !!data?.preset;
+  } catch {
+    return;
+  }
+
+  if (!_credentialsPreset) return;
+
+  // Mark fields as optional and show a hint.
+  const emailEl = document.getElementById("input-email");
+  const passwordEl = document.getElementById("input-password");
+  const hint = document.getElementById("credentials-preset-hint");
+
+  if (emailEl) emailEl.placeholder = "Override saved Apple ID (optional)";
+  if (passwordEl) passwordEl.placeholder = "Override saved password (optional)";
+  if (hint) hint.style.display = "";
+}
+
+// ---------------------------------------------------------------------------
 // Start Install
 // ---------------------------------------------------------------------------
 
@@ -56,7 +87,8 @@ export async function handleStartRuntime() {
   const password = document.getElementById("input-password")?.value;
   const restoreGolden = document.getElementById("input-restore-golden")?.checked ?? true;
 
-  if (!email || !password) {
+  // Only require manual entry when no server-side credentials are configured.
+  if (!_credentialsPreset && (!email || !password)) {
     alert("Please enter your Apple ID email and password.");
     return;
   }
@@ -156,4 +188,7 @@ export function wireButtons() {
   document.getElementById("twofa-code")?.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") handle2faSubmit();
   });
+
+  // Check for server-side credentials on load.
+  checkCredentialsPreset();
 }

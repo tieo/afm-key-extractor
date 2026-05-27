@@ -18,6 +18,9 @@ VM_SSH_ENABLED_MARKER = DATA_DIR / "vm-ssh-enabled"
 VM_ICLOUD_SIGNED_IN_MARKER = DATA_DIR / "vm-icloud-signed-in"
 
 POLL_INTERVAL = int(os.environ.get("AIRTAG_POLL_INTERVAL", "900"))
+# When true, the server automatically triggers a runtime run every POLL_INTERVAL
+# seconds (as long as no flow is already running and credentials are configured).
+AUTO_RUN = os.environ.get("AIRTAG_AUTO_RUN", "false").lower() in ("1", "true", "yes")
 PORT = int(os.environ.get("AIRTAG_PORT", "8042"))
 STATIC_DIR = Path(__file__).parent.parent / "static"
 
@@ -30,6 +33,19 @@ VM_SSH_PORT = int(os.environ.get("AIRTAG_VM_SSH_PORT", "2222"))
 
 # macOS version running in the VM.  Selects the adapter (14=Sonoma, 15=Sequoia).
 MACOS_VERSION = int(os.environ.get("AIRTAG_MACOS_VERSION", "14"))
+
+# Pre-configured Apple ID credentials.  When set, the start-runtime and
+# resume-runtime endpoints use these as defaults; the UI form fields become
+# optional.  Set via AIRTAG_APPLE_EMAIL / AIRTAG_APPLE_PASSWORD env vars
+# (or a .env file read by Docker Compose via env_file: .env).
+APPLE_EMAIL = os.environ.get("AIRTAG_APPLE_EMAIL", "")
+APPLE_PASSWORD = os.environ.get("AIRTAG_APPLE_PASSWORD", "")
+# Last 4+ digits of the phone number Apple should SMS the 2FA code to.
+# When Apple shows a list of trusted numbers, the automation clicks the one
+# containing this suffix.  Leave empty to accept whichever Apple pre-selects.
+APPLE_SMS_PHONE_SUFFIX = os.environ.get("AIRTAG_SMS_PHONE_SUFFIX", "")
+# iPhone passcode to approve iCloud data sync ("Some iCloud Data Isn't Syncing").
+IPHONE_PASSCODE = os.environ.get("AIRTAG_IPHONE_PASSCODE", "")
 
 QEMU_BINARY = os.environ.get("AIRTAG_QEMU_BINARY", "qemu-system-x86_64")
 

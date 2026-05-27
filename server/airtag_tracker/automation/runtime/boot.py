@@ -11,7 +11,7 @@ from __future__ import annotations
 import shutil
 import time
 
-from ... import vm
+from ... import vm, vm_ui
 from ...events import emit
 from ..context import AutomationContext
 from ..states import RuntimeState
@@ -32,6 +32,17 @@ def restore_golden(ctx: AutomationContext) -> RuntimeState:
     if not ctx.restore_golden:
         emit("info", "boot", "restore_golden=False — skipping image copy")
         return RuntimeState.BOOTING
+
+    # Stop any lingering QEMU process before overwriting its disk file.
+    # Writing to mac_hdd_ng.img while QEMU has it open corrupts the guest
+    # filesystem and causes the new run to see a broken macOS state.
+    if vm.is_running():
+        emit("info", "boot", "VM still running — stopping before golden restore")
+        try:
+            vm.stop()
+            time.sleep(3.0)
+        except Exception as e:
+            emit("warning", "boot", f"vm.stop() failed ({e}); continuing with restore")
 
     golden = ctx.adapter.golden_image_path(vm.VM_DIR)
     if not golden.exists():
@@ -61,18 +72,23 @@ def start_vm(ctx: AutomationContext) -> RuntimeState:
 def select_macos(ctx: AutomationContext) -> RuntimeState:
     """Wait for the OpenCore boot picker and select the macOS entry.
 
-    Uses OCR-based picker navigation (same as the install flow) to detect the
-    macOS entry position dynamically rather than relying on a hardcoded key
-    sequence that breaks when the picker entry order changes.
+    The golden image's OpenCore may be configured with a short or zero
+    auto-boot timeout, meaning the picker is visible for less than one poll
+    interval and the VM reaches the login screen (or desktop via autologin)
+    before we notice.  Both outcomes are detected and handled:
 
-    Polls every 5 s for up to 90 s.  Raises RuntimeError on timeout.
+    - Picker visible → OCR-click the macOS entry (same as install flow).
+    - Desktop already up → autologin fired; skip straight to WAITING_DESKTOP.
+    - Login screen up → proceed to WAITING_LOGIN_SCREEN normally.
+
+    Polls every 3 s for up to 120 s.
     """
-    deadline_s = 90
-    poll_s = 5.0
+    deadline_s = 120
+    poll_s = 3.0
     progress_interval_s = 20
     t0 = time.time()
     last_progress = t0
-    emit("info", "boot", "Waiting for OpenCore picker (up to 90 s)")
+    emit("info", "boot", "Waiting for OpenCore picker (up to 120 s)")
     while time.time() - t0 < deadline_s:
         now = time.time()
         elapsed = now - t0
@@ -80,9 +96,65 @@ def select_macos(ctx: AutomationContext) -> RuntimeState:
             emit("info", "boot",
                  f"Still waiting for OpenCore picker… ({elapsed:.0f}s)")
             last_progress = now
+
         if screen.detect_opencore_picker():
             emit("info", "boot", "OpenCore picker detected — selecting macOS")
-            select_macos_entry(ctx)
+            # Retry loop: verify picker disappears after key press.
+            # Keys are occasionally dropped (QEMU input timing), leaving the
+            # picker stuck and causing a 360s timeout in WAITING_LOGIN_SCREEN.
+            for attempt in range(3):
+                select_macos_entry(ctx)
+                # Poll for up to 12s for the picker to go away.
+                for _ in range(6):
+                    time.sleep(2.0)
+                    if not screen.detect_opencore_picker():
+                        return RuntimeState.WAITING_LOGIN_SCREEN
+                emit("warning", "boot",
+                     f"OpenCore picker still visible after key press (attempt {attempt + 1}) — retrying")
+            # Picker persisted through all retries — proceed anyway and let
+            # WAITING_LOGIN_SCREEN's login detection sort it out.
+            emit("warning", "boot", "OpenCore picker still visible after 3 attempts — proceeding")
             return RuntimeState.WAITING_LOGIN_SCREEN
+
+        # Fast-path: golden image auto-booted past the picker.
+        if screen.detect_desktop():
+            emit("info", "boot",
+                 "Desktop detected — OpenCore auto-booted, skipping to WAITING_DESKTOP")
+            return RuntimeState.WAITING_DESKTOP
+
+        if screen.detect_login_screen():
+            emit("info", "boot",
+                 "Login screen detected — OpenCore auto-booted, proceeding to WAITING_LOGIN_SCREEN")
+            return RuntimeState.WAITING_LOGIN_SCREEN
+
+        # The Keyboard Setup Assistant or any foreground app (e.g. System
+        # Settings) can hide the Finder menu bar that detect_desktop() looks
+        # for.  After a hibernation resume the golden disk's macOS may return
+        # directly to the last-used app (e.g. Find My) without showing Finder.
+        ocr = vm_ui.screen_text()
+        if any(kw in ocr for kw in (
+            "keyboard setup assistant",
+            "system settings",
+            "software update",
+            "find my",               # Find My app after hibernation resume
+            "enable notifications",  # Find My first-launch dialog
+            "not now",               # Common dismiss button on macOS dialogs
+            "find your friends",     # Find My friends/items screen
+            "lost items",            # Find My items tab
+        )):
+            emit("info", "boot",
+                 "macOS app detected — OpenCore auto-booted, skipping to WAITING_DESKTOP")
+            return RuntimeState.WAITING_DESKTOP
+
+        # SSH connectivity is the most reliable "macOS is up" indicator.
+        try:
+            r = vm_ui.ssh("echo ok", timeout=5)
+            if r.returncode == 0:
+                emit("info", "boot",
+                     "SSH reachable — macOS booted, skipping to WAITING_LOGIN_SCREEN")
+                return RuntimeState.WAITING_LOGIN_SCREEN
+        except Exception:
+            pass
+
         time.sleep(poll_s)
     raise RuntimeError(f"OpenCore picker not detected within {deadline_s}s")

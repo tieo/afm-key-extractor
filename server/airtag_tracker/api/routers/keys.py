@@ -5,12 +5,14 @@ Prefix: /api/keys
 
 from __future__ import annotations
 
+import io
 import re
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from ...config import KEYS_DIR
 
@@ -35,6 +37,26 @@ def list_keys() -> list[dict]:
         return []
     files = sorted(KEYS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     return [_key_meta(f) for f in files]
+
+
+@router.get("/zip")
+def download_keys_zip():
+    """Return all key JSON files bundled as airtag-keys.zip."""
+    if not KEYS_DIR.exists():
+        raise HTTPException(status_code=404, detail="No keys directory found")
+    files = sorted(KEYS_DIR.glob("*.json"), key=lambda p: p.name)
+    if not files:
+        raise HTTPException(status_code=404, detail="No key files found")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in files:
+            zf.write(f, f.name)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=airtag-keys.zip"},
+    )
 
 
 @router.get("/{filename}")

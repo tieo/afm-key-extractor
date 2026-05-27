@@ -64,6 +64,108 @@ class MacOSAdapter(abc.ABC):
         needed for OS-specific preparation.  Sonoma: no-op.
         """
 
+    def focus_apple_id_email_field(self, ctx: AutomationContext) -> None:
+        """Focus the email field in the Apple ID sign-in sheet via a direct pixel click.
+
+        Keyboard navigation (Tab, Cmd+A) is unreliable here: System Settings
+        opens with focus on the sidebar search field, and Tab from there moves
+        between sidebar items, never reaching the email field in the content area.
+        A pixel click at the known field position is deterministic.
+
+        Coordinates assume a 1280×800 VM framebuffer with System Settings centered
+        (the golden image bakes the window in this position).
+        """
+        from . import vm_ui as _vm_ui, qmp as _qmp
+        # Click the email field then Cmd+A to select any pre-existing text so
+        # the subsequent paste cleanly replaces it.
+        _vm_ui.click_pixel(748, 445, 1280, 800)
+        time.sleep(0.3)
+        _qmp.send_chord(["meta_l", "a"])
+        time.sleep(0.2)
+
+    def navigate_to_find_my_mac(self, ctx: AutomationContext) -> None:
+        """Navigate System Settings to the Find My Mac toggle and click Turn On.
+
+        Default path (Sonoma 14 / Sequoia 15):
+          Open iCloud section directly via URL → Show All → Find My Mac → Turn On
+
+        We navigate to the iCloud section via x-apple.systempreferences URL instead
+        of clicking the "iCloud" sidebar row.  The click approach is unreliable when
+        the "Some iCloud Data Isn't Syncing" badge row also contains "iCloud" and gets
+        clicked instead.
+
+        Override if a future macOS version restructures the iCloud feature list.
+        Raises RuntimeError if any navigation step fails.
+        """
+        from . import vm_ui as _vm_ui, qmp as _qmp
+        from .events import emit as _emit
+
+        # Navigate directly to the iCloud section within Apple ID settings.
+        # Using the URL anchor skips the ambiguous sidebar-row click entirely.
+        ICLOUD_URLS = (
+            ("com.apple.systempreferences.AppleIDSettings", "iCloud"),
+            ("com.apple.preferences.AppleIDPrefPane", "iCloud"),
+        )
+        # Keywords that confirm we're on the iCloud management page, not the sync-error page.
+        ICLOUD_LANDED = ("icloud drive", "find my", "show more", "show all", "passwords", "icloud backup", "photos")
+
+        def _open_icloud_section() -> bool:
+            for bundle, anchor in ICLOUD_URLS:
+                try:
+                    _vm_ui.open_settings_pane(bundle, anchor, settle_s=4.0)
+                except Exception:
+                    continue
+                # Give the page up to 15s to load — don't re-kill System Settings
+                # if the first URL is working but just loading slowly.
+                if _vm_ui.wait_for_text(ICLOUD_LANDED, deadline_s=15):
+                    return True
+            return False
+
+        if not _open_icloud_section():
+            _emit("warning", "macos_adapter",
+                  "iCloud URL anchor failed — checking screen state")
+
+        # Guard: if we're on the sync-error detail page, navigate back and retry.
+        text = _vm_ui.screen_text()
+        if "resume data sync" in text or "end-to-end encrypted" in text:
+            _emit("info", "macos_adapter",
+                  "Landed on iCloud sync error page — navigating back and retrying")
+            if not _vm_ui.click_text("apple", "id", tries=2):
+                with ctx.qmp_lock:
+                    _qmp.send_keys(["esc"])
+            time.sleep(2.0)
+            if not _open_icloud_section():
+                raise RuntimeError("Could not open iCloud section after sync-error recovery")
+            text = _vm_ui.screen_text()
+            if "resume data sync" in text or "end-to-end encrypted" in text:
+                raise RuntimeError("Still on iCloud sync error page after retry")
+
+        # macOS may show an "iCloud Drive" modal when first opening the iCloud
+        # section — it asks whether to sync this Mac.  Dismiss it with Done
+        # before looking for the Show All / Find My Mac rows.
+        text = _vm_ui.screen_text()
+        if "sync this mac" in text or ("icloud drive" in text and "done" in text):
+            _emit("info", "macos_adapter", "iCloud Drive dialog — clicking Done")
+            if not _vm_ui.click_text("Done", tries=2):
+                with ctx.qmp_lock:
+                    _qmp.send_keys(["ret"])
+            time.sleep(1.5)
+
+        # The button to expand the app list is "Show More Apps..." in Sonoma or
+        # "Show All" in some configurations.  Try both.
+        for show_label in (("Show", "More"), ("Show", "All")):
+            if _vm_ui.click_text(*show_label, tries=2):
+                break
+        else:
+            _emit("warning", "macos_adapter",
+                  "Could not click 'Show More Apps' / 'Show All' — Find My row may still be visible")
+        time.sleep(1.0)
+        if not _vm_ui.click_text("Find", "Mac", tries=3):
+            raise RuntimeError("Could not locate 'Find My Mac' row in iCloud features list")
+        time.sleep(1.5)
+        _vm_ui.click_text("Turn", "On", tries=2)
+        time.sleep(1.0)
+
     @abc.abstractmethod
     def extract_beacon_key(self, *, vm_password: str) -> str:
         """Extract the BeaconStore AES key from the running VM.

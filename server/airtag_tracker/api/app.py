@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..config import DATA_DIR, KEYS_DIR, STATIC_DIR, VM_ENABLED
+from ..config import AUTO_RUN, DATA_DIR, KEYS_DIR, STATIC_DIR, VM_ENABLED
 from ..events import emit, set_broadcast_hook
 from . import sse
 from .routers import automation, debug, events, keys, setup, twofa
@@ -48,7 +48,19 @@ async def _lifespan(app: FastAPI):
                 emit("warning", "system", f"Failed to stop orphaned QEMU: {_e}")
 
     emit("info", "system", "AirTag Key Extractor API started")
+
+    scheduler_stop = asyncio.Event()
+    scheduler_task = None
+    if AUTO_RUN and VM_ENABLED:
+        from .. import scheduler
+        scheduler_task = asyncio.create_task(scheduler.run(scheduler_stop))
+
     yield
+
+    if scheduler_task is not None:
+        scheduler_stop.set()
+        scheduler_task.cancel()
+
     emit("info", "system", "AirTag Key Extractor API shutting down")
 
 

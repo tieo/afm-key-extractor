@@ -37,6 +37,7 @@ class AutomationContext:
         vm_password: str,
         apple_email: str = "",
         apple_password: str = "",
+        iphone_passcode: str = "",
         restore_golden: bool = True,
         icloud_sync_timeout_s: int = 1800,
         initial_state: AnyState | None = None,
@@ -46,6 +47,7 @@ class AutomationContext:
         self.vm_password = vm_password
         self.apple_email = apple_email
         self.apple_password = apple_password
+        self.iphone_passcode = iphone_passcode
         self.restore_golden = restore_golden
         self.icloud_sync_timeout_s = icloud_sync_timeout_s
 

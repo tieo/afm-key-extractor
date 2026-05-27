@@ -17,12 +17,31 @@ from ...automation.states import (
     InstallState,
     RuntimeState,
 )
-from ...config import VM_DIR
+from ...config import APPLE_EMAIL, APPLE_PASSWORD, IPHONE_PASSCODE, VM_DIR
 from ...macos_adapter import get_active_adapter
 from ...vm_password import ensure as ensure_vm_password
 from .. import sse
 
 router = APIRouter(prefix="/api/automation", tags=["automation"])
+
+
+def _resolve_credentials(body_email: str, body_password: str) -> tuple[str, str]:
+    """Return (email, password), preferring body values over saved env-var defaults.
+
+    Raises HTTP 400 if neither source provides both fields.
+    """
+    email = body_email.strip() or APPLE_EMAIL
+    password = body_password or APPLE_PASSWORD
+    if not email or not password:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Apple ID email and password are required. "
+                "Provide them in the request body or set "
+                "AIRTAG_APPLE_EMAIL / AIRTAG_APPLE_PASSWORD in the server environment."
+            ),
+        )
+    return email, password
 
 
 def _label_for(flow: str | None, state_val: str) -> str:
@@ -75,9 +94,19 @@ def start_install() -> dict:
     return {"status": "started"}
 
 
+@router.get("/credentials-preset")
+def credentials_preset() -> dict:
+    """Return whether Apple ID credentials are pre-configured server-side.
+
+    The UI uses this on load to decide whether to require manual entry.
+    """
+    return {"preset": bool(APPLE_EMAIL and APPLE_PASSWORD)}
+
+
 class RuntimeStartBody(BaseModel):
-    apple_email: str
-    apple_password: str
+    apple_email: str = ""
+    apple_password: str = ""
+    iphone_passcode: str = ""
     restore_golden: bool = True
     icloud_sync_timeout_s: int = 1800
 
@@ -95,12 +124,14 @@ def start_runtime(body: RuntimeStartBody) -> dict:
                 "Run the install flow first."
             ),
         )
+    email, password = _resolve_credentials(body.apple_email, body.apple_password)
     vm_password = ensure_vm_password()
     ctx = AutomationContext(
         flow_kind=FlowKind.RUNTIME,
         vm_password=vm_password,
-        apple_email=body.apple_email,
-        apple_password=body.apple_password,
+        apple_email=email,
+        apple_password=password,
+        iphone_passcode=body.iphone_passcode or IPHONE_PASSCODE,
         restore_golden=body.restore_golden,
         icloud_sync_timeout_s=body.icloud_sync_timeout_s,
     )
@@ -145,12 +176,14 @@ def resume_runtime(body: RuntimeStartBody, state: str = "waiting_login_screen") 
         initial = RuntimeState(state)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Unknown runtime state: {state!r}")
+    email, password = _resolve_credentials(body.apple_email, body.apple_password)
     vm_password = ensure_vm_password()
     ctx = AutomationContext(
         flow_kind=FlowKind.RUNTIME,
         vm_password=vm_password,
-        apple_email=body.apple_email,
-        apple_password=body.apple_password,
+        apple_email=email,
+        apple_password=password,
+        iphone_passcode=body.iphone_passcode or IPHONE_PASSCODE,
         restore_golden=False,
         icloud_sync_timeout_s=body.icloud_sync_timeout_s,
         initial_state=initial,

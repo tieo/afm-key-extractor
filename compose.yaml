@@ -14,6 +14,11 @@ services:
       # corrupt the host tree.
       - ./server/airtag_tracker:/app/server/airtag_tracker:ro
       - /tmp:/tmp     # QMP/monitor sockets survive container restarts
+    # Optional secrets file — copy .env.example to .env and fill in your Apple ID.
+    # Fields left out here can be entered manually in the browser UI instead.
+    env_file:
+      - path: .env
+        required: false
     environment:
       AIRTAG_VM_ENABLED: "1"
       AIRTAG_DATA_DIR: /data
@@ -32,5 +37,3 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-volumes:
-  airtag-data:

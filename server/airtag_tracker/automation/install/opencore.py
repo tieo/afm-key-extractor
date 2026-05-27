@@ -138,7 +138,9 @@ def select_macos_entry(ctx: AutomationContext) -> None:
              f"macOS label not found — words: {[w[0] for w in words[:20]]}"
              "; pressing right+ret (assume MacHDD at position 1)")
         with ctx.qmp_lock:
-            qmp.send_keys(["right", "ret"])
+            qmp.send_keys(["right"])
+            time.sleep(0.5)
+            qmp.send_keys(["ret"])
         return
 
     # Count distinct entry clusters to the left of the macOS label.
@@ -160,14 +162,27 @@ def select_macos_entry(ctx: AutomationContext) -> None:
         if not merged:
             clusters.append(cx)
 
-    n_rights = len(clusters) if clusters else 1
-    keys = ["right"] * n_rights + ["ret"]
+    n_rights = len(clusters)
+
+    # Geometry fallback: OCR often misses short labels like "EFI" (3 chars).
+    # In a 2-entry picker (EFI | MacHDD), MacHDD sits at ~56% of screen width.
+    # In a 1-entry picker MacHDD is centered at ~50%.
+    # If OCR found 0 clusters but MacHDD is noticeably right of center,
+    # infer 1 entry to its left (the EFI entry OCR missed).
+    if n_rights == 0 and macos_x > sw * 0.52:
+        n_rights = 1
+        emit("info", "opencore",
+             f"OCR found 0 left clusters but '{macos_label}' at x≈{macos_x}px "
+             f"({macos_x/sw:.2f} of screen width) — inferring 1 entry to left")
+
     emit("info", "opencore",
-         f"OCR: '{macos_label}' at x≈{macos_x}px, {len(clusters)} entr"
-         f"{'y' if len(clusters) == 1 else 'ies'} to left"
-         f" — pressing {'right+' * n_rights}ret")
+         f"OCR: '{macos_label}' at x≈{macos_x}px, {len(clusters)} OCR-cluster"
+         f"{'s' if len(clusters) != 1 else ''} to left, pressing {'right+' * n_rights}ret")
     with ctx.qmp_lock:
-        qmp.send_keys(keys)
+        for _ in range(n_rights):
+            qmp.send_keys(["right"])
+            time.sleep(0.5)
+        qmp.send_keys(["ret"])
 
 
 def select_installed(ctx: AutomationContext) -> InstallState:
