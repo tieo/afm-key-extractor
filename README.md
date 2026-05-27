@@ -59,7 +59,7 @@ After changing `.env`: `docker compose up -d --force-recreate`
 Forwards every Apple SMS to the server — fully unattended 2FA. One tap to confirm in Tasker.
 
 ```bash
-bash tasker/install.sh
+bash tasker/install.sh  # currently untested
 ```
 
 Asks for the phone's ADB device and the server address, pushes the profile, opens the import dialog.
