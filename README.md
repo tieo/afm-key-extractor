@@ -51,7 +51,7 @@ When Apple requires 2FA, the runtime flow pauses at the **"Two-Factor Authentica
   POST /api/vm/apple-signin/sms-relay
   {"sms": "<full SMS body>"}
   ```
-  After importing, edit the task URL to match your server address.
+  After importing, open the task in Tasker and set the HTTP Request URL to `https://<your-server>/api/vm/apple-signin/sms-relay`.
 
 Setting `AIRTAG_SMS_PHONE_SUFFIX` ensures Apple sends the code to the right number when you have multiple trusted devices.
 
