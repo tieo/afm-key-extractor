@@ -46,12 +46,12 @@ Copy `.env.example` to `.env` and fill in your values:
 When Apple requires 2FA, the runtime flow pauses at the **"Two-Factor Authentication Required"** screen and waits for a code. You can:
 
 - **Enter it manually** — type the 6-digit code into the UI form and click Verify.
-- **Automate it** — the flow emits an SSE event when paused and accepts a code via the API:
+- **Automate it with Tasker** — import [`tasker/AirTag_2FA_Relay.prf.xml`](tasker/AirTag_2FA_Relay.prf.xml) into Tasker on Android. It triggers on any SMS from "Apple", forwards the full message body to the server, and the server extracts the OTP automatically:
   ```
-  POST /api/twofa/submit
-  {"code": "123456"}
+  POST /api/vm/apple-signin/sms-relay
+  {"sms": "<full SMS body>"}
   ```
-  Tools like [Tasker](https://tasker.joaoapps.com/) on Android can intercept the Apple SMS, parse the code, and POST it automatically — fully hands-free operation.
+  After importing, edit the task URL to match your server address.
 
 Setting `AIRTAG_SMS_PHONE_SUFFIX` ensures Apple sends the code to the right number when you have multiple trusted devices.
 

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Tasker Profile + Task: AirTag 2FA SMS Relay
+     Import via: Tasker → long-press on Profiles tab → Import Profile
+
+     What it does:
+       Whenever Apple sends an SMS (sender contains "Apple"), forward the
+       full message body to the airtag-tracker SMS relay endpoint.
+       The server extracts the 6-digit OTP and delivers it to the waiting
+       runtime flow automatically.
+
+     After importing:
+       - Edit the task's HTTP Request URL to match your server address
+         (default: https://airtag.example.com/api/vm/apple-signin/sms-relay)
+       - If you access the server over LAN only, use the local URL instead:
+         http://192.168.0.233:8042/api/vm/apple-signin/sms-relay
+-->
+<TaskerData sr="" dvi="1" tv="6.3.13">
+
+  <Profile sr="prof0" ve="2">
+    <cdate>1748304000000</cdate>
+    <edate>1748304000000</edate>
+    <flags>8</flags>
+    <id>1</id>
+    <mid0>2</mid0>
+    <nme>AirTag 2FA Relay</nme>
+    <!-- Trigger: SMS received from sender containing "Apple" -->
+    <Event sr="con0" ve="2">
+      <code>402</code>
+      <pri>0</pri>
+      <Str sr="arg0" ve="3">Apple</Str>
+      <Int sr="arg1" ve="3"><var>0</var></Int>
+      <Str sr="arg2" ve="3"></Str>
+    </Event>
+  </Profile>
+
+  <Task sr="task2">
+    <cdate>1748304000000</cdate>
+    <edate>1748304000000</edate>
+    <id>2</id>
+    <nme>Relay Apple 2FA SMS</nme>
+    <!-- HTTP Post to the SMS relay endpoint.
+         %SMSRB = received SMS body (Tasker built-in variable).
+         The server extracts the 6-digit code from the raw text. -->
+    <Action sr="act0" ve="7">
+      <code>339</code>
+      <Str sr="arg0" ve="3">airtag.example.com:443</Str>
+      <Str sr="arg1" ve="3">/api/vm/apple-signin/sms-relay</Str>
+      <Str sr="arg2" ve="3">{"sms":"%SMSRB"}</Str>
+      <Str sr="arg3" ve="3">application/json</Str>
+      <Int sr="arg4" ve="3"><var>10</var></Int>
+      <Str sr="arg5" ve="3">%sms_relay_resp</Str>
+    </Action>
+  </Task>
+
+</TaskerData>
