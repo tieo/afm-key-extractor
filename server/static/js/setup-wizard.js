@@ -1,42 +1,30 @@
-// First-time setup wizard: download macOS BaseSystem, then unlock install card.
+// First-time setup wizard: download macOS BaseSystem.
 
 import { get, post } from "./api.js";
 
 let _pollTimer = null;
 
 // ---------------------------------------------------------------------------
-// Setup status check
+// Setup status
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch /api/setup/status and update UI visibility.
- * - If basesystem_ready: hide card-setup, show card-install (and card-runtime
- *   if golden_image_ready).
- * - Otherwise: show card-setup, hide card-install, hide card-runtime.
- * Called on page load and after download completes.
+ * Fetch /api/setup/status. Returns the status object so callers can cache it
+ * for view selection. Also resumes download polling if a download is in progress.
  */
 export async function checkSetupStatus() {
   const status = await get("/api/setup/status");
-  if (!status) return; // server not ready yet
+  if (!status) return null;
 
-  const cardSetup = document.getElementById("card-setup");
-  const cardInstall = document.getElementById("card-install");
-  const cardRuntime = document.getElementById("card-runtime");
-
-  if (status.basesystem_ready) {
-    if (cardSetup) cardSetup.style.display = "none";
-    if (cardInstall) cardInstall.style.display = "";
-    if (cardRuntime) cardRuntime.style.display = status.golden_image_ready ? "" : "none";
-  } else {
-    if (cardSetup) cardSetup.style.display = "";
-    if (cardInstall) cardInstall.style.display = "none";
-    if (cardRuntime) cardRuntime.style.display = "none";
-    // If a download is already running (server restarted mid-download), resume polling.
+  // If basesystem is missing and a download is already running, resume polling.
+  if (!status.basesystem_ready) {
     const dlStatus = await get("/api/setup/download-macos/status");
     if (dlStatus && dlStatus.running) {
       _startPolling();
     }
   }
+
+  return status;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,21 +43,20 @@ export async function handleDownloadMacOS() {
 
   const { ok, data } = await post("/api/setup/download-macos");
   if (!ok) {
-    const msg = data?.detail || "Failed to start download";
-    _setError(msg);
+    _setError(data?.detail || "Failed to start download");
     if (btn) { btn.disabled = false; btn.textContent = "Download macOS"; }
     return;
   }
   if (data?.status === "already_present") {
-    // Race: another client already downloaded it between our status check and click.
-    await checkSetupStatus();
+    // Server already has it — trigger a status refresh so the view switches.
+    window.dispatchEvent(new CustomEvent("setup-complete"));
     return;
   }
   _startPolling();
 }
 
 function _startPolling() {
-  if (_pollTimer) return; // already polling
+  if (_pollTimer) return;
   _pollTimer = setInterval(_pollDownload, 2000);
 }
 
@@ -88,9 +75,8 @@ async function _pollDownload() {
   _setProgress(status.progress || "Downloading…", _guessProgress(status.progress));
 
   if (!status.running && !status.error) {
-    // Download finished — re-check setup status which will unhide the install card.
     _stopPolling();
-    await checkSetupStatus();
+    window.dispatchEvent(new CustomEvent("setup-complete"));
   }
 }
 
@@ -98,21 +84,13 @@ function _stopPolling() {
   if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
 }
 
-/**
- * Guess a 0–100 fill percentage from the progress string so the bar moves.
- * The download goes fetch → convert, so we split the range 5–95.
- */
 function _guessProgress(text) {
   if (!text) return 5;
   const t = text.toLowerCase();
   if (t.includes("converting") || t.includes("qemu-img")) return 80;
   if (t.includes("ready") || t.includes("present")) return 100;
-  // fetch-macOS.py prints "Downloading ... chunk N/M" style output.
   const m = t.match(/(\d+)\s*\/\s*(\d+)/);
-  if (m) {
-    const pct = Math.round((parseInt(m[1]) / parseInt(m[2])) * 70) + 5;
-    return Math.min(pct, 75);
-  }
+  if (m) return Math.min(Math.round((parseInt(m[1]) / parseInt(m[2])) * 70) + 5, 75);
   return 30;
 }
 

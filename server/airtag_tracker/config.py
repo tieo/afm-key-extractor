@@ -27,6 +27,10 @@ STATIC_DIR = Path(__file__).parent.parent / "static"
 VM_ENABLED = os.environ.get("AIRTAG_VM_ENABLED", "false").lower() in ("1", "true", "yes")
 VM_DIR = Path(os.environ.get("AIRTAG_VM_DIR", "/var/lib/airtag-tracker/osx-kvm"))
 VNC_WS_PORT = int(os.environ.get("AIRTAG_VNC_WS_PORT", "6901"))
+# Public URL for the noVNC web interface.  When empty, the UI falls back to
+# http://localhost:VNC_WS_PORT which works for local dev.  Set to e.g.
+# https://airtag-vnc.example.com when running behind a reverse proxy.
+VNC_URL = os.environ.get("AIRTAG_VNC_URL", "")
 VM_USERNAME = os.environ.get("AIRTAG_VM_USERNAME", "airtag")
 VM_SSH_HOST = os.environ.get("AIRTAG_VM_SSH_HOST", "localhost")
 VM_SSH_PORT = int(os.environ.get("AIRTAG_VM_SSH_PORT", "2222"))

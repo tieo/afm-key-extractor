@@ -1,7 +1,3 @@
-// Drives all UI from SSE events + initial GET /api/automation/status.
-
-import { get } from "./api.js";
-
 // Stage sequences — values match the enum .value strings in states.py.
 export const INSTALL_STAGES = [
   "idle",
@@ -58,7 +54,6 @@ export const RUNTIME_STAGES = [
   "done",
 ];
 
-// SA stages collapsed to one display entry in the install stage bar.
 const _SA_STAGES = [
   "sa_country", "sa_languages", "sa_accessibility", "sa_data_privacy",
   "sa_migration", "sa_apple_id", "sa_terms", "sa_create_account",
@@ -74,28 +69,6 @@ const _INSTALL_BAR = [
   "dismiss_first_boot", "shutting_down", "baking_golden", "done",
 ];
 
-function _renderInstallBar(state) {
-  const realIdx = INSTALL_STAGES.indexOf(state);
-  const saEnd = INSTALL_STAGES.indexOf("sa_appearance");
-  const saSubIdx = _SA_STAGES.indexOf(state);
-
-  return _INSTALL_BAR.map((s) => {
-    if (s === "__sa__") {
-      let cls = "stage";
-      let lbl = "Setup Assistant";
-      if (realIdx > saEnd) cls += " stage--done";
-      else if (saSubIdx !== -1) { cls += " stage--active"; lbl += ` (${saSubIdx + 1}/15)`; }
-      return `<span class="${cls}">${lbl}</span>`;
-    }
-    const idx = INSTALL_STAGES.indexOf(s);
-    let cls = "stage";
-    if (realIdx > idx) cls += " stage--done";
-    else if (realIdx === idx) cls += " stage--active";
-    return `<span class="${cls}">${INSTALL_LABELS[s] ?? s}</span>`;
-  }).join("");
-}
-
-// Human-readable labels for each stage (mirrors INSTALL/RUNTIME_STAGE_LABELS in states.py).
 const INSTALL_LABELS = {
   idle: "Idle",
   booting_picker: "Starting VM",
@@ -153,13 +126,192 @@ const RUNTIME_LABELS = {
   error: "Error",
 };
 
-/**
- * Returns human-readable label for a given flow + state combo.
- */
 export function labelFor(flow, state) {
   if (flow === "install") return INSTALL_LABELS[state] ?? state;
   if (flow === "runtime") return RUNTIME_LABELS[state] ?? state;
   return state;
+}
+
+// ---------------------------------------------------------------------------
+// View selection
+// ---------------------------------------------------------------------------
+
+const _ALL_VIEWS = ["view-setup", "view-install", "view-running", "view-ready"];
+
+/**
+ * Switch to the appropriate view based on automation + setup state.
+ * @param {{ running: boolean, state: string }} status
+ * @param {{ basesystem_ready: boolean, golden_image_ready: boolean } | null} setupStatus
+ */
+export function selectView(status, setupStatus) {
+  let target;
+  if (status.running) {
+    target = "view-running";
+  } else if (!setupStatus || !setupStatus.basesystem_ready) {
+    target = "view-setup";
+  } else if (!setupStatus.golden_image_ready) {
+    target = "view-install";
+  } else {
+    target = "view-ready";
+  }
+
+  _ALL_VIEWS.forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = id === target ? "" : "none";
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Status badge
+// ---------------------------------------------------------------------------
+
+export function updateStatusBadge(status) {
+  const badge = document.getElementById("status-badge");
+  if (!badge) return;
+  if (status.running) {
+    badge.className = "badge badge-running";
+    badge.textContent = "Running";
+  } else if (status.state === "error") {
+    badge.className = "badge badge-error";
+    badge.textContent = "Error";
+  } else if (status.state === "done") {
+    badge.className = "badge badge-done";
+    badge.textContent = "Done";
+  } else {
+    badge.className = "badge badge-idle";
+    badge.textContent = "Idle";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Stage bar (shown inside view-running)
+// ---------------------------------------------------------------------------
+
+const VNC_VISIBLE_STATES = new Set([
+  "booting_picker", "picker_selecting", "waiting_recovery",
+  "format_disk", "waiting_format_done", "reinstall_clicking",
+  "waiting_install", "booting_installed",
+  "sa_country", "sa_languages", "sa_accessibility", "sa_data_privacy",
+  "sa_migration", "sa_apple_id", "sa_terms", "sa_create_account",
+  "sa_apple_id_2", "sa_terms_2", "sa_location", "sa_timezone",
+  "sa_analytics", "sa_screen_time", "sa_appearance",
+  "dismiss_first_boot", "shutting_down", "baking_golden",
+  "restoring_golden", "booting", "picker_selecting",
+  "waiting_login_screen", "logging_in", "waiting_desktop",
+  "disabling_sleep", "opening_apple_id", "typing_credentials",
+  "waiting_2fa_or_signed_in", "awaiting_2fa", "typing_2fa",
+  "waiting_signed_in", "dismissing_post_signin",
+  "resolving_apple_id_update", "enabling_find_my",
+  "waiting_icloud_sync", "extracting_keys",
+]);
+
+function _renderInstallBar(state) {
+  const realIdx = INSTALL_STAGES.indexOf(state);
+  const saEnd = INSTALL_STAGES.indexOf("sa_appearance");
+  const saSubIdx = _SA_STAGES.indexOf(state);
+
+  return _INSTALL_BAR.map((s) => {
+    if (s === "__sa__") {
+      let cls = "stage";
+      let lbl = "Setup Assistant";
+      if (realIdx > saEnd) cls += " stage--done";
+      else if (saSubIdx !== -1) { cls += " stage--active"; lbl += ` (${saSubIdx + 1}/15)`; }
+      return `<span class="${cls}">${lbl}</span>`;
+    }
+    const idx = INSTALL_STAGES.indexOf(s);
+    let cls = "stage";
+    if (realIdx > idx) cls += " stage--done";
+    else if (realIdx === idx) cls += " stage--active";
+    return `<span class="${cls}">${INSTALL_LABELS[s] ?? s}</span>`;
+  }).join("");
+}
+
+export function updateRunningView(status) {
+  const { flow, state, label, running } = status;
+
+  // Stage bar.
+  const stageBar = document.getElementById("stage-bar");
+  const stageLabelEl = document.getElementById("stage-label");
+  if (stageBar && stageLabelEl) {
+    const stages = flow === "install" ? INSTALL_STAGES : flow === "runtime" ? RUNTIME_STAGES : [];
+    const activeIdx = stages.indexOf(state);
+    stageBar.innerHTML = flow === "install"
+      ? _renderInstallBar(state)
+      : stages.map((s, i) => {
+          let cls = "stage";
+          if (i < activeIdx) cls += " stage--done";
+          else if (i === activeIdx) cls += " stage--active";
+          return `<span class="${cls}">${labelFor(flow, s)}</span>`;
+        }).join("");
+    stageLabelEl.textContent = label || labelFor(flow, state);
+  }
+
+  // VNC iframe — show for active automation states.
+  const vncSection = document.getElementById("vnc-section");
+  if (vncSection) {
+    vncSection.style.display = (running && VNC_VISIBLE_STATES.has(state)) ? "" : "none";
+  }
+
+  // 2FA form.
+  const twofaForm = document.getElementById("twofa-form");
+  if (twofaForm) {
+    const show2fa = running && state === "awaiting_2fa";
+    twofaForm.style.display = show2fa ? "" : "none";
+    if (show2fa) {
+      const inp = document.getElementById("twofa-code");
+      if (inp && document.activeElement !== inp) inp.focus();
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Keys panel (shown inside view-ready)
+// ---------------------------------------------------------------------------
+
+export function updateKeysPanel(keys) {
+  const panel = document.getElementById("keys-panel");
+  if (!panel) return;
+  if (!Array.isArray(keys) || keys.length === 0) {
+    panel.style.display = "none";
+    return;
+  }
+  panel.style.display = "";
+
+  const metaEl = document.getElementById("keys-meta");
+  if (metaEl) {
+    const lastRun = new Date(keys[0].mtime);
+    const dateStr = lastRun.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+    const noun = keys.length === 1 ? "key" : "keys";
+    metaEl.textContent = `${keys.length} ${noun} · Last extracted ${dateStr}`;
+  }
+
+  const listEl = document.getElementById("keys-list");
+  if (listEl) {
+    listEl.innerHTML = keys.map((k) => {
+      const d = new Date(k.mtime);
+      const dateStr = d.toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+      const id = k.name.replace(/\.json$/, "");
+      return `<div class="key-row">
+        <span class="key-name">${id}</span>
+        <span class="key-date">${dateStr}</span>
+      </div>`;
+    }).join("");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Error banner
+// ---------------------------------------------------------------------------
+
+export function updateErrorBanner(status) {
+  const banner = document.getElementById("error-banner");
+  if (!banner) return;
+  if (status.error && status.state === "error") {
+    banner.textContent = "Error: " + status.error;
+    banner.style.display = "";
+  } else {
+    banner.style.display = "none";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -168,9 +320,6 @@ export function labelFor(flow, state) {
 
 let _es = null;
 
-/**
- * Open an EventSource to /api/events. Calls updateUI on every "state" event.
- */
 export function initSSE(onEvent) {
   if (_es) { _es.close(); }
   _es = new EventSource("/api/events");
@@ -183,112 +332,6 @@ export function initSSE(onEvent) {
     }
   };
   _es.onerror = () => {
-    // Browser will reconnect automatically — no explicit retry needed.
     console.warn("SSE connection error, browser will retry");
   };
-}
-
-// ---------------------------------------------------------------------------
-// UI update
-// ---------------------------------------------------------------------------
-
-/**
- * Render the stage bar and label from a status/event object.
- * @param {{ flow: string|null, state: string, label: string, error: string|null, running: boolean }} status
- */
-export function updateUI(status) {
-  const { flow, state, label, error, running } = status;
-
-  const stageSection = document.getElementById("stage-section");
-  const stageBar = document.getElementById("stage-bar");
-  const stageLabelEl = document.getElementById("stage-label");
-  const vncSection = document.getElementById("vnc-section");
-  const actionsSection = document.getElementById("actions-section");
-  const errorBanner = document.getElementById("error-banner");
-  const abortBtn = document.getElementById("btn-abort");
-
-  // Show/hide abort button while running.
-  if (abortBtn) abortBtn.style.display = running ? "" : "none";
-
-  // Stage bar.
-  const stages = flow === "install" ? INSTALL_STAGES : flow === "runtime" ? RUNTIME_STAGES : [];
-  const activeIdx = stages.indexOf(state);
-
-  if (flow && stages.length > 0) {
-    stageSection.style.display = "";
-    stageBar.innerHTML = flow === "install"
-      ? _renderInstallBar(state)
-      : stages.map((s, i) => {
-          let cls = "stage";
-          if (i < activeIdx) cls += " stage--done";
-          else if (i === activeIdx) cls += " stage--active";
-          return `<span class="${cls}">${labelFor(flow, s)}</span>`;
-        }).join("");
-    stageLabelEl.textContent = label || labelFor(flow, state);
-  } else {
-    stageSection.style.display = "none";
-    stageBar.innerHTML = "";
-    stageLabelEl.textContent = "";
-  }
-
-  // noVNC — show once the VM is booting (not idle/done/error).
-  const VNC_VISIBLE_STATES = new Set([
-    // install
-    "booting_picker", "picker_selecting", "waiting_recovery",
-    "format_disk", "waiting_format_done", "reinstall_clicking",
-    "waiting_install", "booting_installed",
-    "sa_country", "sa_languages", "sa_accessibility", "sa_data_privacy",
-    "sa_migration", "sa_apple_id", "sa_terms", "sa_create_account",
-    "sa_apple_id_2", "sa_terms_2", "sa_location", "sa_timezone",
-    "sa_analytics", "sa_screen_time", "sa_appearance",
-    "dismiss_first_boot", "shutting_down", "baking_golden",
-    // runtime
-    "restoring_golden", "booting", "picker_selecting",
-    "waiting_login_screen", "logging_in", "waiting_desktop",
-    "disabling_sleep", "opening_apple_id", "typing_credentials",
-    "waiting_2fa_or_signed_in", "awaiting_2fa", "typing_2fa",
-    "waiting_signed_in", "dismissing_post_signin",
-    "resolving_apple_id_update", "enabling_find_my",
-    "waiting_icloud_sync", "extracting_keys",
-  ]);
-  const showVnc = running && VNC_VISIBLE_STATES.has(state);
-  vncSection.style.display = showVnc ? "" : "none";
-
-  // Action buttons — hide while running, show when idle/done/error.
-  const showActions = !running || state === "done" || state === "error" || !flow;
-  actionsSection.style.display = showActions ? "" : "none";
-
-  // 2FA form — shown when SSE fires "awaiting_2fa".
-  const twofaForm = document.getElementById("twofa-form");
-  if (twofaForm) {
-    const show2fa = running && state === "awaiting_2fa";
-    twofaForm.style.display = show2fa ? "" : "none";
-    if (show2fa) {
-      const inp = document.getElementById("twofa-code");
-      if (inp && document.activeElement !== inp) inp.focus();
-    }
-  }
-
-  // Error banner.
-  if (error && state === "error") {
-    errorBanner.textContent = "Error: " + error;
-    errorBanner.style.display = "";
-  } else {
-    errorBanner.style.display = "none";
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Initial status fetch
-// ---------------------------------------------------------------------------
-
-export async function fetchInitialStatus() {
-  const data = await get("/api/automation/status");
-  if (!data) return;
-  // Fetch VNC port from vm status and set global.
-  const vmData = await get("/api/vm/status");
-  if (vmData && vmData.vnc_ws_port) {
-    window.VNC_WS_PORT = vmData.vnc_ws_port;
-  }
-  return data;
 }

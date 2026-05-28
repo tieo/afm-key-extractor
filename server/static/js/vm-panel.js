@@ -1,57 +1,51 @@
 // Handles: 2FA form, noVNC iframe, Start Install / Start Runtime, Abort.
 
 import { post, get } from "./api.js";
-import { updateUI } from "./state.js";
 
 // ---------------------------------------------------------------------------
 // noVNC iframe
 // ---------------------------------------------------------------------------
 
-let _vncPort = null;
+let _vncConfig = { vnc_url: "", vm_enabled: false, vnc_ws_port: 6901 };
 let _vncLoaded = false;
 
-/**
- * Configure the noVNC iframe src. Called once the VNC port is known.
- */
-export function setVncPort(port) {
-  _vncPort = port;
+export function setVncConfig(config) {
+  _vncConfig = config;
+  _vncLoaded = false; // reset so ensureVncLoaded re-applies on next call
+
+  const btn = document.getElementById("btn-open-vm");
+  if (btn) {
+    if (config.vm_enabled) {
+      btn.href = config.vnc_url;
+      btn.style.display = "";
+    } else {
+      btn.style.display = "none";
+    }
+  }
 }
 
-/**
- * Ensure the noVNC iframe has the correct src.
- */
 export function ensureVncLoaded() {
   if (_vncLoaded) return;
   const iframe = document.getElementById("vnc");
   if (!iframe) return;
-  const port = _vncPort || window.VNC_WS_PORT || 6901;
-  const host = location.hostname;
-  iframe.src = `http://${host}:${port}/vnc.html?autoconnect=true&resize=scale&view_only=true`;
+  const base = _vncConfig.vnc_url || `http://localhost:${_vncConfig.vnc_ws_port || 6901}`;
+  iframe.src = `${base}/vnc.html?autoconnect=true&resize=scale&view_only=true`;
   _vncLoaded = true;
 }
 
 // ---------------------------------------------------------------------------
-// Credentials preset — server may have Apple ID saved via env vars
+// Credentials preset
 // ---------------------------------------------------------------------------
 
 let _credentialsPreset = false;
 
-/**
- * Check whether the server has Apple ID credentials pre-configured.
- * Updates the form labels/placeholders so the user knows they're optional.
- */
 export async function checkCredentialsPreset() {
-  try {
-    const { ok, data } = await get("/api/automation/credentials-preset");
-    if (!ok) return;
-    _credentialsPreset = !!data?.preset;
-  } catch {
-    return;
-  }
+  const data = await get("/api/automation/credentials-preset");
+  if (!data) return;
+  _credentialsPreset = !!data.preset;
 
   if (!_credentialsPreset) return;
 
-  // Mark fields as optional and show a hint.
   const emailEl = document.getElementById("input-email");
   const passwordEl = document.getElementById("input-password");
   const hint = document.getElementById("credentials-preset-hint");
@@ -65,16 +59,25 @@ export async function checkCredentialsPreset() {
 // Start Install
 // ---------------------------------------------------------------------------
 
-export async function handleStartInstall() {
+async function handleStartInstall() {
   const btn = document.getElementById("btn-start-install");
-  if (btn) { btn.disabled = true; btn.textContent = "Starting…"; }
+  _setBusy(btn, "Starting…");
   try {
     const { ok, data } = await post("/api/automation/start-install");
-    if (!ok) {
-      alert(data?.detail || "Failed to start install flow");
-    }
+    if (!ok) alert(data?.detail || "Failed to start install flow");
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "Start Install"; }
+    _clearBusy(btn, "Start Install");
+  }
+}
+
+async function handleStartReinstall() {
+  const btn = document.getElementById("btn-start-install-reinstall");
+  _setBusy(btn, "Starting…");
+  try {
+    const { ok, data } = await post("/api/automation/start-install");
+    if (!ok) alert(data?.detail || "Failed to start install flow");
+  } finally {
+    _clearBusy(btn, "Start Reinstall");
   }
 }
 
@@ -82,30 +85,27 @@ export async function handleStartInstall() {
 // Start Runtime
 // ---------------------------------------------------------------------------
 
-export async function handleStartRuntime() {
+async function handleStartRuntime() {
   const email = document.getElementById("input-email")?.value.trim();
   const password = document.getElementById("input-password")?.value;
   const restoreGolden = document.getElementById("input-restore-golden")?.checked ?? true;
 
-  // Only require manual entry when no server-side credentials are configured.
   if (!_credentialsPreset && (!email || !password)) {
     alert("Please enter your Apple ID email and password.");
     return;
   }
 
   const btn = document.getElementById("btn-start-runtime");
-  if (btn) { btn.disabled = true; btn.textContent = "Starting…"; }
+  _setBusy(btn, "Starting…");
   try {
     const { ok, data } = await post("/api/automation/start-runtime", {
       apple_email: email,
       apple_password: password,
       restore_golden: restoreGolden,
     });
-    if (!ok) {
-      alert(data?.detail || "Failed to start extraction flow");
-    }
+    if (!ok) alert(data?.detail || "Failed to start extraction flow");
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "Start Extraction"; }
+    _clearBusy(btn, "Start Extraction");
   }
 }
 
@@ -113,13 +113,13 @@ export async function handleStartRuntime() {
 // Abort
 // ---------------------------------------------------------------------------
 
-export async function handleAbort() {
+async function handleAbort() {
   const btn = document.getElementById("btn-abort");
-  if (btn) { btn.disabled = true; btn.textContent = "Aborting…"; }
+  _setBusy(btn, "Aborting…");
   try {
     await post("/api/automation/abort");
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "Abort"; }
+    _clearBusy(btn, "Abort");
   }
 }
 
@@ -127,41 +127,35 @@ export async function handleAbort() {
 // 2FA
 // ---------------------------------------------------------------------------
 
-export async function handle2faSubmit() {
+async function handle2faSubmit() {
   const code = document.getElementById("twofa-code")?.value.trim();
   if (!code) return;
   const btn = document.getElementById("btn-twofa-submit");
-  if (btn) { btn.disabled = true; btn.textContent = "Verifying…"; }
+  _setBusy(btn, "Verifying…");
   try {
     const { ok, data } = await post("/api/vm/apple-signin/2fa", { code });
     if (!ok) {
       alert(data?.detail || "Failed to submit 2FA code");
     } else {
-      // Clear the input so it's ready if needed again.
       const inp = document.getElementById("twofa-code");
       if (inp) inp.value = "";
     }
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "Verify Code"; }
+    _clearBusy(btn, "Verify");
   }
 }
 
-export async function handleRequestSms() {
+async function handleRequestSms() {
   const btn = document.getElementById("btn-request-sms");
-  if (btn) { btn.disabled = true; btn.textContent = "Requesting…"; }
+  _setBusy(btn, "Requesting…");
   try {
     const { ok, data } = await post("/api/vm/apple-signin/request-sms");
-    if (!ok) {
-      alert(data?.detail || "Failed to request SMS");
-    }
+    if (!ok) alert(data?.detail || "Failed to request SMS");
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "Send SMS code instead"; }
+    _clearBusy(btn, "Send SMS code instead");
   }
 }
 
-/**
- * Update the SMS phone hint inside the 2FA form.
- */
 export function setSmsPhone(phone) {
   const el = document.getElementById("twofa-sms-phone");
   if (!el) return;
@@ -174,21 +168,45 @@ export function setSmsPhone(phone) {
 }
 
 // ---------------------------------------------------------------------------
+// Abort button visibility
+// ---------------------------------------------------------------------------
+
+export function updateAbortButton(running) {
+  const btn = document.getElementById("btn-abort");
+  if (btn) btn.style.display = running ? "" : "none";
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function _setBusy(btn, text) {
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = text;
+}
+
+function _clearBusy(btn, text) {
+  if (!btn) return;
+  btn.disabled = false;
+  btn.textContent = text;
+}
+
+// ---------------------------------------------------------------------------
 // Wire all buttons
 // ---------------------------------------------------------------------------
 
 export function wireButtons() {
   document.getElementById("btn-start-install")?.addEventListener("click", handleStartInstall);
+  document.getElementById("btn-start-install-reinstall")?.addEventListener("click", handleStartReinstall);
   document.getElementById("btn-start-runtime")?.addEventListener("click", handleStartRuntime);
   document.getElementById("btn-abort")?.addEventListener("click", handleAbort);
   document.getElementById("btn-twofa-submit")?.addEventListener("click", handle2faSubmit);
   document.getElementById("btn-request-sms")?.addEventListener("click", handleRequestSms);
 
-  // Allow Enter in 2FA input to submit.
   document.getElementById("twofa-code")?.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") handle2faSubmit();
   });
 
-  // Check for server-side credentials on load.
   checkCredentialsPreset();
 }

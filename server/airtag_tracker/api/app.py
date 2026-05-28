@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..config import AUTO_RUN, DATA_DIR, KEYS_DIR, STATIC_DIR, VM_ENABLED
+from ..config import AUTO_RUN, DATA_DIR, KEYS_DIR, STATIC_DIR, VM_ENABLED, VNC_URL, VNC_WS_PORT
 from ..events import emit, set_broadcast_hook
 from . import sse
 from .routers import automation, debug, events, keys, setup, twofa
@@ -105,6 +105,14 @@ def create_app() -> FastAPI:
         sub_dir = STATIC_DIR / sub
         if sub_dir.exists():
             app.mount(f"/{sub}", StaticFiles(directory=str(sub_dir)), name=sub)
+
+    @app.get("/api/config")
+    def get_config():
+        return {
+            "vm_enabled": VM_ENABLED,
+            "vnc_url": VNC_URL or f"http://localhost:{VNC_WS_PORT}",
+            "vnc_ws_port": VNC_WS_PORT,
+        }
 
     # Root — serve the SPA index.
     index_html = STATIC_DIR / "index.html"

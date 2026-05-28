@@ -10,92 +10,113 @@
   <header class="app-header">
     <h1>AirTag Key Extractor</h1>
     <div class="header-actions">
-      <a href="/api/keys/zip" class="btn btn-secondary" id="btn-download-keys" style="display:none" download="airtag-keys.zip">Download Keys</a>
-      <a href="http://localhost:6901" target="_blank" class="btn btn-secondary" id="btn-open-vm">Open VM</a>
+      <span id="status-badge" class="badge badge-idle">Idle</span>
+      <a id="btn-open-vm" class="btn btn-secondary" target="_blank" style="display:none">Open VM</a>
       <button id="btn-abort" class="btn btn-danger" style="display:none">Abort</button>
     </div>
   </header>
 
   <main class="app-main">
-    <!-- Stage progress bar -->
-    <section class="stage-section" id="stage-section" style="display:none">
-      <div class="stage-bar" id="stage-bar"></div>
-      <div class="stage-label" id="stage-label"></div>
-    </section>
 
-    <!-- noVNC iframe -->
-    <section class="vnc-section" id="vnc-section" style="display:none">
-      <iframe id="vnc" allow="fullscreen" allowfullscreen></iframe>
-    </section>
-
-    <!-- 2FA form -->
-    <section class="twofa-form" id="twofa-form" style="display:none">
-      <h2>Two-Factor Authentication Required</h2>
-      <p class="twofa-hint">Enter the 6-digit code Apple sent to your trusted device.</p>
-      <div class="twofa-inputs">
-        <input type="text" id="twofa-code" placeholder="000000" maxlength="6"
-               inputmode="numeric" autocomplete="one-time-code" class="twofa-input">
-        <button id="btn-twofa-submit" class="btn btn-primary">Verify Code</button>
-      </div>
-      <p id="twofa-sms-phone" class="twofa-sms-phone" style="display:none"></p>
-      <button id="btn-request-sms" class="btn btn-secondary btn-sm">Send SMS code instead</button>
-    </section>
-
-    <!-- Action cards -->
-    <section class="actions-section" id="actions-section">
-      <!-- First-time setup: download macOS (hidden once BaseSystem is present) -->
-      <div class="action-card" id="card-setup" style="display:none">
-        <h3>First-Time Setup</h3>
-        <p>Download the macOS Sonoma recovery image from Apple (~3 GB, one-time). Stored on this server — not downloaded on every run.</p>
+    <!-- View: Download macOS (no basesystem yet) -->
+    <section id="view-setup" class="view" style="display:none">
+      <div class="card">
+        <h2>First-Time Setup</h2>
+        <p class="card-desc">Download the macOS Sonoma recovery image from Apple (~3 GB). Stored on this server — only needed once.</p>
         <button id="btn-download-macos" class="btn btn-primary">Download macOS</button>
-        <div id="download-progress" class="setup-progress" style="display:none">
-          <div class="setup-progress-bar"><div class="setup-progress-fill" id="download-progress-fill" style="width:0%"></div></div>
-          <span id="download-progress-text"></span>
+        <div id="download-progress" class="progress-wrap" style="display:none">
+          <div class="progress-bar"><div id="download-progress-fill" class="progress-fill" style="width:0%"></div></div>
+          <span id="download-progress-text" class="progress-text"></span>
         </div>
-        <div id="download-error" class="setup-notice" style="display:none"></div>
+        <div id="download-error" class="notice notice-warn" style="display:none"></div>
       </div>
+    </section>
 
-      <!-- Install flow -->
-      <div class="action-card" id="card-install">
-        <h3>Install macOS</h3>
-        <p>Run the one-time macOS installation to create the golden VM image. Takes 20–45 minutes.</p>
+    <!-- View: macOS downloaded, no golden image yet -->
+    <section id="view-install" class="view" style="display:none">
+      <div class="card">
+        <h2>Install macOS</h2>
+        <p class="card-desc">Run the one-time macOS installation to create a reusable VM snapshot. Fully automated — takes 20–45 minutes.</p>
         <button id="btn-start-install" class="btn btn-primary">Start Install</button>
       </div>
+    </section>
 
-      <!-- Runtime / extraction flow -->
-      <div class="action-card" id="card-runtime">
-        <h3>Extract AirTag Keys</h3>
-        <p>Sign in to Apple ID inside the VM and extract your AirTag keys.</p>
-        <div class="runtime-fields">
-          <p id="credentials-preset-hint" class="credentials-hint" style="display:none">
-            Apple ID saved in server config — leave blank to use saved credentials.
-          </p>
+    <!-- View: A flow is running (install or extraction) -->
+    <section id="view-running" class="view" style="display:none">
+      <div class="card stage-card" id="stage-section">
+        <div class="stage-bar" id="stage-bar"></div>
+        <p class="stage-label" id="stage-label"></p>
+      </div>
+      <div class="vnc-section" id="vnc-section" style="display:none">
+        <iframe id="vnc" allow="fullscreen" allowfullscreen></iframe>
+      </div>
+      <div class="card twofa-card" id="twofa-form" style="display:none">
+        <h2>Two-Factor Authentication</h2>
+        <p class="card-desc">Enter the 6-digit code Apple sent to your trusted device.</p>
+        <div class="twofa-inputs">
+          <input type="text" id="twofa-code" placeholder="000000" maxlength="6"
+                 inputmode="numeric" autocomplete="one-time-code" class="twofa-input">
+          <button id="btn-twofa-submit" class="btn btn-primary">Verify</button>
+        </div>
+        <p id="twofa-sms-phone" class="twofa-sms-phone" style="display:none"></p>
+        <button id="btn-request-sms" class="btn btn-secondary btn-sm">Send SMS code instead</button>
+      </div>
+    </section>
+
+    <!-- View: Golden image exists, idle — ready to extract -->
+    <section id="view-ready" class="view" style="display:none">
+
+      <!-- Keys panel: shown only when keys exist -->
+      <div id="keys-panel" class="card keys-card" style="display:none">
+        <div class="keys-header">
+          <div>
+            <h2>Extracted Keys</h2>
+            <p id="keys-meta" class="keys-meta"></p>
+          </div>
+          <a href="/api/keys/zip" download="airtag-keys.zip" class="btn btn-primary">Download ZIP</a>
+        </div>
+        <div id="keys-list" class="keys-list"></div>
+      </div>
+
+      <!-- Extraction form -->
+      <div class="card">
+        <h2>Extract Keys</h2>
+        <p class="card-desc">Sign in to Apple ID in the VM and sync AirTag keys via iCloud Keychain.</p>
+        <div id="credentials-preset-hint" class="notice notice-ok" style="display:none">
+          Apple ID saved in server config — fields below are optional overrides.
+        </div>
+        <div class="field-group">
           <input type="email" id="input-email" placeholder="Apple ID email" autocomplete="username">
           <input type="password" id="input-password" placeholder="Apple ID password" autocomplete="current-password">
           <label class="check-label">
             <input type="checkbox" id="input-restore-golden" checked>
-            Restore VM from golden image first
+            Restore VM from golden image before run
           </label>
         </div>
         <button id="btn-start-runtime" class="btn btn-primary">Start Extraction</button>
       </div>
+
+      <!-- Reinstall: collapsed advanced option -->
+      <details class="reinstall-details">
+        <summary>Reinstall macOS (advanced)</summary>
+        <div class="card reinstall-card">
+          <p class="card-desc">Re-runs the full macOS installation, replacing the current golden image. Takes 20–45 minutes.</p>
+          <button id="btn-start-install-reinstall" class="btn btn-secondary">Start Reinstall</button>
+        </div>
+      </details>
     </section>
 
-    <!-- Error banner -->
-    <div class="error-banner" id="error-banner" style="display:none"></div>
+    <!-- Error banner (shown across all views) -->
+    <div id="error-banner" class="error-banner" style="display:none"></div>
 
-    <!-- Log panel -->
+    <!-- Activity log (always visible) -->
     <section class="log-section">
       <h3 class="log-title">Activity Log</h3>
-      <div class="log-panel" id="log-panel"></div>
+      <div id="log-panel" class="log-panel"></div>
     </section>
+
   </main>
 
-  <script>
-    // Injected at build-time equivalent: port from server config.
-    // The actual port is fetched from /api/vm/status so the HTML stays static.
-    window.VNC_WS_PORT = 6901; // default; overridden by init.js from /api/vm/status
-  </script>
   <script type="module" src="/js/init.js"></script>
 </body>
 </html>

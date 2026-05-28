@@ -1,12 +1,27 @@
-// Entry point: DOMContentLoaded → fetch initial status → initSSE().
+// Entry point: bootstrap → fetch status → open SSE.
 
-import { initSSE, updateUI, fetchInitialStatus } from "./state.js";
-import { wireButtons, setVncPort, ensureVncLoaded, setSmsPhone } from "./vm-panel.js";
+import {
+  initSSE,
+  selectView,
+  updateStatusBadge,
+  updateRunningView,
+  updateKeysPanel,
+  updateErrorBanner,
+} from "./state.js";
+import {
+  wireButtons,
+  setVncConfig,
+  ensureVncLoaded,
+  setSmsPhone,
+  updateAbortButton,
+} from "./vm-panel.js";
 import { checkSetupStatus, wireSetupButtons } from "./setup-wizard.js";
 import { get } from "./api.js";
 
-// Maximum number of log entries to show in the UI.
 const MAX_LOG_ENTRIES = 20;
+
+// Cached setup status — needed by view selection in SSE updates.
+let _setupStatus = { basesystem_ready: false, golden_image_ready: false };
 
 // ---------------------------------------------------------------------------
 // Log panel
@@ -28,24 +43,39 @@ function appendLogEntry(entry) {
     `<span class="log-msg">${entry.msg || ""}</span>`;
 
   panel.appendChild(row);
-
-  // Keep only the last MAX_LOG_ENTRIES rows.
-  while (panel.children.length > MAX_LOG_ENTRIES) {
-    panel.removeChild(panel.firstChild);
-  }
-
-  // Auto-scroll to bottom.
+  while (panel.children.length > MAX_LOG_ENTRIES) panel.removeChild(panel.firstChild);
   panel.scrollTop = panel.scrollHeight;
 }
 
 async function loadInitialLog() {
   const entries = await get("/api/log");
   if (!Array.isArray(entries)) return;
-  // Show only the last MAX_LOG_ENTRIES.
-  const slice = entries.slice(-MAX_LOG_ENTRIES);
   const panel = document.getElementById("log-panel");
   if (panel) panel.innerHTML = "";
-  slice.forEach(appendLogEntry);
+  entries.slice(-MAX_LOG_ENTRIES).forEach(appendLogEntry);
+}
+
+// ---------------------------------------------------------------------------
+// Full UI update (called on init and after each SSE state event)
+// ---------------------------------------------------------------------------
+
+async function applyStatus(status) {
+  selectView(status, _setupStatus);
+  updateStatusBadge(status);
+  updateAbortButton(status.running);
+  updateRunningView(status);
+  updateErrorBanner(status);
+
+  // Ensure VNC iframe is loaded when visible.
+  const vncSection = document.getElementById("vnc-section");
+  if (vncSection && vncSection.style.display !== "none") {
+    ensureVncLoaded();
+  }
+}
+
+async function refreshKeys() {
+  const keys = await get("/api/keys/");
+  updateKeysPanel(Array.isArray(keys) ? keys : []);
 }
 
 // ---------------------------------------------------------------------------
@@ -54,49 +84,38 @@ async function loadInitialLog() {
 
 function onSseEvent(event) {
   if (event.type === "state") {
-    // Map SSE state event to the updateUI contract.
-    updateUI({
+    const status = {
       flow: event.flow ?? null,
       state: event.state,
       label: event.label ?? event.state,
       error: event.error ?? null,
       running: event.state !== "idle" && event.state !== "done" && event.state !== "error",
-    });
+    };
+    applyStatus(status);
 
-    // Show/hide noVNC when state changes.
-    const vncSection = document.getElementById("vnc-section");
-    if (vncSection && vncSection.style.display !== "none") {
-      ensureVncLoaded();
-    }
-    // After install finishes, refresh setup status to reveal the runtime card.
     if (event.state === "done" || event.state === "idle") {
-      checkSetupStatus();
-      refreshDownloadButton();
+      // Re-check setup status (install creates golden image) then re-apply view.
+      checkSetupStatus().then(async (s) => {
+        if (s) _setupStatus = s;
+        await applyStatus(status);
+        await refreshKeys();
+      });
+      return; // applyStatus will be called above once setupStatus is fresh
     }
   } else if (event.type === "log") {
     appendLogEntry(event);
   } else if (event.type === "sms_phone") {
     setSmsPhone(event.phone);
-  } else if (event.type === "2fa_required") {
-    // Engine can emit this explicitly — updateUI handles the state-based show/hide,
-    // but in case the type is sent directly, trigger a status refresh.
-    refreshStatus();
   }
 }
 
 // ---------------------------------------------------------------------------
-// Periodic status refresh (fallback for reconnected clients)
+// Periodic refresh fallback
 // ---------------------------------------------------------------------------
 
 async function refreshStatus() {
   const data = await get("/api/automation/status");
-  if (data) updateUI(data);
-}
-
-async function refreshDownloadButton() {
-  const keys = await get("/api/keys/");
-  const btn = document.getElementById("btn-download-keys");
-  if (btn) btn.style.display = Array.isArray(keys) && keys.length ? "" : "none";
+  if (data) applyStatus(data);
 }
 
 // ---------------------------------------------------------------------------
@@ -107,33 +126,45 @@ document.addEventListener("DOMContentLoaded", async () => {
   wireButtons();
   wireSetupButtons();
 
-  // Check setup status first — hides install/runtime cards if BaseSystem missing.
-  await checkSetupStatus();
-
-  // Load initial automation status.
-  const initial = await fetchInitialStatus();
-
-  // Set VNC port from vm/status (fetchInitialStatus updates window.VNC_WS_PORT).
-  setVncPort(window.VNC_WS_PORT);
-
-  if (initial) {
-    updateUI(initial);
-
-    // If already running, pre-load the VNC iframe.
-    const vncSection = document.getElementById("vnc-section");
-    if (vncSection && vncSection.style.display !== "none") {
-      ensureVncLoaded();
-    }
+  // Fetch server config first (VNC URL, VM enabled flag).
+  const vmConfig = await get("/api/config");
+  if (vmConfig) {
+    setVncConfig(vmConfig);
   }
 
-  await refreshDownloadButton();
+  // Setup status determines which view to show (setup / install / ready).
+  const setupStatus = await checkSetupStatus();
+  if (setupStatus) _setupStatus = setupStatus;
 
-  // Load the last log entries.
+  // Initial automation status.
+  const status = await get("/api/automation/status") ?? {
+    flow: null, state: "idle", label: "Idle", error: null, running: false,
+  };
+
+  await applyStatus(status);
+
+  // If already running, pre-load VNC.
+  const vncSection = document.getElementById("vnc-section");
+  if (vncSection && vncSection.style.display !== "none") ensureVncLoaded();
+
+  // Load keys panel.
+  await refreshKeys();
+
+  // Load recent log entries.
   await loadInitialLog();
+
+  // setup-wizard fires this when a download completes.
+  window.addEventListener("setup-complete", async () => {
+    const s = await checkSetupStatus();
+    if (s) _setupStatus = s;
+    await applyStatus(await get("/api/automation/status") ?? {
+      flow: null, state: "idle", label: "Idle", error: null, running: false,
+    });
+  });
 
   // Open SSE stream.
   initSSE(onSseEvent);
 
-  // Refresh status every 15 seconds as a safety net (SSE may miss events on reconnect).
+  // Safety-net refresh every 15 s.
   setInterval(refreshStatus, 15000);
 });

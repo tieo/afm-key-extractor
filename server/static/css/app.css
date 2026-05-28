@@ -35,7 +35,71 @@ body {
 
 .header-actions {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ============ Status badge ============ */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 0.78em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+}
+
+.badge::before {
+  content: "";
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.badge-idle {
+  background: #1e1e1e;
+  border-color: #333;
+  color: #666;
+}
+.badge-idle::before { background: #444; }
+
+.badge-running {
+  background: #002233;
+  border-color: #0af;
+  color: #0af;
+  animation: pulse-border 1.8s ease-in-out infinite;
+}
+.badge-running::before {
+  background: #0af;
+  animation: pulse-dot 1.8s ease-in-out infinite;
+}
+
+.badge-done {
+  background: #0d1f14;
+  border-color: #2ecc71;
+  color: #2ecc71;
+}
+.badge-done::before { background: #2ecc71; }
+
+.badge-error {
+  background: #2d1010;
+  border-color: #e74c3c;
+  color: #e74c3c;
+}
+.badge-error::before { background: #e74c3c; }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+@keyframes pulse-border {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 170, 255, 0.3); }
+  50% { box-shadow: 0 0 0 4px rgba(0, 170, 255, 0); }
 }
 
 /* ============ Main layout ============ */
@@ -45,7 +109,7 @@ body {
   flex-direction: column;
   gap: 16px;
   padding: 20px;
-  max-width: 960px;
+  max-width: 900px;
   width: 100%;
   margin: 0 auto;
 }
@@ -98,11 +162,117 @@ body {
 
 .btn-sm { padding: 6px 12px; font-size: 0.82em; }
 
-/* ============ Stage bar ============ */
-.stage-section {
+/* ============ Cards ============ */
+.card {
   background: #111;
   border: 1px solid #2a2a2a;
   border-radius: 10px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card h2 {
+  font-size: 0.95em;
+  font-weight: 600;
+  color: #e8e8e8;
+}
+
+.card-desc {
+  font-size: 0.85em;
+  color: #888;
+  line-height: 1.4;
+}
+
+/* ============ Notices ============ */
+.notice {
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 0.82em;
+  line-height: 1.4;
+}
+
+.notice-ok {
+  background: #0a1f0a;
+  border: 1px solid #1a4d1a;
+  color: #5c5;
+}
+
+.notice-warn {
+  background: #1f1400;
+  border: 1px solid #4d3300;
+  color: #f39c12;
+}
+
+/* ============ Field group (inputs) ============ */
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-group input[type=email],
+.field-group input[type=password] {
+  width: 100%;
+  padding: 9px 12px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 6px;
+  color: #e8e8e8;
+  font-size: 0.9em;
+}
+
+.field-group input:focus {
+  outline: none;
+  border-color: #0af;
+}
+
+.field-group input::placeholder { color: #555; }
+
+.check-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85em;
+  color: #888;
+  cursor: pointer;
+}
+
+.check-label input[type=checkbox] {
+  accent-color: #0af;
+  width: 15px;
+  height: 15px;
+}
+
+/* ============ Progress bar ============ */
+.progress-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.82em;
+  color: #888;
+  word-break: break-word;
+}
+
+.progress-bar {
+  height: 4px;
+  background: #222;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #0af;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.progress-text { color: #888; }
+
+/* ============ Stage bar ============ */
+.stage-card {
   padding: 16px 20px;
 }
 
@@ -161,34 +331,21 @@ body {
 }
 
 /* ============ 2FA form ============ */
-.twofa-form {
-  background: #111;
-  border: 1px solid #0af;
-  border-radius: 10px;
-  padding: 24px;
+.twofa-card {
   max-width: 480px;
   align-self: center;
   width: 100%;
+  border-color: #0af;
 }
 
-.twofa-form h2 {
+.twofa-card h2 {
   font-size: 1em;
-  font-weight: 600;
   color: #0af;
-  margin-bottom: 6px;
-}
-
-.twofa-hint {
-  font-size: 0.88em;
-  color: #888;
-  margin-bottom: 14px;
-  line-height: 1.4;
 }
 
 .twofa-inputs {
   display: flex;
   gap: 8px;
-  margin-bottom: 10px;
 }
 
 .twofa-input {
@@ -212,90 +369,81 @@ body {
 .twofa-sms-phone {
   font-size: 0.82em;
   color: #0af;
-  margin-bottom: 6px;
 }
 
-/* ============ Action cards ============ */
-.actions-section {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
+/* ============ Keys panel ============ */
+.keys-card {
+  gap: 14px;
 }
 
-@media (max-width: 640px) {
-  .actions-section { grid-template-columns: 1fr; }
+.keys-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.action-card {
-  background: #111;
-  border: 1px solid #2a2a2a;
-  border-radius: 10px;
-  padding: 20px;
+.keys-header h2 { margin-bottom: 2px; }
+
+.keys-meta {
+  font-size: 0.82em;
+  color: #888;
+  margin: 0;
+}
+
+.keys-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
+  border: 1px solid #222;
+  border-radius: 6px;
+  overflow: hidden;
 }
 
-.action-card h3 {
-  font-size: 0.95em;
-  font-weight: 600;
-  color: #e8e8e8;
+.key-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid #1a1a1a;
+  font-size: 0.82em;
+  gap: 12px;
 }
 
-.action-card p {
-  font-size: 0.85em;
-  color: #888;
-  line-height: 1.4;
+.key-row:last-child { border-bottom: none; }
+.key-row:nth-child(even) { background: #0d0d0d; }
+
+.key-name {
+  font-family: "SF Mono", "Fira Mono", "Cascadia Code", monospace;
+  color: #ccc;
+  word-break: break-all;
   flex: 1;
 }
 
-.runtime-fields {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.key-date {
+  color: #555;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-.runtime-fields input[type=email],
-.runtime-fields input[type=password] {
-  width: 100%;
-  padding: 9px 12px;
-  background: #1a1a1a;
-  border: 1px solid #333;
-  border-radius: 6px;
-  color: #e8e8e8;
-  font-size: 0.9em;
-}
-
-.runtime-fields input:focus {
-  outline: none;
-  border-color: #0af;
-}
-
-.runtime-fields input::placeholder { color: #555; }
-
-.credentials-hint {
-  margin: 0;
-  padding: 7px 10px;
-  background: #0a1f0a;
-  border: 1px solid #1a4d1a;
-  border-radius: 6px;
-  font-size: 0.82em;
-  color: #5c5;
-}
-
-.check-label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* ============ Reinstall details ============ */
+.reinstall-details {
   font-size: 0.85em;
-  color: #888;
-  cursor: pointer;
+  color: #666;
 }
 
-.check-label input[type=checkbox] {
-  accent-color: #0af;
-  width: 15px;
-  height: 15px;
+.reinstall-details summary {
+  cursor: pointer;
+  padding: 8px 4px;
+  color: #555;
+  user-select: none;
+}
+
+.reinstall-details summary:hover { color: #888; }
+
+.reinstall-card {
+  margin-top: 8px;
+  border-color: #333;
 }
 
 /* ============ Error banner ============ */
@@ -356,32 +504,3 @@ body {
 .log-entry.error .log-msg { color: #e74c3c; }
 .log-entry.warning .log-msg { color: #f39c12; }
 .log-entry.info .log-msg { color: #bbb; }
-
-/* ============ Setup wizard ============ */
-.setup-progress {
-  margin-top: 6px;
-  font-size: 0.82em;
-  color: #888;
-  word-break: break-word;
-}
-
-.setup-progress-bar {
-  height: 4px;
-  background: #222;
-  border-radius: 2px;
-  margin-bottom: 6px;
-  overflow: hidden;
-}
-
-.setup-progress-fill {
-  height: 100%;
-  background: #0af;
-  border-radius: 2px;
-  transition: width 0.4s ease;
-}
-
-.setup-notice {
-  font-size: 0.82em;
-  color: #f39c12;
-  margin-top: 4px;
-}
