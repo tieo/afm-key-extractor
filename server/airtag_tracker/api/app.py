@@ -7,7 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -75,6 +75,13 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=_lifespan,
     )
+
+    @app.middleware("http")
+    async def no_cache_assets(request: Request, call_next):
+        response = await call_next(request)
+        if any(request.url.path.startswith(p) for p in ("/js/", "/css/")):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
     app.add_middleware(
         CORSMiddleware,
