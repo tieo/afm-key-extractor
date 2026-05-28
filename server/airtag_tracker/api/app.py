@@ -1,4 +1,4 @@
-"""FastAPI application factory for the AirTag Key Extractor UI."""
+"""FastAPI application factory for the AFM Key Extractor UI."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ async def _lifespan(app: FastAPI):
             except Exception as _e:
                 emit("warning", "system", f"Failed to stop orphaned QEMU: {_e}")
 
-    emit("info", "system", "AirTag Key Extractor API started")
+    emit("info", "system", "AFM Key Extractor API started")
 
     scheduler_stop = asyncio.Event()
     scheduler_task = None
@@ -61,7 +61,7 @@ async def _lifespan(app: FastAPI):
         scheduler_stop.set()
         scheduler_task.cancel()
 
-    emit("info", "system", "AirTag Key Extractor API shutting down")
+    emit("info", "system", "AFM Key Extractor API shutting down")
 
 
 def create_app() -> FastAPI:
@@ -71,7 +71,7 @@ def create_app() -> FastAPI:
     )
 
     app = FastAPI(
-        title="AirTag Key Extractor",
+        title="AFM Key Extractor",
         version="1.0.0",
         lifespan=_lifespan,
     )

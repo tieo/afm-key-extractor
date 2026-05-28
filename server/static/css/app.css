@@ -4,7 +4,7 @@
 html, body {
   height: 100%;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  background: #1a1a1a;
+  background: #0c0c0c;
   color: #e8e8e8;
   line-height: 1.5;
 }
@@ -102,13 +102,138 @@ body {
   50% { box-shadow: 0 0 0 4px rgba(0, 170, 255, 0); }
 }
 
+/* ============ Pipeline overview ============ */
+.pipeline {
+  padding: 14px 16px;
+  user-select: none;
+}
+
+.pipeline-steps {
+  list-style: none;
+  display: flex;
+  align-items: stretch;
+}
+
+.pipeline-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  position: relative;
+  padding: 4px 16px 4px 8px;
+  min-width: 0;
+  cursor: default;
+}
+
+.pipeline-step:not(:last-child)::after {
+  content: "›";
+  position: absolute;
+  right: 2px;
+  color: #333;
+  font-size: 1.3em;
+  line-height: 1;
+}
+
+.pipeline-num {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid #333;
+  background: #1a1a1a;
+  color: #666;
+  font-size: 0.75em;
+  font-weight: 600;
+  flex-shrink: 0;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+
+.pipeline-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pipeline-name {
+  font-size: 0.82em;
+  font-weight: 600;
+  color: #888;
+  white-space: nowrap;
+}
+
+.pipeline-sub {
+  font-size: 0.7em;
+  color: #555;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pipeline-step--done .pipeline-num {
+  background: #0d1f14;
+  border-color: #2ecc71;
+  color: #2ecc71;
+}
+.pipeline-step--done .pipeline-name { color: #aaa; }
+
+.pipeline-step--current .pipeline-num {
+  background: #003348;
+  border-color: #0af;
+  color: #0af;
+  box-shadow: 0 0 8px rgba(0, 170, 255, 0.25);
+}
+.pipeline-step--current .pipeline-name { color: #0af; }
+.pipeline-step--current .pipeline-sub { color: #7891a8; }
+
+.pipeline-step--pending { opacity: 0.55; }
+
+.pipeline-tip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 20;
+  width: 260px;
+  max-width: 80vw;
+  padding: 10px 12px;
+  background: #1a1a1a;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  color: #bbb;
+  font-size: 0.78em;
+  font-weight: 400;
+  line-height: 1.45;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition: opacity 0.15s, transform 0.15s, visibility 0.15s;
+  pointer-events: none;
+}
+
+.pipeline-step:last-child .pipeline-tip {
+  left: auto;
+  right: 0;
+}
+
+.pipeline-step:hover .pipeline-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+@media (max-width: 640px) {
+  .pipeline-sub { display: none; }
+}
+
 /* ============ Main layout ============ */
 .app-main {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 20px;
+  gap: 18px;
+  padding: 28px 20px;
   max-width: 900px;
   width: 100%;
   margin: 0 auto;
@@ -164,19 +289,28 @@ body {
 
 /* ============ Cards ============ */
 .card {
-  background: #111;
-  border: 1px solid #2a2a2a;
-  border-radius: 10px;
-  padding: 20px;
+  background: #181818;
+  border: 1px solid #2e2e2e;
+  border-radius: 12px;
+  padding: 22px 24px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
 }
 
 .card h2 {
   font-size: 0.95em;
   font-weight: 600;
   color: #e8e8e8;
+}
+
+/* Simple single-button action cards: center the content around one axis. */
+#view-setup .card,
+#view-install .card,
+.reinstall-card {
+  text-align: center;
+  align-items: center;
 }
 
 .card-desc {
@@ -243,6 +377,13 @@ body {
   accent-color: #0af;
   width: 15px;
   height: 15px;
+}
+
+.check-hint {
+  font-size: 0.78em;
+  color: #666;
+  line-height: 1.4;
+  margin: 2px 0 0 23px;
 }
 
 /* ============ Progress bar ============ */
@@ -402,16 +543,49 @@ body {
 
 .key-row {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 8px 12px;
+  padding: 7px 12px;
   border-bottom: 1px solid #1a1a1a;
   font-size: 0.82em;
-  gap: 12px;
+  gap: 10px;
+  cursor: pointer;
+  transition: background 0.1s;
 }
 
 .key-row:last-child { border-bottom: none; }
 .key-row:nth-child(even) { background: #0d0d0d; }
+.key-row:hover { background: #151515; }
+
+.key-row--header {
+  cursor: default;
+  background: #0a0a0a;
+  border-bottom: 1px solid #222;
+  font-size: 0.75em;
+  font-weight: 600;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 12px;
+}
+.key-row--header:hover { background: #0a0a0a; }
+
+.key-checkbox-wrap {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  width: 20px;
+}
+
+.key-checkbox {
+  accent-color: #0af;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.key-col-name { flex: 1; }
+.key-col-date { white-space: nowrap; }
 
 .key-name {
   font-family: "SF Mono", "Fira Mono", "Cascadia Code", monospace;
@@ -426,20 +600,46 @@ body {
   flex-shrink: 0;
 }
 
-/* ============ Reinstall details ============ */
+/* ============ Advanced / Reinstall details ============ */
+.advanced-details,
 .reinstall-details {
   font-size: 0.85em;
-  color: #666;
 }
 
+.advanced-details summary,
 .reinstall-details summary {
   cursor: pointer;
-  padding: 8px 4px;
+  padding: 6px 0;
   color: #555;
   user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
+.advanced-details summary::before,
+.reinstall-details summary::before {
+  content: "▶";
+  font-size: 0.7em;
+  transition: transform 0.15s;
+  display: inline-block;
+}
+
+.advanced-details[open] summary::before,
+.reinstall-details[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.advanced-details summary:hover,
 .reinstall-details summary:hover { color: #888; }
+
+.advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+}
 
 .reinstall-card {
   margin-top: 8px;
@@ -459,13 +659,14 @@ body {
 
 /* ============ Log panel ============ */
 .log-section {
-  background: #111;
-  border: 1px solid #2a2a2a;
-  border-radius: 10px;
-  padding: 16px 20px;
+  background: #181818;
+  border: 1px solid #2e2e2e;
+  border-radius: 12px;
+  padding: 18px 24px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
 }
 
 .log-title {

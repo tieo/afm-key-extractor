@@ -1,4 +1,4 @@
-# nix-airtag-tracker
+# AFM Key Extractor
 
 Extracts AirTag private keys from iCloud via an automated macOS VM.
 Keys are compatible with [OpenTagViewer](https://github.com/OpenTagViewer).
@@ -10,6 +10,7 @@ Keys are compatible with [OpenTagViewer](https://github.com/OpenTagViewer).
 ## Quick start
 
 ```bash
+git clone https://github.com/tieo/afm-key-extractor && cd afm-key-extractor
 cp .env.example .env   # fill in Apple ID + passcode
 docker compose up -d
 ```
@@ -82,3 +83,11 @@ Due to Android 10+ scoped storage, the import dialog may not open automatically.
 | `POST` | `/api/vm/apple-signin/2fa` | Submit 2FA code manually `{"code":"123456"}` |
 | `GET` | `/api/keys/zip` | Download all keys as ZIP |
 | `GET` | `/api/events` | SSE stream |
+
+---
+
+## License
+
+[MIT License](LICENSE). Provided "as is", without warranty; use at your own risk.
+
+Running macOS in a VM on non-Apple hardware, and automating Apple ID sign-in, may conflict with Apple's license agreement and account terms.

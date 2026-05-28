@@ -3,6 +3,7 @@
 import {
   initSSE,
   selectView,
+  updatePipeline,
   updateStatusBadge,
   updateRunningView,
   updateKeysPanel,
@@ -61,6 +62,7 @@ async function loadInitialLog() {
 
 async function applyStatus(status) {
   selectView(status, _setupStatus);
+  updatePipeline(status, _setupStatus);
   updateStatusBadge(status);
   updateAbortButton(status.running);
   updateRunningView(status);

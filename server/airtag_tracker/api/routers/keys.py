@@ -11,7 +11,7 @@ import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 
 from ...config import KEYS_DIR
@@ -40,13 +40,36 @@ def list_keys() -> list[dict]:
 
 
 @router.get("/zip")
-def download_keys_zip():
-    """Return all key JSON files bundled as airtag-keys.zip."""
+def download_keys_zip(include: list[str] = Query(default=[])):
+    """Return key JSON files bundled as airtag-keys.zip.
+
+    Pass ?include=file.json one or more times to select specific keys.
+    Omit to download all keys.
+    """
     if not KEYS_DIR.exists():
         raise HTTPException(status_code=404, detail="No keys directory found")
-    files = sorted(KEYS_DIR.glob("*.json"), key=lambda p: p.name)
+
+    if include:
+        # Validate each requested filename and resolve paths.
+        files = []
+        for name in include:
+            if not _SAFE_FILENAME.match(name):
+                raise HTTPException(status_code=400, detail=f"Invalid filename: {name!r}")
+            p = KEYS_DIR / name
+            if not p.exists() or not p.is_file():
+                raise HTTPException(status_code=404, detail=f"Key file not found: {name!r}")
+            try:
+                p.resolve().relative_to(KEYS_DIR.resolve())
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid filename: {name!r}")
+            files.append(p)
+        files.sort(key=lambda p: p.name)
+    else:
+        files = sorted(KEYS_DIR.glob("*.json"), key=lambda p: p.name)
+
     if not files:
         raise HTTPException(status_code=404, detail="No key files found")
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in files:

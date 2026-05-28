@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AirTag Key Extractor</title>
+  <title>AFM Key Extractor</title>
   <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
   <header class="app-header">
-    <h1>AirTag Key Extractor</h1>
+    <h1>AFM Key Extractor</h1>
     <div class="header-actions">
       <span id="status-badge" class="badge badge-idle">Idle</span>
       <a id="btn-open-vm" class="btn btn-secondary" target="_blank" style="display:none">Open VM</a>
@@ -18,11 +18,40 @@
 
   <main class="app-main">
 
+    <nav class="pipeline card" id="pipeline" aria-label="Setup progress">
+      <ol class="pipeline-steps">
+        <li class="pipeline-step" data-phase="0">
+          <span class="pipeline-num">1</span>
+          <span class="pipeline-text">
+            <span class="pipeline-name">Recovery image</span>
+            <span class="pipeline-sub">From Apple, about 3 GB</span>
+          </span>
+          <span class="pipeline-tip">The macOS recovery image, downloaded once from Apple (about 3 GB). It boots into macOS Recovery, which the installer runs from. Stored on this server, only needed once.</span>
+        </li>
+        <li class="pipeline-step" data-phase="1">
+          <span class="pipeline-num">2</span>
+          <span class="pipeline-text">
+            <span class="pipeline-name">Golden image</span>
+            <span class="pipeline-sub">One time install</span>
+          </span>
+          <span class="pipeline-tip">A clean macOS install captured as a reusable VM snapshot. Every extraction restores from this snapshot, so each run starts from a known good state. Built once by the install flow.</span>
+        </li>
+        <li class="pipeline-step" data-phase="2">
+          <span class="pipeline-num">3</span>
+          <span class="pipeline-text">
+            <span class="pipeline-name">Extract keys</span>
+            <span class="pipeline-sub">Run on demand</span>
+          </span>
+          <span class="pipeline-tip">Boots the golden image, signs into your Apple ID, enables Find My, and pulls the AirTag keys. This is the everyday operation once setup is done.</span>
+        </li>
+      </ol>
+    </nav>
+
     <!-- View: Download macOS (no basesystem yet) -->
     <section id="view-setup" class="view" style="display:none">
       <div class="card">
         <h2>First-Time Setup</h2>
-        <p class="card-desc">Download the macOS Sonoma recovery image from Apple (~3 GB). Stored on this server — only needed once.</p>
+        <p class="card-desc">Download the macOS Sonoma recovery image from Apple (about 3 GB). Stored on this server, only needed once.</p>
         <button id="btn-download-macos" class="btn btn-primary">Download macOS</button>
         <div id="download-progress" class="progress-wrap" style="display:none">
           <div class="progress-bar"><div id="download-progress-fill" class="progress-fill" style="width:0%"></div></div>
@@ -73,7 +102,7 @@
             <h2>Extracted Keys</h2>
             <p id="keys-meta" class="keys-meta"></p>
           </div>
-          <a href="/api/keys/zip" download="airtag-keys.zip" class="btn btn-primary">Download ZIP</a>
+          <a id="btn-download-keys" href="/api/keys/zip" download="airtag-keys.zip" class="btn btn-primary">Download ZIP</a>
         </div>
         <div id="keys-list" class="keys-list"></div>
       </div>
@@ -81,19 +110,30 @@
       <!-- Extraction form -->
       <div class="card">
         <h2>Extract Keys</h2>
-        <p class="card-desc">Sign in to Apple ID in the VM and sync AirTag keys via iCloud Keychain.</p>
-        <div id="credentials-preset-hint" class="notice notice-ok" style="display:none">
-          Apple ID saved in server config — fields below are optional overrides.
-        </div>
-        <div class="field-group">
+
+        <!-- Required credential fields — hidden when server has preset credentials -->
+        <div id="extract-fields" class="field-group">
           <input type="email" id="input-email" placeholder="Apple ID email" autocomplete="username">
           <input type="password" id="input-password" placeholder="Apple ID password" autocomplete="current-password">
-          <label class="check-label">
-            <input type="checkbox" id="input-restore-golden" checked>
-            Restore VM from golden image before run
-          </label>
         </div>
+
         <button id="btn-start-runtime" class="btn btn-primary">Start Extraction</button>
+
+        <details class="advanced-details">
+          <summary>Advanced</summary>
+          <div class="advanced-body">
+            <!-- Credential overrides — only shown when preset credentials are configured -->
+            <div id="extract-override-fields" class="field-group" style="display:none">
+              <input type="email" id="input-email-override" placeholder="Override saved Apple ID" autocomplete="username">
+              <input type="password" id="input-password-override" placeholder="Override saved password" autocomplete="current-password">
+            </div>
+            <label class="check-label">
+              <input type="checkbox" id="input-reuse-state">
+              Reuse current VM state (skip restoring the golden image)
+            </label>
+            <p class="check-hint">Leave off for a normal run, so each extraction starts fresh from the clean golden image. Turn it on only to resume or debug a run where the VM is already booted past a failed step.</p>
+          </div>
+        </details>
       </div>
 
       <!-- Reinstall: collapsed advanced option -->

@@ -1,1 +1,1 @@
-"""FastAPI-based API package for the AirTag Key Extractor."""
+"""FastAPI-based API package for the AFM Key Extractor."""

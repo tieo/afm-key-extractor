@@ -58,4 +58,4 @@ fi
 
 log ""
 log "=== VM Provisioned ==="
-log "Open the AirTag Tracker web UI to complete macOS setup."
+log "Open the AFM Key Extractor web UI to complete macOS setup."

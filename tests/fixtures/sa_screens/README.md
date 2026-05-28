@@ -47,7 +47,7 @@ is showing) to grab a PNG, then write an annotation by eye or with the
 helper at `tools/annotate_fixture.py` (TODO once a real VM run is available).
 
 ```
-docker exec nix-airtag-tracker-airtag-tracker-1 sh -c \
+docker exec afm-key-extractor-airtag-tracker-1 sh -c \
   "cd /app && PYTHONPATH=server uv run python -m airtag_tracker.debug screendump /data/sa_create_account.ppm"
 # then convert PPM → PNG on the host and copy into this directory:
 convert ~/airtag-dev/sa_create_account.ppm tests/fixtures/sa_screens/sa_create_account.png

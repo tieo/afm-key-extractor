@@ -162,6 +162,35 @@ export function selectView(status, setupStatus) {
 }
 
 // ---------------------------------------------------------------------------
+// Pipeline overview (macro phases: recovery image → golden image → extract)
+// ---------------------------------------------------------------------------
+
+/**
+ * Highlight the current macro phase and mark earlier ones done.
+ * Phase 0 = recovery image, 1 = golden image, 2 = extract keys.
+ * @param {{ running: boolean, flow: string | null }} status
+ * @param {{ basesystem_ready: boolean, golden_image_ready: boolean } | null} setupStatus
+ */
+export function updatePipeline(status, setupStatus) {
+  const base = !!setupStatus?.basesystem_ready;
+  const golden = !!setupStatus?.golden_image_ready;
+
+  let current;
+  if (status.running && status.flow === "install") current = 1;
+  else if (status.running && status.flow === "runtime") current = 2;
+  else if (!base) current = 0;
+  else if (!golden) current = 1;
+  else current = 2;
+
+  document.querySelectorAll(".pipeline-step").forEach((el) => {
+    const phase = Number(el.dataset.phase);
+    el.classList.toggle("pipeline-step--done", phase < current);
+    el.classList.toggle("pipeline-step--current", phase === current);
+    el.classList.toggle("pipeline-step--pending", phase > current);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Status badge
 // ---------------------------------------------------------------------------
 
@@ -268,14 +297,18 @@ export function updateRunningView(status) {
 // Keys panel (shown inside view-ready)
 // ---------------------------------------------------------------------------
 
+let _allKeys = [];
+
 export function updateKeysPanel(keys) {
   const panel = document.getElementById("keys-panel");
   if (!panel) return;
   if (!Array.isArray(keys) || keys.length === 0) {
     panel.style.display = "none";
+    _allKeys = [];
     return;
   }
   panel.style.display = "";
+  _allKeys = keys;
 
   const metaEl = document.getElementById("keys-meta");
   if (metaEl) {
@@ -287,16 +320,78 @@ export function updateKeysPanel(keys) {
 
   const listEl = document.getElementById("keys-list");
   if (listEl) {
-    listEl.innerHTML = keys.map((k) => {
-      const d = new Date(k.mtime);
-      const dateStr = d.toLocaleString([], { dateStyle: "short", timeStyle: "short" });
-      const id = k.name.replace(/\.json$/, "");
-      return `<div class="key-row">
-        <span class="key-name">${id}</span>
-        <span class="key-date">${dateStr}</span>
-      </div>`;
-    }).join("");
+    listEl.innerHTML =
+      `<div class="key-row key-row--header">
+        <label class="key-checkbox-wrap" title="Select all">
+          <input type="checkbox" id="keys-select-all" class="key-checkbox">
+        </label>
+        <span class="key-col-name">Name</span>
+        <span class="key-col-date">Extracted</span>
+      </div>` +
+      keys.map((k) => {
+        const d = new Date(k.mtime);
+        const dateStr = d.toLocaleString([], { dateStyle: "short", timeStyle: "short" });
+        const id = k.name.replace(/\.json$/, "");
+        return `<label class="key-row" data-filename="${k.name}">
+          <span class="key-checkbox-wrap">
+            <input type="checkbox" class="key-checkbox key-item-cb" data-filename="${k.name}">
+          </span>
+          <span class="key-name">${id}</span>
+          <span class="key-date">${dateStr}</span>
+        </label>`;
+      }).join("");
+
+    // Wire select-all toggle.
+    const selectAll = listEl.querySelector("#keys-select-all");
+    if (selectAll) {
+      selectAll.addEventListener("change", () => {
+        listEl.querySelectorAll(".key-item-cb").forEach((cb) => { cb.checked = selectAll.checked; });
+        _updateDownloadButton();
+      });
+    }
+    listEl.querySelectorAll(".key-item-cb").forEach((cb) => {
+      cb.addEventListener("change", () => {
+        const all = listEl.querySelectorAll(".key-item-cb");
+        const checked = listEl.querySelectorAll(".key-item-cb:checked");
+        const selectAllCb = listEl.querySelector("#keys-select-all");
+        if (selectAllCb) {
+          selectAllCb.checked = checked.length === all.length;
+          selectAllCb.indeterminate = checked.length > 0 && checked.length < all.length;
+        }
+        _updateDownloadButton();
+      });
+    });
   }
+
+  _updateDownloadButton();
+}
+
+function _updateDownloadButton() {
+  const btn = document.getElementById("btn-download-keys");
+  if (!btn) return;
+  const checked = document.querySelectorAll(".key-item-cb:checked");
+  if (checked.length > 0 && checked.length < _allKeys.length) {
+    btn.textContent = `Download Selected (${checked.length})`;
+    btn.onclick = (e) => {
+      e.preventDefault();
+      const params = new URLSearchParams();
+      checked.forEach((cb) => params.append("include", cb.dataset.filename));
+      _triggerDownload(`/api/keys/zip?${params}`, "airtag-keys-selected.zip");
+    };
+  } else {
+    btn.textContent = "Download ZIP";
+    btn.onclick = null;
+    btn.href = "/api/keys/zip";
+  }
+}
+
+function _triggerDownload(url, filename) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 // ---------------------------------------------------------------------------

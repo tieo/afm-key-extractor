@@ -43,16 +43,15 @@ export async function checkCredentialsPreset() {
   const data = await get("/api/automation/credentials-preset");
   if (!data) return;
   _credentialsPreset = !!data.preset;
-
   if (!_credentialsPreset) return;
 
-  const emailEl = document.getElementById("input-email");
-  const passwordEl = document.getElementById("input-password");
-  const hint = document.getElementById("credentials-preset-hint");
+  // Hide required fields — credentials come from server config.
+  const mainFields = document.getElementById("extract-fields");
+  if (mainFields) mainFields.style.display = "none";
 
-  if (emailEl) emailEl.placeholder = "Override saved Apple ID (optional)";
-  if (passwordEl) passwordEl.placeholder = "Override saved password (optional)";
-  if (hint) hint.style.display = "";
+  // Show override inputs in the Advanced section.
+  const overrideFields = document.getElementById("extract-override-fields");
+  if (overrideFields) overrideFields.style.display = "";
 }
 
 // ---------------------------------------------------------------------------
@@ -86,9 +85,19 @@ async function handleStartReinstall() {
 // ---------------------------------------------------------------------------
 
 async function handleStartRuntime() {
-  const email = document.getElementById("input-email")?.value.trim();
-  const password = document.getElementById("input-password")?.value;
-  const restoreGolden = document.getElementById("input-restore-golden")?.checked ?? true;
+  // Main fields when not preset; override fields when preset but user typed something.
+  const email = (
+    document.getElementById("input-email")?.value.trim() ||
+    document.getElementById("input-email-override")?.value.trim() ||
+    ""
+  );
+  const password = (
+    document.getElementById("input-password")?.value ||
+    document.getElementById("input-password-override")?.value ||
+    ""
+  );
+  const reuseState = document.getElementById("input-reuse-state")?.checked ?? false;
+  const restoreGolden = !reuseState;
 
   if (!_credentialsPreset && (!email || !password)) {
     alert("Please enter your Apple ID email and password.");

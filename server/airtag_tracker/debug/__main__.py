@@ -2,7 +2,7 @@
 
 Usage (from inside the container, since QMP sockets are under /tmp)::
 
-    docker exec nix-airtag-tracker-airtag-tracker-1 sh -c \
+    docker exec afm-key-extractor-airtag-tracker-1 sh -c \
         "cd /app && PYTHONPATH=server uv run python -m airtag_tracker.debug <cmd> ..."
 
 Commands:

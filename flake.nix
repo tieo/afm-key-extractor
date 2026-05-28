@@ -1,5 +1,5 @@
 {
-  description = "AirTag tracker for NixOS — track Apple AirTags from Linux with an Android-friendly web UI";
+  description = "AFM Key Extractor: extract Apple Find My (AirTag) keys from Linux with an Android-friendly web UI";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

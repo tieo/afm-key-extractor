@@ -28,4 +28,11 @@ RUN chmod +x scripts/*.sh
 ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
 ENV PYTHONUNBUFFERED=1
 
+# Runtime defaults so the image runs standalone (single /data volume, VM on).
+# Mirrors compose.yaml; override any of these with `docker run -e ...`.
+ENV AIRTAG_VM_ENABLED=1
+ENV AIRTAG_DATA_DIR=/data
+ENV AIRTAG_VM_DIR=/data/osx-kvm
+ENV AIRTAG_ASSETS_DIR=/app/assets
+
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]

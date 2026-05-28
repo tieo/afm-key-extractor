@@ -1,3 +1,4 @@
+name: afm-key-extractor
 services:
   airtag-tracker:
     build: .
@@ -36,4 +37,7 @@ services:
       retries: 3
       start_period: 15s
     restart: unless-stopped
+
+volumes:
+  airtag-data:
 
