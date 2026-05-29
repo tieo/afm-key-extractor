@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from ... import vm
 from ...automation import engine
 from ...automation.context import AutomationContext
-from ...automation.failure_capture import FAILURE_DIR
+from ...automation.failure_capture import FAILURE_DIR, gc_orphan_snapshots
 from ...automation.states import (
     INSTALL_STAGE_LABELS,
     RUNTIME_STAGE_LABELS,
@@ -78,6 +78,22 @@ def delete_snapshot(label: str) -> dict:
         return vm.snapshot.delete(label)
     except vm.VmError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/gc-orphan-snapshots")
+def gc_orphans() -> dict:
+    """Manually purge `fail_*` qcow2 snapshots whose failure dir is gone.
+
+    Same logic as the per-flow auto-GC, exposed as a button so a stuck
+    image can be cleaned without waiting for another run.
+    Requires the VM to be running (qcow2 internal snapshots are only
+    mutable via the QEMU monitor, which needs a live VM).
+    """
+    try:
+        deleted = gc_orphan_snapshots()
+    except vm.VmError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"deleted": deleted}
 
 
 # ---------------------------------------------------------------------------

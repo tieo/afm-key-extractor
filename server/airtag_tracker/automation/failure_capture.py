@@ -140,7 +140,15 @@ def _write_meta(out: Path, result: dict) -> None:
 
 
 def _rotate() -> None:
-    """Keep the MAX_KEPT most-recently-modified failure directories."""
+    """Keep the MAX_KEPT most-recently-modified failure directories AND
+    delete the matching qcow2 internal savevm snapshots.
+
+    Removing only the on-disk directory was a leak: every captured failure
+    also wrote a `fail_<state>_<ts>` snapshot inside mac_hdd_ng.img (~5-10 GB
+    each, full memory + disk state), and those qcow2 internal snapshots
+    persisted forever. After enough failures the disk image ballooned
+    well past its 80 GB virtual size.
+    """
     try:
         if not FAILURE_DIR.exists():
             return
@@ -150,9 +158,68 @@ def _rotate() -> None:
             reverse=True,
         )
         for stale in dirs[MAX_KEPT:]:
+            label = _label_from_meta(stale)
             try:
                 shutil.rmtree(stale)
             except Exception as e:
                 emit("warning", "failure_capture", f"rotate rm {stale} failed: {e}")
+            if label:
+                _delvm_quietly(label)
     except Exception as e:
         emit("warning", "failure_capture", f"rotate failed: {e}")
+
+
+def _label_from_meta(failure_dir: Path) -> str | None:
+    try:
+        meta = json.loads((failure_dir / "meta.json").read_text())
+        return meta.get("snapshot")
+    except Exception:
+        return None
+
+
+def _delvm_quietly(label: str) -> None:
+    """Best-effort delvm. Skips if VM isn't running (caller handles via GC)."""
+    try:
+        from .. import vm
+        if not vm.is_running():
+            return
+        vm.snapshot.delete(label)
+    except Exception as e:
+        emit("warning", "failure_capture", f"delvm {label!r} failed: {e}")
+
+
+def gc_orphan_snapshots() -> int:
+    """Delete every `fail_*` qcow2 snapshot whose failure dir is gone.
+
+    Called on flow start, so cross-session orphans (saved-but-then-the-dir-was-
+    rotated-or-the-machine-rebooted-before-we-could-delvm) don't accumulate.
+    Returns count of snapshots deleted.
+    """
+    try:
+        from .. import vm
+        if not vm.is_running():
+            return 0
+        snaps = vm.snapshot.list_all()
+    except Exception as e:
+        emit("warning", "failure_capture", f"snapshot list failed: {e}")
+        return 0
+    # Collect labels still referenced by a failure dir's meta.json.
+    referenced: set[str] = set()
+    if FAILURE_DIR.exists():
+        for p in FAILURE_DIR.iterdir():
+            if p.is_dir():
+                lbl = _label_from_meta(p)
+                if lbl:
+                    referenced.add(lbl)
+    deleted = 0
+    for s in snaps:
+        tag = s.get("tag", "")
+        if tag.startswith("fail_") and tag not in referenced:
+            try:
+                vm.snapshot.delete(tag)
+                deleted += 1
+            except Exception as e:
+                emit("warning", "failure_capture", f"gc delvm {tag!r} failed: {e}")
+    if deleted:
+        emit("info", "failure_capture", f"GC'd {deleted} orphan fail_* snapshot(s)")
+    return deleted

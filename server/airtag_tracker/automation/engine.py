@@ -219,6 +219,11 @@ class StateMachine:
 
         snapshot_states = _auto_snapshot_states()
         snapshotted: set[str] = set()
+        # Once-per-flow GC of orphan `fail_*` snapshots inside the qcow2 disks.
+        # The disk image only accepts delvm while the VM is running, so we
+        # poll the flag until the first handler brings the VM up, then run
+        # cleanup exactly once.
+        gc_pending = True
 
         retries = 0
         while True:
@@ -228,6 +233,15 @@ class StateMachine:
             if ctx.aborted:
                 emit("info", "engine", "Abort requested — stopping engine")
                 break
+
+            if gc_pending:
+                try:
+                    from .. import vm
+                    if vm.is_running():
+                        failure_capture.gc_orphan_snapshots()
+                        gc_pending = False
+                except Exception:
+                    pass
 
             # Optional auto-snapshot: once per state per run, take a snapshot
             # at the entry to debug-flagged states so retries can restore
