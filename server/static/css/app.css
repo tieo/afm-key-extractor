@@ -143,13 +143,19 @@ body {
 }
 .pipeline-step > * { position: relative; z-index: 1; }
 
-.pipeline-step:not(:last-child)::after {
-  content: "›";
-  position: absolute;
-  right: 2px;
+/* Chevrons are their own flex items now, sitting centered in the gap
+   between adjacent steps (the old approach pinned them to each step's
+   right edge, which looked off-center). */
+.pipeline-chevron {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: #333;
   font-size: 1.3em;
   line-height: 1;
+  padding: 0 4px;
+  user-select: none;
 }
 
 .pipeline-num {
@@ -251,7 +257,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 18px;
-  padding: 28px 20px;
+  padding: 12px 20px 28px;
   max-width: 900px;
   width: 100%;
   margin: 0 auto;
