@@ -10,7 +10,19 @@ Keys are compatible with [OpenTagViewer](https://github.com/parawanderer/OpenTag
 
 ---
 
-## Quick start
+## Quick start (one-shot, from GHCR)
+
+Paste this and it pulls the image, runs it, waits for the UI to come up, and opens it in your browser. Apple ID goes in the UI on first open.
+
+```bash
+docker run -d --name afm-key-extractor \
+  --device /dev/kvm -p 8042:8042 -v afm-data:/data \
+  ghcr.io/tieo/afm-key-extractor:latest && \
+  until curl -sf http://localhost:8042/ >/dev/null; do sleep 1; done && \
+  xdg-open http://localhost:8042
+```
+
+## Quick start (from source, with `.env`)
 
 ```bash
 git clone https://github.com/tieo/afm-key-extractor && cd afm-key-extractor
