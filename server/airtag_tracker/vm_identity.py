@@ -122,6 +122,13 @@ def patch_config_plist(plist_path: Path, identity: dict) -> None:
          f"<data>{identity['ROM_b64']}</data>"),
         ("<string>W00000000001</string>",
          f"<string>{identity['SystemSerialNumber']}</string>"),
+        # SystemProductName drives Apple Recovery's "Reinstall macOS" choice:
+        # Apple maps the model to its newest supported macOS and serves that.
+        # Bundled template has iMac19,1 (Sequoia-eligible) which made Recovery
+        # ignore our fetch-MacOS.py shortname. Replace it with whatever MODEL
+        # vm_identity is currently set to (default iMac18,3 - caps at Sonoma).
+        ("<string>iMac19,1</string>",
+         f"<string>{identity['SystemProductName']}</string>"),
     ]
     for old, new in replacements:
         if old not in text:
