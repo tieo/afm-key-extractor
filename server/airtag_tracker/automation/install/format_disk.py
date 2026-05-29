@@ -61,9 +61,17 @@ def run(ctx: AutomationContext) -> InstallState:
         if not clicked_term:
             emit("warning", "format_disk", "OCR missed Terminal dropdown — trying keyboard nav")
             qmp.type_text("t")
-        time.sleep(3.0)
-        # Only type the command if Terminal appears to be open.
-        if not screen.has_any_text("Terminal", "bash", "zsh", "Last login"):
+        # Poll for Terminal to render. A single static sleep races - on slower
+        # hosts Recovery's Terminal can take 5-10s to paint and the previous
+        # 3s sleep + single check would error out moments before it appeared.
+        deadline = time.monotonic() + 15
+        opened = False
+        while time.monotonic() < deadline:
+            if screen.has_any_text("Terminal", "bash", "zsh", "Last login"):
+                opened = True
+                break
+            time.sleep(1.0)
+        if not opened:
             raise RuntimeError("Terminal did not open in Recovery — cannot run diskutil")
         # Type the erase command and confirm.
         qmp.type_text(_ERASE_CMD)
