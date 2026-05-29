@@ -41,6 +41,18 @@ Open **http://localhost:8042**
 
 After that, the golden image is reused on every run. You never do this again.
 
+> [!IMPORTANT]
+> **Apple now serves macOS Sequoia (15), not Sonoma (14), to Recovery's "Reinstall macOS" regardless of which board-id / SystemProductName we spoof** (verified by trying multiple Sonoma-capping iMac models — Apple ignores it). Extraction is implemented for Sonoma only. Two ways forward:
+>
+> - **Bring your own Sonoma golden.** If you already have a working `mac_hdd_golden_sonoma.img`, copy it into the running container:
+>
+>   ```bash
+>   docker cp /path/to/mac_hdd_golden_sonoma.img afm-key-extractor:/data/osx-kvm/
+>   ```
+>
+>   (with `docker compose`, container name is `afm-key-extractor-airtag-tracker-1`.) Refresh the UI — it jumps straight to **Extract keys**.
+> - **Let Sequoia install** and wait for the Sequoia extraction adapter to land (tracked in `memory/project_sequoia_wip.md`). Sequoia install on QEMU takes ~3-5 h and currently the extract step will error.
+
 ---
 
 ## Extracting keys
