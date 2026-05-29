@@ -22,17 +22,14 @@ import string
 import uuid
 from pathlib import Path
 
-# iMac18,3 (2017 27" 5K) - deliberately picked because it's the newest
-# iMac Apple's "Reinstall macOS" maps to *Sonoma* as the latest supported
-# OS. iMac19,1 (2019) is Sequoia-eligible, which is what bit us before:
-# Apple's Recovery server reads SystemProductName via SMBIOS, looks up the
-# latest compatible macOS, and serves that for download - so spoofing a
-# Sequoia-eligible model means Apple installs Sequoia regardless of which
-# board-id we used in fetch-MacOS.py. iMac18,3 caps the offer at Sonoma.
-# OpenCore's board-id is "Auto" (derived from SystemProductName), so no
-# corresponding board-id change is needed in config.plist.
-MODEL = "iMac18,3"
-MODEL_SUFFIX = "J1GN"   # 4-char serial suffix - iMac18,x family is plausible
+# iMac19,1 - matches OpenCore.qcow2's baked-in SystemProductName.
+# Apple's Recovery "Reinstall macOS" offering is NOT actually steered by
+# SystemProductName any more (tested 2026-05-29: spoofing iMac18,3 still
+# got Sequoia offered), so there's no upside to spoofing an older model
+# and a real downside if the golden image was already registered with
+# iCloud under iMac19,1 (HardwareUUID mismatch breaks iCloud trust).
+MODEL = "iMac19,1"
+MODEL_SUFFIX = "J1GN"   # 4-char model code that ends iMac19,1 serials
 # Real Apple plant codes; C02 = Shanghai (most common for iMac), F5K,
 # DGK, DMQ, FVH are also observed in the wild.
 PLANT_CODES = ["C02", "F5K", "DGK", "DMQ", "FVH"]
