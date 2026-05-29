@@ -2,6 +2,7 @@
 
 import {
   initSSE,
+  loadLabels,
   selectView,
   updatePipeline,
   updateStatusBadge,
@@ -127,6 +128,9 @@ async function refreshStatus() {
 document.addEventListener("DOMContentLoaded", async () => {
   wireButtons();
   wireSetupButtons();
+
+  // Stage labels (single source of truth from states.py).
+  await loadLabels();
 
   // Fetch server config first (VNC URL, VM enabled flag).
   const vmConfig = await get("/api/config");

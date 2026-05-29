@@ -71,67 +71,23 @@ const _INSTALL_BAR = [
   "dismiss_first_boot", "shutting_down", "baking_golden", "done",
 ];
 
-const INSTALL_LABELS = {
-  idle: "Idle",
-  booting_picker: "Starting VM",
-  picker_selecting: "Selecting installer",
-  waiting_recovery: "Loading Recovery",
-  format_disk: "Formatting disk",
-  waiting_format_done: "Formatting disk",
-  reinstall_clicking: "Starting installer",
-  waiting_install: "Installing macOS (20–45 min)",
-  booting_installed: "Rebooting",
-  sa_country: "Setup Assistant (1/15)",
-  sa_languages: "Setup Assistant (2/15)",
-  sa_accessibility: "Setup Assistant (3/15)",
-  sa_data_privacy: "Setup Assistant (4/15)",
-  sa_migration: "Setup Assistant (5/15)",
-  sa_apple_id: "Setup Assistant (6/15)",
-  sa_terms: "Setup Assistant (7/15)",
-  sa_create_account: "Setup Assistant (8/15)",
-  sa_apple_id_2: "Setup Assistant (9/15)",
-  sa_terms_2: "Setup Assistant (10/15)",
-  sa_location: "Setup Assistant (11/15)",
-  sa_timezone: "Setup Assistant (12/15)",
-  sa_analytics: "Setup Assistant (13/15)",
-  sa_screen_time: "Setup Assistant (14/15)",
-  sa_appearance: "Setup Assistant (15/15)",
-  dismiss_first_boot: "Finalising",
-  shutting_down: "Shutting down VM",
-  baking_golden: "Saving image",
-  done: "Installation complete",
-  error: "Error",
-};
+// Stage labels come from the backend (states.py) via /api/automation/labels.
+// loadLabels() is called once at init; labelFor() reads from the cached maps.
+// Single source of truth - the previous dual-dict approach drifted (the JS
+// said "Installing macOS (20-45 min)" while the Python said "60-90 min").
+let _LABELS = { install: {}, runtime: {} };
 
-const RUNTIME_LABELS = {
-  idle: "Idle",
-  restoring_golden: "Restoring VM image",
-  booting: "Starting VM",
-  picker_selecting: "Selecting macOS",
-  waiting_login_screen: "Waiting for login screen",
-  logging_in: "Logging in",
-  waiting_desktop: "Waiting for desktop",
-  disabling_sleep: "Configuring VM",
-  opening_apple_id: "Opening Apple ID settings",
-  typing_credentials: "Entering Apple ID",
-  waiting_2fa_or_signed_in: "Waiting for Apple response",
-  awaiting_2fa: "Waiting for your 2FA code",
-  typing_2fa: "Submitting 2FA code",
-  waiting_signed_in: "Completing sign-in",
-  dismissing_post_signin: "Dismissing prompts",
-  resolving_apple_id_update: "Updating Apple ID",
-  enabling_find_my: "Enabling Find My",
-  waiting_icloud_sync: "Waiting for iCloud sync",
-  extracting_keys: "Extracting AirTag keys",
-  shutting_down: "Shutting down VM",
-  done: "Keys extracted",
-  error: "Error",
-};
+export async function loadLabels() {
+  try {
+    const r = await fetch("/api/automation/labels");
+    if (r.ok) _LABELS = await r.json();
+  } catch (e) {
+    /* fall back to raw state names */
+  }
+}
 
 export function labelFor(flow, state) {
-  if (flow === "install") return INSTALL_LABELS[state] ?? state;
-  if (flow === "runtime") return RUNTIME_LABELS[state] ?? state;
-  return state;
+  return _LABELS[flow]?.[state] ?? state;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,17 +221,17 @@ function _renderInstallBar(state) {
     let cls = "stage";
     if (realIdx > idx) cls += " stage--done";
     else if (realIdx === idx) cls += " stage--active";
-    return `<span class="${cls}">${INSTALL_LABELS[s] ?? s}</span>`;
+    return `<span class="${cls}">${labelFor("install", s)}</span>`;
   }).join("");
 }
 
 export function updateRunningView(status) {
   const { flow, state, label, running } = status;
 
-  // Stage bar.
+  // Stage bar. (No separate stage-label below it - the active pill already
+  // shows the current label, the duplicate title was redundant.)
   const stageBar = document.getElementById("stage-bar");
-  const stageLabelEl = document.getElementById("stage-label");
-  if (stageBar && stageLabelEl) {
+  if (stageBar) {
     const stages = flow === "install" ? INSTALL_STAGES : flow === "runtime" ? RUNTIME_STAGES : [];
     const activeIdx = stages.indexOf(state);
     stageBar.innerHTML = flow === "install"
@@ -286,7 +242,6 @@ export function updateRunningView(status) {
           else if (i === activeIdx) cls += " stage--active";
           return `<span class="${cls}">${labelFor(flow, s)}</span>`;
         }).join("");
-    stageLabelEl.textContent = label || labelFor(flow, state);
   }
 
   // VNC iframe — show for active automation states.

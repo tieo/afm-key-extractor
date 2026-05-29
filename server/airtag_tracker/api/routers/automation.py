@@ -58,6 +58,16 @@ def _label_for(flow: str | None, state_val: str) -> str:
     return state_val
 
 
+@router.get("/labels")
+def get_labels() -> dict:
+    """Stage labels for both flows. Single source of truth so the frontend
+    doesn't redefine (and drift from) the strings in states.py."""
+    return {
+        FlowKind.INSTALL.value: {s.value: lbl for s, lbl in INSTALL_STAGE_LABELS.items()},
+        FlowKind.RUNTIME.value: {s.value: lbl for s, lbl in RUNTIME_STAGE_LABELS.items()},
+    }
+
+
 @router.get("/status")
 def get_status() -> dict:
     ctx = engine.get_context()
