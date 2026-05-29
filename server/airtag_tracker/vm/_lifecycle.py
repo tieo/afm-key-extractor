@@ -57,7 +57,35 @@ def status() -> dict:
     }
 
 
+_OVMF_VARS_BLOAT_THRESHOLD_BYTES = 100 * 1024 * 1024  # 100 MB - empty is ~400 KB
+
+
+def _check_ovmf_bloat() -> None:
+    """Warn loudly if OVMF_VARS has grown past 100 MB.
+
+    OVMF_VARS-1920x1080.qcow2 is attached as pflash without snapshot=on, so
+    every QEMU `savevm` writes its full RAM-state delta into this file as
+    well as into MacHDD. Healthy is ~400 KB; previously seen in the wild
+    at 214 GB after many auto-snapshot + failure-capture cycles. The on-disk
+    GC (failure_capture.gc_orphan_snapshots) clears the named entries but
+    qcow2 only reclaims that space on a subsequent `qemu-img convert` pass,
+    so the size growth is the canary - flag it as soon as it crosses an
+    obviously-wrong threshold so the operator can compact/reset it.
+    """
+    try:
+        size = _qemu.OVMF_VARS.stat().st_size
+    except FileNotFoundError:
+        return
+    if size > _OVMF_VARS_BLOAT_THRESHOLD_BYTES:
+        gb = size / (1024 ** 3)
+        emit("warning", "vm",
+             f"OVMF_VARS is {gb:.1f} GB - probably stale savevm data. "
+             "Stop the VM, then `qemu-img convert -O qcow2 OVMF_VARS-1920x1080.qcow2 new && mv new OVMF_VARS-1920x1080.qcow2` "
+             "to compact it.")
+
+
 def _launch_qemu(install_mode: bool = False, base_system: Path | None = None) -> None:
+    _check_ovmf_bloat()
     if install_mode:
         if base_system is None:
             raise VmError("base_system is required when install_mode=True")
