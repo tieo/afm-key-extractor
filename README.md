@@ -43,7 +43,11 @@ After that, the golden image is reused on every run. You never do this again.
 
 ---
 
-## Extracting keys (~5–10 min per run)
+## Extracting keys
+
+A clean run from start to keys is **~7–10 min** on an account with AirTags: boot from golden (~1 min), Apple ID sign-in + 2FA (~2–3 min), Find My enable (~1 min), iCloud sync of OwnedBeacons (~2–4 min), extract + shutdown (~1 min).
+
+The iCloud sync wait has a 30-min hard ceiling and burns the whole thing if your account has no AirTags (no data to sync ⇒ wait times out). Measured 40 min in that empty-account case.
 
 Click **Start Extraction** (or set `AIRTAG_AUTO_RUN=true` to run on a schedule).
 
