@@ -103,24 +103,33 @@ body {
 }
 
 /* ============ Pipeline overview ============ */
+/* Lives inside .app-header now and acts as the navbar middle. No card
+   chrome - the header itself is the surface. */
 .pipeline {
-  padding: 14px 16px;
+  flex: 1;
+  display: flex;
+  justify-content: center;
   user-select: none;
+  padding: 0 16px;
+  min-width: 0;
 }
 
 .pipeline-steps {
   list-style: none;
   display: flex;
   align-items: stretch;
+  margin: 0;
+  padding: 0;
 }
 
 .pipeline-step {
   display: flex;
   align-items: center;
+  justify-content: center; /* Center the number + text within each step's slot. */
   gap: 10px;
   flex: 1;
   position: relative;
-  padding: 4px 16px 4px 8px;
+  padding: 4px 12px;
   min-width: 0;
   cursor: default;
   overflow: hidden;

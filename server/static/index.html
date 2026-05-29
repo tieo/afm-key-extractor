@@ -9,16 +9,7 @@
 <body>
   <header class="app-header">
     <h1>AFM Key Extractor</h1>
-    <div class="header-actions">
-      <span id="status-badge" class="badge badge-idle">Idle</span>
-      <a id="btn-open-vm" class="btn btn-secondary" target="_blank" style="display:none">Open VM</a>
-      <button id="btn-abort" class="btn btn-danger" style="display:none">Abort</button>
-    </div>
-  </header>
-
-  <main class="app-main">
-
-    <nav class="pipeline card" id="pipeline" aria-label="Setup progress">
+    <nav class="pipeline" id="pipeline" aria-label="Setup progress">
       <ol class="pipeline-steps">
         <li class="pipeline-step" data-phase="0">
           <span class="pipeline-num">1</span>
@@ -48,6 +39,14 @@
         </li>
       </ol>
     </nav>
+    <div class="header-actions">
+      <span id="status-badge" class="badge badge-idle">Idle</span>
+      <a id="btn-open-vm" class="btn btn-secondary" target="_blank" style="display:none">Open VM</a>
+      <button id="btn-abort" class="btn btn-danger" style="display:none">Abort</button>
+    </div>
+  </header>
+
+  <main class="app-main">
 
     <!-- View: Download macOS (no basesystem yet) -->
     <section id="view-setup" class="view" style="display:none">
