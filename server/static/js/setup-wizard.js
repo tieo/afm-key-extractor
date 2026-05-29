@@ -89,23 +89,39 @@ function _guessProgress(text) {
   const t = text.toLowerCase();
   if (t.includes("converting") || t.includes("qemu-img")) return 80;
   if (t.includes("ready") || t.includes("present")) return 100;
+  // fetch-MacOS.py emits "267.0/843.4 MB |...| 31.7% downloaded" — prefer the
+  // explicit percentage over the cumulative-byte ratio because the latter
+  // misses the 70% scale offset and the conversion phase.
+  const pct = text.match(/(\d+(?:\.\d+)?)\s*%/);
+  if (pct) return Math.min(Math.round(parseFloat(pct[1]) * 0.7) + 5, 75);
   const m = t.match(/(\d+)\s*\/\s*(\d+)/);
   if (m) return Math.min(Math.round((parseInt(m[1]) / parseInt(m[2])) * 70) + 5, 75);
   return 30;
 }
 
+// Strip the upstream ASCII progress bar and reformat to a clean single line.
+// Input : "267.0/843.4 MB |======== | 31.7% downloaded"
+// Output: "267.0 / 843.4 MB (31.7%)"
+function _cleanProgress(text) {
+  if (!text) return text;
+  const m = text.match(
+    /(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*([KMG]?B)\s*\|[^|]*\|\s*(\d+(?:\.\d+)?)\s*%/i,
+  );
+  if (m) return `${m[1]} / ${m[2]} ${m[3]} (${m[4]}%)`;
+  return text;
+}
+
 function _setProgress(text, pct) {
   const textEl = document.getElementById("download-progress-text");
-  const fill = document.getElementById("download-progress-fill");
-  if (textEl) textEl.textContent = text;
-  if (fill) fill.style.width = `${pct}%`;
+  if (textEl) textEl.textContent = _cleanProgress(text);
+  // Drive the pipeline's phase-0 (recovery image) background fill, not a
+  // separate in-card bar. One progress visualization, in the navbar.
+  import("./state.js").then((mod) => mod.setPipelineProgress?.(0, pct));
 }
 
 function _setError(msg) {
   const el = document.getElementById("download-error");
   if (el) { el.textContent = `Download failed: ${msg}`; el.style.display = ""; }
-  const fill = document.getElementById("download-progress-fill");
-  if (fill) fill.style.background = "#e74c3c";
 }
 
 // ---------------------------------------------------------------------------

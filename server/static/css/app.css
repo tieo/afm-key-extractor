@@ -123,7 +123,25 @@ body {
   padding: 4px 16px 4px 8px;
   min-width: 0;
   cursor: default;
+  overflow: hidden;
+  border-radius: 6px;
 }
+
+/* In-place progress fill for the current phase — the download/install bar
+   lives here so we have one source of truth for progress, not a separate
+   bar in the card competing with the pipeline. Width driven by the JS-set
+   custom property --phase-progress. */
+.pipeline-step--current::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: var(--phase-progress, 0%);
+  background: rgba(0, 170, 255, 0.14);
+  transition: width 0.3s ease;
+  pointer-events: none;
+  z-index: 0;
+}
+.pipeline-step > * { position: relative; z-index: 1; }
 
 .pipeline-step:not(:last-child)::after {
   content: "›";

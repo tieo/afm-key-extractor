@@ -1,3 +1,5 @@
+import { updateOpenVmButton } from "./vm-panel.js";
+
 // Stage sequences — values match the enum .value strings in states.py.
 export const INSTALL_STAGES = [
   "idle",
@@ -159,6 +161,9 @@ export function selectView(status, setupStatus) {
     const el = document.getElementById(id);
     if (el) el.style.display = id === target ? "" : "none";
   });
+
+  // Header chrome that's view-dependent.
+  updateOpenVmButton(target);
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +192,16 @@ export function updatePipeline(status, setupStatus) {
     el.classList.toggle("pipeline-step--done", phase < current);
     el.classList.toggle("pipeline-step--current", phase === current);
     el.classList.toggle("pipeline-step--pending", phase > current);
+    // Clear progress fill on phases that aren't currently active.
+    if (phase !== current) el.style.removeProperty("--phase-progress");
   });
+}
+
+/** Set a sub-progress percentage on a specific pipeline phase.
+ *  The current phase's background fills left-to-right based on this. */
+export function setPipelineProgress(phase, pct) {
+  const el = document.querySelector(`.pipeline-step[data-phase="${phase}"]`);
+  if (el) el.style.setProperty("--phase-progress", `${Math.max(0, Math.min(100, pct))}%`);
 }
 
 // ---------------------------------------------------------------------------

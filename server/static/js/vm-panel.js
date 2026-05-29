@@ -14,14 +14,22 @@ export function setVncConfig(config) {
   _vncLoaded = false; // reset so ensureVncLoaded re-applies on next call
 
   const btn = document.getElementById("btn-open-vm");
-  if (btn) {
-    if (config.vm_enabled) {
-      btn.href = config.vnc_url;
-      btn.style.display = "";
-    } else {
-      btn.style.display = "none";
-    }
+  if (btn && config.vm_enabled && config.vnc_url) {
+    btn.href = config.vnc_url;
   }
+  // Visibility is owned by updateOpenVmButton (called from selectView) so the
+  // button only shows when a VM is actually running, not whenever VM is enabled.
+}
+
+// Show "Open VM" only when in view-running AND we have a VM URL to point at.
+// Called from state.selectView so the button matches the visible view.
+export function updateOpenVmButton(activeView) {
+  const btn = document.getElementById("btn-open-vm");
+  if (!btn) return;
+  const shouldShow = activeView === "view-running"
+    && _vncConfig.vm_enabled
+    && !!_vncConfig.vnc_url;
+  btn.style.display = shouldShow ? "" : "none";
 }
 
 export function ensureVncLoaded() {
