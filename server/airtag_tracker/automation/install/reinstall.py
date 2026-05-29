@@ -257,11 +257,14 @@ def wait_complete(ctx: AutomationContext) -> InstallState:
     - OpenCore picker detection (install complete)
     - Setup Assistant detection (install + configure complete, SA already running)
 
-    Deadline: 4 h (macOS installer often overestimates in QEMU).
+    Deadline: 6 h. The macOS installer routinely sits at the same
+    "~93%, 2 hours remaining" screen for hours in QEMU - the previous
+    4 h ceiling fired during legit runs (Sequoia install in particular
+    is multi-hour and the bar stalls visually long before completion).
     """
     from .. import screen as _screen
 
-    deadline_s = 14400
+    deadline_s = 21600
     poll_s = 30.0
     heartbeat_interval_s = 300  # emit a heartbeat every 5 min even if nothing changes
     t0 = time.time()

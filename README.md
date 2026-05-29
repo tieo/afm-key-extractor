@@ -34,16 +34,16 @@ Open **http://localhost:8042**
 
 ---
 
-## First time only (~60–90 min, fully automatic)
+## First time only (fully automatic)
 
-1. Click **Download macOS** — fetches Sonoma recovery from Apple (~3 GB)
-2. Click **Start Install** — installs macOS and saves a golden VM snapshot
+1. Click **Download macOS** — fetches Sonoma recovery from Apple (~850 MB DMG → ~3 GB unpacked). Bandwidth-bound, then ~20 s to convert.
+2. Click **Start Install** — installs macOS and saves a golden VM snapshot. Plan on **1–4 hours on QEMU** depending on host CPU; the on-screen "x hours remaining" estimate consistently lies and the bar appears stuck around 93 % for most of the run — that's normal.
 
 After that, the golden image is reused on every run. You never do this again.
 
 ---
 
-## Extracting keys (~6–8 min per run)
+## Extracting keys (~5–10 min per run)
 
 Click **Start Extraction** (or set `AIRTAG_AUTO_RUN=true` to run on a schedule).
 
