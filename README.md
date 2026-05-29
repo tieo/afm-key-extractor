@@ -36,22 +36,15 @@ Open **http://localhost:8042**
 
 ## First time only (fully automatic)
 
-1. Click **Download macOS** — fetches Sonoma recovery from Apple (~850 MB DMG → ~3 GB unpacked). Bandwidth-bound, then ~20 s to convert.
+1. Click **Download macOS** — fetches Ventura recovery from Apple (~850 MB DMG → ~3 GB unpacked). Bandwidth-bound, then ~20 s to convert.
 2. Click **Start Install** — installs macOS and saves a golden VM snapshot. Plan on **1–4 hours on QEMU** depending on host CPU; the on-screen "x hours remaining" estimate consistently lies and the bar appears stuck around 93 % for most of the run — that's normal.
 
 After that, the golden image is reused on every run. You never do this again.
 
-> [!IMPORTANT]
-> **Apple now serves macOS Sequoia (15), not Sonoma (14), to Recovery's "Reinstall macOS" regardless of which board-id / SystemProductName we spoof** (verified by trying multiple Sonoma-capping iMac models — Apple ignores it). Extraction is implemented for Sonoma only. Two ways forward:
+> [!NOTE]
+> **Why Ventura, not Sonoma?** Apple's swscan endpoint started serving Sequoia (15.4) for the Sonoma board-ids that `fetch-MacOS.py` used to use, which our extraction path can't handle. We now pin `--board-id Mac-BE088AF8C5EB4FA2` (iMac18,3, max-supported = Ventura per Apple's compat list), so Recovery installs **macOS Ventura** instead. The keychain extraction command (`security find-generic-password -s BeaconStore`) is identical on Ventura, so the same flow works.
 >
-> - **Bring your own Sonoma golden.** If you already have a working `mac_hdd_golden_sonoma.img`, copy it into the running container:
->
->   ```bash
->   docker cp /path/to/mac_hdd_golden_sonoma.img afm-key-extractor:/data/osx-kvm/
->   ```
->
->   (with `docker compose`, container name is `afm-key-extractor-airtag-tracker-1`.) Refresh the UI — it jumps straight to **Extract keys**.
-> - **Let Sequoia install** and wait for the Sequoia extraction adapter to land (tracked in `memory/project_sequoia_wip.md`). Sequoia install on QEMU takes ~3-5 h and currently the extract step will error.
+> If you already have a working Sonoma golden from an earlier run, set `AIRTAG_MACOS_VERSION=14` in `.env` and drop the file in at `mac_hdd_golden_sonoma.img` (via `docker cp /path/to/img afm-key-extractor-airtag-tracker-1:/data/osx-kvm/`).
 
 ---
 

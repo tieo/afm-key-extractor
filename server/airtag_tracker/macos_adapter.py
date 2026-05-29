@@ -308,7 +308,27 @@ class SequoiaAdapter(MacOSAdapter):
         )
 
 
+class VenturaAdapter(SonomaAdapter):
+    """macOS 13 Ventura.
+
+    Apple's Recovery now serves Ventura (via the iMac18,3 board-id Mac-BE088AF8C5EB4FA2
+    with os_type=latest, since iMac18,3 can't run Sequoia) for fresh installs - the
+    other Sonoma-serving board-ids in fetch-MacOS.py now return Sequoia. Ventura uses
+    the same `security find-generic-password -s BeaconStore -a BeaconStoreKey -w`
+    keychain command as Sonoma, so the extraction code is inherited as-is.
+    """
+
+    @property
+    def version(self) -> int:
+        return 13
+
+    @property
+    def name(self) -> str:
+        return "Ventura"
+
+
 _ADAPTERS: dict[int, type[MacOSAdapter]] = {
+    13: VenturaAdapter,
     14: SonomaAdapter,
     15: SequoiaAdapter,
 }
