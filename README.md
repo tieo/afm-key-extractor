@@ -1,7 +1,10 @@
 # AFM Key Extractor
 
 Extracts AirTag private keys from iCloud via an automated macOS VM.
-Keys are compatible with [OpenTagViewer](https://github.com/OpenTagViewer).
+Keys are compatible with [OpenTagViewer](https://github.com/parawanderer/OpenTagViewer) and my fork [TagHistory](https://github.com/tieo/TagHistory).
+
+> [!WARNING]
+> This project is not affiliated with Apple Inc. in any capacity.
 
 **Requires:** Linux with KVM, Docker + Compose.
 
