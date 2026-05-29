@@ -16,6 +16,7 @@ from typing import Callable
 
 from fastapi import APIRouter
 
+from ... import events
 from ...config import MACOS_VERSION, VM_DIR
 from ...macos_adapter import get_adapter
 
@@ -134,6 +135,7 @@ def _run_download(shortname: str) -> None:
         ]
         with _download_lock:
             _download_state["progress"] = f"Downloading macOS {shortname} recovery from Apple..."
+        events.emit("info", "setup", f"Downloading macOS {shortname} recovery from Apple")
 
         try:
             def _on_line(line: str) -> None:
@@ -150,6 +152,7 @@ def _run_download(shortname: str) -> None:
             with _download_lock:
                 _download_state["running"] = False
                 _download_state["error"] = str(exc)
+            events.emit("error", "setup", f"macOS download failed: {exc}")
             return
 
         # ---- find the downloaded DMG ------------------------------------
@@ -166,6 +169,7 @@ def _run_download(shortname: str) -> None:
         # ---- convert DMG → raw img --------------------------------------
         with _download_lock:
             _download_state["progress"] = f"Converting {dmg_path.name} → {dest_img.name} ..."
+        events.emit("info", "setup", f"Converting {dmg_path.name} to raw image")
 
         VM_DIR.mkdir(parents=True, exist_ok=True)
         convert_cmd = [
@@ -190,12 +194,14 @@ def _run_download(shortname: str) -> None:
             with _download_lock:
                 _download_state["running"] = False
                 _download_state["error"] = str(exc)
+            events.emit("error", "setup", f"DMG conversion failed: {exc}")
             return
 
     with _download_lock:
         _download_state["running"] = False
         _download_state["progress"] = f"{dest_img.name} ready"
         _download_state["error"] = None
+    events.emit("info", "setup", f"{dest_img.name} ready")
 
 
 # ---------------------------------------------------------------------------
