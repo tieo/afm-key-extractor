@@ -25,7 +25,7 @@ services:
       AIRTAG_DATA_DIR: /data
       AIRTAG_VM_DIR: /data/osx-kvm
       AIRTAG_ASSETS_DIR: /app/assets
-      AIRTAG_MACOS_VERSION: "13"
+      AIRTAG_MACOS_VERSION: "14"
       # Engine takes a snapshot on first entry to each listed state, so
       # subsequent SA-8 iteration can restore via /api/debug/restore in
       # seconds instead of replaying ~45 min of install.
