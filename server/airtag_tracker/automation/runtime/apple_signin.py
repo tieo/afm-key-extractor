@@ -222,11 +222,11 @@ def type_credentials(ctx: AutomationContext) -> RuntimeState:
     Uses clipboard paste for both values so special characters are not
     mangled by QMP keystroke layout mapping.
 
-    The email and password are entered as two separate steps: the macOS sign-in
-    sheet is a wizard that transitions from the email step to the password step
-    after Return/Continue.  OCR cannot see the form content area (gray
-    background) so the transition is timed with a fixed sleep rather than a
-    keyword poll.  macOS auto-focuses the password field after the transition.
+    Sonoma's sign-in sheet is a single-page form (Email or Phone Number +
+    Password fields visible simultaneously) - Tab advances email → password.
+    The older two-page wizard used Return to advance; that left focus on the
+    email field on the one-page form and the password got pasted into it,
+    producing "<email><password>" and an empty password field.
     """
     emit("info", "apple_signin", "Entering Apple ID credentials")
 
@@ -238,15 +238,9 @@ def type_credentials(ctx: AutomationContext) -> RuntimeState:
     vm_ui.paste_text(ctx.apple_email)
     time.sleep(0.4)
     with ctx.qmp_lock:
-        qmp.send_keys(["ret"])
+        qmp.send_keys(["tab"])
+    time.sleep(0.6)
 
-    # Apple validates the account server-side before showing the password field.
-    # OCR cannot reliably detect this transition (form content is outside
-    # Tesseract's readable area), so a fixed wait is the only reliable option.
-    emit("info", "apple_signin", "Email submitted — waiting 10 s for password field")
-    time.sleep(10.0)
-
-    # macOS auto-focuses the password field after the email step.
     vm_ui.paste_text(ctx.apple_password)
     time.sleep(0.4)
     with ctx.qmp_lock:
