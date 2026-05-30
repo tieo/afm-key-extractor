@@ -222,11 +222,17 @@ def type_credentials(ctx: AutomationContext) -> RuntimeState:
     Uses clipboard paste for both values so special characters are not
     mangled by QMP keystroke layout mapping.
 
-    Sonoma's sign-in sheet is a single-page form (Email or Phone Number +
-    Password fields visible simultaneously) - Tab advances email → password.
-    The older two-page wizard used Return to advance; that left focus on the
-    email field on the one-page form and the password got pasted into it,
-    producing "<email><password>" and an empty password field.
+    Sonoma's Apple ID sheet is a wizard: page 1 has just the email field +
+    Continue, page 2 has the password field. Two pitfalls already burned us:
+    - Return-after-email: the form re-renders with both fields visible on the
+      same page, but focus stays on the email field, so the password gets
+      appended to the email box.
+    - Tab-after-email: focus jumps to the System Settings sidebar search,
+      not to the next form field — password gets typed into the sidebar.
+
+    Right path: click the "Continue" button by OCR, then click the "Password"
+    field by OCR before pasting, so focus is unambiguous regardless of which
+    layout Apple shows.
     """
     emit("info", "apple_signin", "Entering Apple ID credentials")
 
@@ -237,9 +243,26 @@ def type_credentials(ctx: AutomationContext) -> RuntimeState:
 
     vm_ui.paste_text(ctx.apple_email)
     time.sleep(0.4)
-    with ctx.qmp_lock:
-        qmp.send_keys(["tab"])
-    time.sleep(0.6)
+
+    # Click Continue (button-by-text), not Return — Return on the one-page
+    # variant of this form is a no-op while the password field is empty.
+    if not vm_ui.click_text("Continue", tries=4):
+        emit("warning", "apple_signin",
+             "OCR couldn't find Continue button — falling back to Return")
+        with ctx.qmp_lock:
+            qmp.send_keys(["ret"])
+    emit("info", "apple_signin", "Email submitted — waiting for password field")
+    time.sleep(3.0)
+
+    # Focus the password field by clicking the "Password" label — Tab does the
+    # wrong thing here (sidebar search), and counting on auto-focus has burned
+    # us before. Falling back to Tab only if the click misses.
+    if not vm_ui.click_text("Password", tries=4):
+        emit("warning", "apple_signin",
+             "OCR couldn't find Password field — falling back to Tab")
+        with ctx.qmp_lock:
+            qmp.send_keys(["tab"])
+        time.sleep(0.4)
 
     vm_ui.paste_text(ctx.apple_password)
     time.sleep(0.4)
