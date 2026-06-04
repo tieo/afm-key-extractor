@@ -292,7 +292,7 @@ export function updateKeysPanel(keys) {
     listEl.innerHTML =
       `<div class="key-row key-row--header">
         <label class="key-checkbox-wrap" title="Select all">
-          <input type="checkbox" id="keys-select-all" class="key-checkbox">
+          <input type="checkbox" id="keys-select-all" class="key-checkbox" checked>
         </label>
         <span class="key-col-name">Name</span>
         <span class="key-col-date">Extracted</span>
@@ -303,13 +303,11 @@ export function updateKeysPanel(keys) {
         const display = _escapeHtml(k.display_name || (k.name || "").replace(/\.(json|plist)$/, ""));
         const kind = k.kind === "other" ? "other" : "airtag";
         const badgeLabel = _escapeHtml(_modelBadge(k));
-        // Non-AirTag rows have no per-row checkbox - the master toggle above
-        // the list controls whether they're shown / included in the zip at all.
-        const cb = kind === "airtag"
-          ? `<input type="checkbox" class="key-checkbox key-item-cb" data-filename="${_escapeHtml(k.name)}">`
-          : `<span class="key-checkbox-spacer" aria-hidden="true"></span>`;
         return `<label class="key-row key-row--${kind}" data-filename="${_escapeHtml(k.name)}">
-          <span class="key-checkbox-wrap">${cb}</span>
+          <span class="key-checkbox-wrap">
+            <input type="checkbox" class="key-checkbox key-item-cb" checked
+                   data-filename="${_escapeHtml(k.name)}" data-kind="${kind}">
+          </span>
           <span class="key-name">${display}<span class="key-kind-badge key-kind-badge--${kind}">${badgeLabel}</span></span>
           <span class="key-date">${dateStr}</span>
         </label>`;
@@ -343,24 +341,42 @@ export function updateKeysPanel(keys) {
 function _updateDownloadButton() {
   const btn = document.getElementById("btn-download-keys");
   if (!btn) return;
-  const includeOther = document.getElementById("cb-include-other-devices")?.checked;
-  const checked = document.querySelectorAll(".key-item-cb:checked");
-  const params = new URLSearchParams();
-  if (includeOther) params.append("include_other_devices", "true");
-  if (checked.length > 0 && checked.length < _allKeys.length) {
-    btn.textContent = `Download Selected (${checked.length})`;
-    checked.forEach((cb) => params.append("include", cb.dataset.filename));
-    const qs = params.toString();
-    btn.onclick = (e) => {
-      e.preventDefault();
-      _triggerDownload(`/api/keys/zip?${qs}`, "airtag-keys-selected.zip");
-    };
-  } else {
+
+  const all = document.querySelectorAll(".key-item-cb");
+  const checked = Array.from(document.querySelectorAll(".key-item-cb:checked"));
+  const total = all.length;
+  const sel = checked.length;
+
+  // Nothing selected → disable.
+  if (sel === 0) {
+    btn.textContent = "Download ZIP";
+    btn.removeAttribute("href");
+    btn.classList.add("btn--disabled");
+    btn.onclick = (e) => e.preventDefault();
+    return;
+  }
+  btn.classList.remove("btn--disabled");
+
+  // Everything visible is checked → use the simple URL.
+  if (sel === total) {
+    const includeOther = document.getElementById("cb-include-other-devices")?.checked;
     btn.textContent = "Download ZIP";
     btn.onclick = null;
-    const qs = params.toString();
-    btn.href = qs ? `/api/keys/zip?${qs}` : "/api/keys/zip";
+    btn.href = includeOther
+      ? "/api/keys/zip?include_other_devices=true"
+      : "/api/keys/zip";
+    return;
   }
+
+  // Partial selection → enumerate.
+  const params = new URLSearchParams();
+  checked.forEach((cb) => params.append("include", cb.dataset.filename));
+  const qs = params.toString();
+  btn.textContent = `Download Selected (${sel})`;
+  btn.onclick = (e) => {
+    e.preventDefault();
+    _triggerDownload(`/api/keys/zip?${qs}`, "airtag-keys-selected.zip");
+  };
 }
 
 function _escapeHtml(s) {

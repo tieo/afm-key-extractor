@@ -306,6 +306,13 @@ body {
   border-color: #29bbff;
 }
 
+/* JS-applied disabled state — for anchor-styled buttons that can't use [disabled]. */
+.btn.btn--disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .btn-secondary {
   background: transparent;
   border-color: #444;

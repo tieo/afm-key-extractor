@@ -20,8 +20,9 @@ from ...config import APPLE_EMAIL, KEYS_DIR, PLISTS_DIR
 
 router = APIRouter(prefix="/api/keys", tags=["keys"])
 
-# Only allow simple filenames — no path traversal.
-_SAFE_FILENAME = re.compile(r'^[\w\-. ]+\.json$')
+# Only allow simple filenames — no path traversal. Accepts AirTag JSONs
+# (KEYS_DIR/*.json) and raw OwnedBeacons plists named by UUID (UUID.plist).
+_SAFE_FILENAME = re.compile(r'^[\w\-. ]+\.(json|plist)$')
 
 
 def _airtag_meta(p: Path) -> dict:
@@ -119,41 +120,52 @@ def download_keys_zip(
     include: list[str] = Query(default=[]),
     include_other_devices: bool = Query(default=False),
 ):
-    """Return key JSON files bundled as airtag-keys.zip.
+    """Return key files bundled as airtag-keys.zip.
 
-    Pass ?include=file.json one or more times to select specific keys.
-    Omit to download all keys.
+    Pass ?include=<filename> one or more times to select specific entries.
+    Filenames can be AirTag JSONs (e.g. Marius_Keys.json) or non-AirTag
+    OwnedBeacons plists named by UUID (e.g. 41932D98-...-583CCFDFBF5A.plist).
 
-    By default the zip is restricted to AirTags only: the OpenTagViewer-
-    format payload (OwnedBeacons/, BeaconNamingRecord/) only includes
-    beacon UUIDs that map to an AirTag JSON in KEYS_DIR (non-AirTag Find My
-    items - iPhones, AirPods, Macs - are filtered out at the
-    plist_conversion step). Pass include_other_devices=true to also include
-    those non-AirTag plists, raw and unfiltered.
+    Without any ?include= the zip contains every AirTag plus
+    OPENTAGVIEWER.yml. Pass include_other_devices=true (no per-item
+    filtering) to also bundle every non-AirTag plist on disk.
     """
     if not KEYS_DIR.exists():
         raise HTTPException(status_code=404, detail="No keys directory found")
 
+    json_files: list[Path] = []
+    explicit_other_uuids: set[str] = set()
+
     if include:
-        # Validate each requested filename and resolve paths.
-        files = []
+        # Validate each requested filename and bucket into AirTag JSONs vs
+        # non-AirTag plist UUIDs.
         for name in include:
             if not _SAFE_FILENAME.match(name):
                 raise HTTPException(status_code=400, detail=f"Invalid filename: {name!r}")
-            p = KEYS_DIR / name
-            if not p.exists() or not p.is_file():
-                raise HTTPException(status_code=404, detail=f"Key file not found: {name!r}")
-            try:
-                p.resolve().relative_to(KEYS_DIR.resolve())
-            except ValueError:
-                raise HTTPException(status_code=400, detail=f"Invalid filename: {name!r}")
-            files.append(p)
-        files.sort(key=lambda p: p.name)
+            if name.endswith(".json"):
+                p = KEYS_DIR / name
+                if not p.exists() or not p.is_file():
+                    raise HTTPException(status_code=404, detail=f"Key file not found: {name!r}")
+                try:
+                    p.resolve().relative_to(KEYS_DIR.resolve())
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"Invalid filename: {name!r}")
+                json_files.append(p)
+            else:  # .plist
+                owned = PLISTS_DIR / "OwnedBeacons" / name
+                if not owned.exists() or not owned.is_file():
+                    raise HTTPException(status_code=404, detail=f"Plist not found: {name!r}")
+                try:
+                    owned.resolve().relative_to((PLISTS_DIR / "OwnedBeacons").resolve())
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"Invalid filename: {name!r}")
+                explicit_other_uuids.add(owned.stem.upper())
+        json_files.sort(key=lambda p: p.name)
     else:
-        files = sorted(KEYS_DIR.glob("*.json"), key=lambda p: p.name)
+        json_files = sorted(KEYS_DIR.glob("*.json"), key=lambda p: p.name)
 
-    if not files:
-        raise HTTPException(status_code=404, detail="No key files found")
+    if not json_files and not explicit_other_uuids:
+        raise HTTPException(status_code=404, detail="No entries selected")
 
     # Build the AirTag UUID set from the selected JSONs' `identifier` field.
     # Each AirTag JSON exists only because plist_conversion accepted it (i.e.
@@ -161,7 +173,7 @@ def download_keys_zip(
     # is the authoritative "this beacon is an AirTag" filter.
     import json as _json
     airtag_ids: set[str] = set()
-    for f in files:
+    for f in json_files:
         try:
             ident = _json.loads(f.read_text()).get("identifier")
             if ident:
@@ -169,7 +181,18 @@ def download_keys_zip(
         except Exception:
             pass
 
-    selected_ids: set[str] | None = None if include_other_devices else airtag_ids
+    # `selected_ids` controls which OwnedBeacons/BeaconNamingRecord plists
+    # land in the OpenTagViewer-format payload.  Three modes:
+    #   * include_other_devices=true (no explicit list): every plist on disk
+    #   * explicit_other_uuids non-empty: airtag_ids ∪ explicit_other_uuids
+    #   * default: only airtag_ids
+    if include_other_devices and not explicit_other_uuids:
+        selected_ids: set[str] | None = None
+    else:
+        selected_ids = airtag_ids | explicit_other_uuids
+
+    # Keep the existing variable name used below.
+    files = json_files
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
