@@ -40,11 +40,21 @@ def list_keys() -> list[dict]:
 
 
 @router.get("/zip")
-def download_keys_zip(include: list[str] = Query(default=[])):
+def download_keys_zip(
+    include: list[str] = Query(default=[]),
+    include_other_devices: bool = Query(default=False),
+):
     """Return key JSON files bundled as airtag-keys.zip.
 
     Pass ?include=file.json one or more times to select specific keys.
     Omit to download all keys.
+
+    By default the zip is restricted to AirTags only: the OpenTagViewer-
+    format payload (OwnedBeacons/, BeaconNamingRecord/) only includes
+    beacon UUIDs that map to an AirTag JSON in KEYS_DIR (non-AirTag Find My
+    items - iPhones, AirPods, Macs - are filtered out at the
+    plist_conversion step). Pass include_other_devices=true to also include
+    those non-AirTag plists, raw and unfiltered.
     """
     if not KEYS_DIR.exists():
         raise HTTPException(status_code=404, detail="No keys directory found")
@@ -70,21 +80,21 @@ def download_keys_zip(include: list[str] = Query(default=[])):
     if not files:
         raise HTTPException(status_code=404, detail="No key files found")
 
-    # Restrict the OpenTagViewer-format payload (OwnedBeacons/, BeaconNamingRecord/)
-    # to the beacon UUIDs that correspond to the selected JSON files. The JSON
-    # filename is a slug of the AirTag name, so we read each JSON's `identifier`
-    # to map back to the beacon UUID.
-    selected_ids: set[str] | None = None
-    if include:
-        import json as _json
-        selected_ids = set()
-        for f in files:
-            try:
-                ident = _json.loads(f.read_text()).get("identifier")
-                if ident:
-                    selected_ids.add(ident.upper())
-            except Exception:
-                pass
+    # Build the AirTag UUID set from the selected JSONs' `identifier` field.
+    # Each AirTag JSON exists only because plist_conversion accepted it (i.e.
+    # the plist had both sharedSecret AND secondarySharedSecret) so this set
+    # is the authoritative "this beacon is an AirTag" filter.
+    import json as _json
+    airtag_ids: set[str] = set()
+    for f in files:
+        try:
+            ident = _json.loads(f.read_text()).get("identifier")
+            if ident:
+                airtag_ids.add(ident.upper())
+        except Exception:
+            pass
+
+    selected_ids: set[str] | None = None if include_other_devices else airtag_ids
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
