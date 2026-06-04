@@ -101,7 +101,13 @@
             <h2>Extracted Keys</h2>
             <p id="keys-meta" class="keys-meta"></p>
           </div>
-          <a id="btn-download-keys" href="/api/keys/zip" download="airtag-keys.zip" class="btn btn-primary">Download ZIP</a>
+          <div class="keys-download">
+            <label class="keys-include-other">
+              <input type="checkbox" id="cb-include-other-devices">
+              <span>Include non-AirTag devices</span>
+            </label>
+            <a id="btn-download-keys" href="/api/keys/zip" download="airtag-keys.zip" class="btn btn-primary">Download ZIP</a>
+          </div>
         </div>
         <div id="keys-list" class="keys-list"></div>
       </div>

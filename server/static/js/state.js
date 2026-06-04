@@ -338,21 +338,31 @@ export function updateKeysPanel(keys) {
 function _updateDownloadButton() {
   const btn = document.getElementById("btn-download-keys");
   if (!btn) return;
+  const includeOther = document.getElementById("cb-include-other-devices")?.checked;
   const checked = document.querySelectorAll(".key-item-cb:checked");
+  const params = new URLSearchParams();
+  if (includeOther) params.append("include_other_devices", "true");
   if (checked.length > 0 && checked.length < _allKeys.length) {
     btn.textContent = `Download Selected (${checked.length})`;
+    checked.forEach((cb) => params.append("include", cb.dataset.filename));
+    const qs = params.toString();
     btn.onclick = (e) => {
       e.preventDefault();
-      const params = new URLSearchParams();
-      checked.forEach((cb) => params.append("include", cb.dataset.filename));
-      _triggerDownload(`/api/keys/zip?${params}`, "airtag-keys-selected.zip");
+      _triggerDownload(`/api/keys/zip?${qs}`, "airtag-keys-selected.zip");
     };
   } else {
     btn.textContent = "Download ZIP";
     btn.onclick = null;
-    btn.href = "/api/keys/zip";
+    const qs = params.toString();
+    btn.href = qs ? `/api/keys/zip?${qs}` : "/api/keys/zip";
   }
 }
+
+// React to the include-other-devices toggle by re-deriving the button URL.
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("cb-include-other-devices")
+    ?.addEventListener("change", _updateDownloadButton);
+});
 
 function _triggerDownload(url, filename) {
   const a = document.createElement("a");
