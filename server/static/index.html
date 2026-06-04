@@ -101,14 +101,16 @@
             <h2>Extracted Keys</h2>
             <p id="keys-meta" class="keys-meta"></p>
           </div>
-          <div class="keys-download">
-            <label class="keys-include-other">
-              <input type="checkbox" id="cb-include-other-devices">
-              <span>Include non-AirTag devices</span>
-            </label>
-            <a id="btn-download-keys" href="/api/keys/zip" download="airtag-keys.zip" class="btn btn-primary">Download ZIP</a>
-          </div>
+          <a id="btn-download-keys" href="/api/keys/zip" download="airtag-keys.zip" class="btn btn-primary">Download ZIP</a>
         </div>
+        <label class="keys-filter">
+          <input type="checkbox" id="cb-include-other-devices" class="switch">
+          <span class="switch-track" aria-hidden="true"></span>
+          <span class="keys-filter-text">
+            <span class="keys-filter-title">Show all Find My devices</span>
+            <span class="keys-filter-sub">Adds your iPhones, Macs, AirPods, and other paired items to the list. They’re included in the ZIP too.</span>
+          </span>
+        </label>
         <div id="keys-list" class="keys-list"></div>
       </div>
 

@@ -575,23 +575,74 @@ body {
 
 .keys-header h2 { margin-bottom: 2px; }
 
-.keys-download {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 6px;
-}
-
-.keys-include-other {
-  display: inline-flex;
+/* Filter row above the keys table — switch + descriptive label. */
+.keys-filter {
+  display: grid;
+  grid-template-columns: 36px 1fr;
   align-items: center;
-  gap: 6px;
-  font-size: 0.78em;
-  color: #888;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-top: 4px;
+  background: #141414;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
   cursor: pointer;
   user-select: none;
 }
-.keys-include-other input { accent-color: #0af; }
+.keys-filter:hover { border-color: #383838; }
+
+.keys-filter-text { display: flex; flex-direction: column; gap: 2px; }
+.keys-filter-title { font-size: 0.88em; color: #ddd; font-weight: 500; }
+.keys-filter-sub { font-size: 0.74em; color: #777; }
+
+/* iOS-style switch built on top of a native checkbox (kept accessible). */
+.switch {
+  appearance: none;
+  position: relative;
+  width: 36px;
+  height: 20px;
+  margin: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.switch + .switch-track {
+  position: absolute;
+  width: 36px;
+  height: 20px;
+  background: #2a2a2a;
+  border-radius: 999px;
+  transition: background 0.18s ease;
+  pointer-events: none;
+}
+.switch + .switch-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #ddd;
+  border-radius: 50%;
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+.switch:checked + .switch-track { background: #0af; }
+.switch:checked + .switch-track::after { transform: translateX(16px); background: #fff; }
+.switch:focus-visible + .switch-track { box-shadow: 0 0 0 2px rgba(0, 170, 255, 0.4); }
+
+/* Per-row model badge in the keys table (AirTag / iPhone / Mac / ...). */
+.key-kind-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.7em;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  margin-left: 8px;
+  vertical-align: middle;
+  border: 1px solid;
+}
+.key-kind-badge--airtag { color: #0af; border-color: rgba(0,170,255,0.35); background: rgba(0,170,255,0.08); }
+.key-kind-badge--other  { color: #b58a4d; border-color: rgba(181,138,77,0.4);   background: rgba(181,138,77,0.08); }
 
 .keys-meta {
   font-size: 0.82em;

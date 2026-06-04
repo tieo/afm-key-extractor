@@ -300,12 +300,17 @@ export function updateKeysPanel(keys) {
       keys.map((k) => {
         const d = new Date(k.mtime);
         const dateStr = d.toLocaleString([], { dateStyle: "short", timeStyle: "short" });
-        const id = k.name.replace(/\.json$/, "");
-        return `<label class="key-row" data-filename="${k.name}">
-          <span class="key-checkbox-wrap">
-            <input type="checkbox" class="key-checkbox key-item-cb" data-filename="${k.name}">
-          </span>
-          <span class="key-name">${id}</span>
+        const display = _escapeHtml(k.display_name || (k.name || "").replace(/\.(json|plist)$/, ""));
+        const kind = k.kind === "other" ? "other" : "airtag";
+        const badgeLabel = _escapeHtml(_modelBadge(k));
+        // Non-AirTag rows have no per-row checkbox - the master toggle above
+        // the list controls whether they're shown / included in the zip at all.
+        const cb = kind === "airtag"
+          ? `<input type="checkbox" class="key-checkbox key-item-cb" data-filename="${_escapeHtml(k.name)}">`
+          : `<span class="key-checkbox-spacer" aria-hidden="true"></span>`;
+        return `<label class="key-row key-row--${kind}" data-filename="${_escapeHtml(k.name)}">
+          <span class="key-checkbox-wrap">${cb}</span>
+          <span class="key-name">${display}<span class="key-kind-badge key-kind-badge--${kind}">${badgeLabel}</span></span>
           <span class="key-date">${dateStr}</span>
         </label>`;
       }).join("");
@@ -358,10 +363,41 @@ function _updateDownloadButton() {
   }
 }
 
-// React to the include-other-devices toggle by re-deriving the button URL.
+function _escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
+}
+
+// Short family label for the per-row badge derived from the Apple model id.
+function _modelBadge(k) {
+  if (k.kind !== "other") return "AirTag";
+  const m = (k.model || "").trim();
+  if (!m) return "Device";
+  const prefix = m.match(/^[A-Za-z]+/)?.[0] || m;
+  const family = {
+    iPhone: "iPhone", iPad: "iPad", iPod: "iPod",
+    Mac: "Mac", MacBook: "MacBook", iMac: "iMac", Macmini: "Mac mini", MacPro: "Mac Pro",
+    AudioAccessory: "AirPods", Watch: "Apple Watch",
+    AppleTV: "Apple TV", HomePod: "HomePod",
+    AirTag: "AirTag",
+  }[prefix];
+  return family || prefix;
+}
+
+// Re-fetch + re-render when the user flips "Show all Find My devices".
+async function _onIncludeOtherChanged() {
+  _updateDownloadButton();
+  try {
+    const include = document.getElementById("cb-include-other-devices")?.checked;
+    const url = include ? "/api/keys/?include_others=true" : "/api/keys/";
+    const r = await fetch(url);
+    if (r.ok) updateKeysPanel(await r.json());
+  } catch (e) { /* leave the current list in place on error */ }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("cb-include-other-devices")
-    ?.addEventListener("change", _updateDownloadButton);
+    ?.addEventListener("change", _onIncludeOtherChanged);
 });
 
 function _triggerDownload(url, filename) {

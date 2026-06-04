@@ -6,6 +6,8 @@ Prefix: /api/keys
 from __future__ import annotations
 
 import io
+import json as _json
+import plistlib
 import re
 import zipfile
 from datetime import UTC, datetime
@@ -22,21 +24,94 @@ router = APIRouter(prefix="/api/keys", tags=["keys"])
 _SAFE_FILENAME = re.compile(r'^[\w\-. ]+\.json$')
 
 
-def _key_meta(p: Path) -> dict:
+def _airtag_meta(p: Path) -> dict:
+    """Metadata for an AirTag JSON in KEYS_DIR."""
+    stat = p.stat()
+    try:
+        data = _json.loads(p.read_text())
+        display = data.get("name") or p.stem
+        model = data.get("model") or "AirTag"
+        identifier = (data.get("identifier") or "").upper()
+    except Exception:
+        display, model, identifier = p.stem, "AirTag", ""
+    return {
+        "id": p.name,                     # JSON filename - per-row select key
+        "name": p.name,                   # legacy field (kept for ?include= compatibility)
+        "display_name": display,
+        "kind": "airtag",
+        "model": model,
+        "identifier": identifier,
+        "size": stat.st_size,
+        "mtime": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
+    }
+
+
+def _naming_lookup(beacon_uuid: str) -> str | None:
+    """Best-effort display name from BeaconNamingRecord/<beaconUUID>/*.plist."""
+    naming_root = PLISTS_DIR / "BeaconNamingRecord" / beacon_uuid.upper()
+    if not naming_root.exists():
+        return None
+    for plist_path in naming_root.glob("*.plist"):
+        try:
+            with plist_path.open("rb") as f:
+                pl = plistlib.load(f)
+            name = pl.get("name")
+            if name:
+                return name
+        except Exception:
+            continue
+    return None
+
+
+def _other_meta(p: Path) -> dict | None:
+    """Metadata for a non-AirTag OwnedBeacons plist."""
+    try:
+        with p.open("rb") as f:
+            pl = plistlib.load(f)
+    except Exception:
+        return None
+    model = pl.get("model") or "Unknown"
+    identifier = (pl.get("identifier") or p.stem).upper()
+    display = _naming_lookup(p.stem) or pl.get("name") or identifier
     stat = p.stat()
     return {
+        "id": p.name,
         "name": p.name,
+        "display_name": display,
+        "kind": "other",
+        "model": model,
+        "identifier": identifier,
         "size": stat.st_size,
         "mtime": datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
     }
 
 
 @router.get("/")
-def list_keys() -> list[dict]:
-    if not KEYS_DIR.exists():
-        return []
-    files = sorted(KEYS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return [_key_meta(f) for f in files]
+def list_keys(include_others: bool = Query(default=False)) -> list[dict]:
+    """List extracted entries.
+
+    Default: only AirTags (the JSON files in KEYS_DIR). Pass include_others=true
+    to also include non-AirTag Find My items (iPhones, AirPods, Macs, ...) from
+    the raw OwnedBeacons plists.
+    """
+    out: list[dict] = []
+
+    if KEYS_DIR.exists():
+        out.extend(_airtag_meta(p) for p in KEYS_DIR.glob("*.json"))
+
+    if include_others:
+        airtag_ids = {e["identifier"] for e in out if e["identifier"]}
+        owned_dir = PLISTS_DIR / "OwnedBeacons"
+        if owned_dir.exists():
+            for p in owned_dir.glob("*.plist"):
+                if p.stem.upper() in airtag_ids:
+                    continue
+                meta = _other_meta(p)
+                if meta is not None:
+                    out.append(meta)
+
+    out.sort(key=lambda e: (e["kind"] == "other", e["display_name"].lower()))
+    return out
 
 
 @router.get("/zip")

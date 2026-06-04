@@ -77,7 +77,8 @@ async function applyStatus(status) {
 }
 
 async function refreshKeys() {
-  const keys = await get("/api/keys/");
+  const include = document.getElementById("cb-include-other-devices")?.checked;
+  const keys = await get(include ? "/api/keys/?include_others=true" : "/api/keys/");
   updateKeysPanel(Array.isArray(keys) ? keys : []);
 }
 
