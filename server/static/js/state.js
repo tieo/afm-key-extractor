@@ -119,7 +119,7 @@ export function selectView(status, setupStatus) {
   });
 
   // Header chrome that's view-dependent.
-  updateOpenVmButton(target);
+  updateOpenVmButton(target, status);
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +186,10 @@ export function updateStatusBadge(status) {
 // Stage bar (shown inside view-running)
 // ---------------------------------------------------------------------------
 
-const VNC_VISIBLE_STATES = new Set([
+// States where the QEMU VM is actually running, so websockify on 6901 is
+// serving. restoring_golden is excluded - that's a 30 GB host-side file
+// copy with no VM up yet, and the noVNC iframe would render an empty page.
+export const VNC_VISIBLE_STATES = new Set([
   "booting_picker", "picker_selecting", "waiting_recovery",
   "format_disk", "waiting_format_done", "reinstall_clicking",
   "waiting_install", "booting_installed",
@@ -195,7 +198,7 @@ const VNC_VISIBLE_STATES = new Set([
   "sa_apple_id_2", "sa_terms_2", "sa_location", "sa_timezone",
   "sa_analytics", "sa_screen_time", "sa_appearance",
   "dismiss_first_boot", "shutting_down", "baking_golden",
-  "restoring_golden", "booting", "picker_selecting",
+  "booting", "picker_selecting",
   "waiting_login_screen", "logging_in", "waiting_desktop",
   "disabling_sleep", "opening_apple_id", "typing_credentials",
   "waiting_2fa_or_signed_in", "awaiting_2fa", "typing_2fa",

@@ -21,14 +21,20 @@ export function setVncConfig(config) {
   // button only shows when a VM is actually running, not whenever VM is enabled.
 }
 
-// Show "Open VM" only when in view-running AND we have a VM URL to point at.
-// Called from state.selectView so the button matches the visible view.
-export function updateOpenVmButton(activeView) {
+// Show "Open VM" only when QEMU is actually up (websockify is serving on the
+// noVNC port). Called from state.selectView with the current status so we can
+// gate on the same VNC_VISIBLE_STATES set the in-page VNC iframe uses.
+// During restoring_golden (a 30 GB host file copy with no VM up yet) the
+// button stays hidden - opening it would land on an empty-page error.
+export async function updateOpenVmButton(activeView, status) {
   const btn = document.getElementById("btn-open-vm");
   if (!btn) return;
-  const shouldShow = activeView === "view-running"
-    && _vncConfig.vm_enabled
-    && !!_vncConfig.vnc_url;
+  if (!_vncConfig.vm_enabled || !_vncConfig.vnc_url || activeView !== "view-running") {
+    btn.style.display = "none";
+    return;
+  }
+  const { VNC_VISIBLE_STATES } = await import("./state.js");
+  const shouldShow = !!(status?.running && VNC_VISIBLE_STATES.has(status?.state));
   btn.style.display = shouldShow ? "" : "none";
 }
 
