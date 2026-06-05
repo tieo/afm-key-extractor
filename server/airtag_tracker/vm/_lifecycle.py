@@ -57,20 +57,19 @@ def status() -> dict:
     }
 
 
-_OVMF_VARS_BLOAT_THRESHOLD_BYTES = 100 * 1024 * 1024  # 100 MB - empty is ~400 KB
+_OVMF_VARS_BLOAT_THRESHOLD_BYTES = 50 * 1024 * 1024  # 50 MB - empty is ~400 KB
 
 
 def _check_ovmf_bloat() -> None:
-    """Warn loudly if OVMF_VARS has grown past 100 MB.
+    """Warn (and let the next vm.stop auto-compact) if OVMF_VARS is oversized.
 
     OVMF_VARS-1920x1080.qcow2 is attached as pflash without snapshot=on, so
     every QEMU `savevm` writes its full RAM-state delta into this file as
-    well as into MacHDD. Healthy is ~400 KB; previously seen in the wild
-    at 214 GB after many auto-snapshot + failure-capture cycles. The on-disk
-    GC (failure_capture.gc_orphan_snapshots) clears the named entries but
-    qcow2 only reclaims that space on a subsequent `qemu-img convert` pass,
-    so the size growth is the canary - flag it as soon as it crosses an
-    obviously-wrong threshold so the operator can compact/reset it.
+    well as into MacHDD. Healthy is ~400 KB; previously seen in the wild at
+    214 GB after many auto-snapshot + failure-capture cycles. _compact_
+    ovmf_vars_if_oversize() in vm.stop() reclaims it on the next clean stop;
+    this canary just makes the leak visible in the activity log if a stop
+    was missed or the container was killed while a VM held the lock.
     """
     try:
         size = _qemu.OVMF_VARS.stat().st_size
@@ -79,9 +78,10 @@ def _check_ovmf_bloat() -> None:
     if size > _OVMF_VARS_BLOAT_THRESHOLD_BYTES:
         gb = size / (1024 ** 3)
         emit("warning", "vm",
-             f"OVMF_VARS is {gb:.1f} GB - probably stale savevm data. "
-             "Stop the VM, then `qemu-img convert -O qcow2 OVMF_VARS-1920x1080.qcow2 new && mv new OVMF_VARS-1920x1080.qcow2` "
-             "to compact it.")
+             f"OVMF_VARS is {gb:.1f} GB - savevm leftover. "
+             "The next clean vm.stop will compact it automatically; "
+             "or run `qemu-img convert -O qcow2 OVMF_VARS-1920x1080.qcow2 new "
+             "&& mv new OVMF_VARS-1920x1080.qcow2` manually while QEMU is down.")
 
 
 def _launch_qemu(install_mode: bool = False, base_system: Path | None = None) -> None:
@@ -170,6 +170,48 @@ def start_for_install(base_system: Path) -> dict:
     return {"status": "started", "vnc_ws_port": VNC_WS_PORT}
 
 
+_OVMF_VARS_COMPACT_THRESHOLD_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
+def _compact_ovmf_vars_if_oversize() -> None:
+    """Rewrite OVMF_VARS via qemu-img convert when it's bloated.
+
+    QEMU's `savevm` writes the full guest RAM delta into every writable qcow2
+    pflash too, not just MacHDD - and we never `loadvm` against OVMF_VARS, so
+    that data is pure waste. Without active GC it climbs ~6-10 GB per
+    snapshot, easily filling the host disk after a few dozen flows. Sweeping
+    here on stop, while OVMF_VARS isn't locked, is the cheap and bounded
+    fix: a convert with no `-s` flag drops every internal snapshot, leaving
+    just the live NVRAM cluster (~400 KB). MacHDD is left alone because the
+    debug-iteration harness deliberately keeps its named snapshots.
+    """
+    try:
+        size = _qemu.OVMF_VARS.stat().st_size
+    except FileNotFoundError:
+        return
+    if size <= _OVMF_VARS_COMPACT_THRESHOLD_BYTES:
+        return
+    qemu_img = str(Path(_qemu.find_qemu()).parent / "qemu-img")
+    tmp = _qemu.OVMF_VARS.with_suffix(_qemu.OVMF_VARS.suffix + ".compact")
+    try:
+        result = sp.run(
+            [qemu_img, "convert", "-O", "qcow2", str(_qemu.OVMF_VARS), str(tmp)],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            tmp.unlink(missing_ok=True)
+            emit("warning", "vm",
+                 f"OVMF_VARS compact failed: {result.stderr.strip()[:200]}")
+            return
+        tmp.replace(_qemu.OVMF_VARS)
+        new_size = _qemu.OVMF_VARS.stat().st_size
+        emit("info", "vm",
+             f"OVMF_VARS compacted {size / 1e9:.1f} GB -> {new_size / 1024:.0f} KB")
+    except Exception as e:
+        tmp.unlink(missing_ok=True)
+        emit("warning", "vm", f"OVMF_VARS compact errored: {e}")
+
+
 def stop() -> dict:
     emit("info", "vm", "Stopping VM")
     if VM_PID_FILE.exists():
@@ -181,4 +223,18 @@ def stop() -> dict:
             emit("info", "vm", "VM process already gone")
         VM_PID_FILE.unlink(missing_ok=True)
     systemd.ctl("stop", "airtag-novnc")
+    # Wait for QEMU to release the OVMF_VARS write lock, then compact if it's
+    # accumulated savevm waste. Bounded by the threshold so the common no-op
+    # case is just a stat().
+    _wait_for_qemu_exit(deadline_s=10)
+    _compact_ovmf_vars_if_oversize()
     return {"status": "stopped"}
+
+
+def _wait_for_qemu_exit(deadline_s: float = 10) -> None:
+    import time as _t
+    t0 = _t.monotonic()
+    while _t.monotonic() - t0 < deadline_s:
+        if not is_running():
+            return
+        _t.sleep(0.2)
